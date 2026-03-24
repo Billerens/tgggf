@@ -78,7 +78,6 @@ export default function App() {
   useEffect(() => {
     if (!settingsDraft.lmBaseUrl.trim()) return;
     void loadModels(settingsDraft.lmBaseUrl, settingsDraft.apiKey);
-    // We only auto-load once after settings hydration.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.lmBaseUrl, settings.apiKey]);
 
@@ -167,77 +166,93 @@ export default function App() {
     setPersonaModalTab("editor");
   };
 
+  const onToggleMobileTab = (tab: SidebarTab) => {
+    if (sidebarTab === tab && mobileSidebarOpen) {
+      setMobileSidebarOpen(false);
+    } else {
+      setSidebarTab(tab);
+      setMobileSidebarOpen(true);
+    }
+  };
+
   return (
-    <div className="messenger">
-      <Sidebar
-        sidebarTab={sidebarTab}
-        setSidebarTab={setSidebarTab}
-        chats={chats}
-        personas={personas}
-        activeChatId={activeChatId}
-        activePersonaId={activePersonaId}
-        onOpenPersonas={() => setShowPersonaModal(true)}
-        onOpenSettings={() => setShowSettingsModal(true)}
-        onCreateChat={() => void createChat()}
-        onSelectChat={(chatId) => void selectChat(chatId)}
-        onSelectPersona={(personaId) => void selectPersona(personaId)}
-        onEditPersona={startEditPersona}
-        isMobileOpen={mobileSidebarOpen}
-        onCloseMobile={() => setMobileSidebarOpen(false)}
-      />
+    <>
+      <div className="aurora-bg" />
+      <div className="messenger">
+        <Sidebar
+          sidebarTab={sidebarTab}
+          setSidebarTab={setSidebarTab}
+          chats={chats}
+          personas={personas}
+          activeChatId={activeChatId}
+          activePersonaId={activePersonaId}
+          onOpenPersonas={() => setShowPersonaModal(true)}
+          onOpenSettings={() => setShowSettingsModal(true)}
+          onCreateChat={() => void createChat()}
+          onSelectChat={(chatId) => void selectChat(chatId)}
+          onSelectPersona={(personaId) => void selectPersona(personaId)}
+          onEditPersona={startEditPersona}
+          isMobileOpen={mobileSidebarOpen}
+          onCloseMobile={() => setMobileSidebarOpen(false)}
+          onToggleMobileTab={onToggleMobileTab}
+        />
 
-      <ChatPane
-        activeChat={activeChat}
-        activePersona={activePersona}
-        activeChatId={activeChatId}
-        messages={messages}
-        messageInput={messageInput}
-        setMessageInput={setMessageInput}
-        isLoading={isLoading}
-        onDeleteChat={() => {
-          if (!activeChatId) return;
-          void deleteChat(activeChatId);
-        }}
-        onSubmitMessage={onMessageSubmit}
-        onOpenSidebar={() => setMobileSidebarOpen(true)}
-      />
+        <ChatPane
+          activeChat={activeChat}
+          activePersona={activePersona}
+          activeChatId={activeChatId}
+          messages={messages}
+          messageInput={messageInput}
+          setMessageInput={setMessageInput}
+          isLoading={isLoading}
+          onDeleteChat={() => {
+            if (!activeChatId) return;
+            void deleteChat(activeChatId);
+          }}
+          onSubmitMessage={onMessageSubmit}
+          onOpenSidebar={() => {
+            setSidebarTab("personas");
+            setMobileSidebarOpen(true);
+          }}
+        />
 
-      <SettingsModal
-        open={showSettingsModal}
-        settingsDraft={settingsDraft}
-        availableModels={availableModels}
-        modelsLoading={modelsLoading}
-        setSettingsDraft={setSettingsDraft}
-        onRefreshModels={() => void loadModels(settingsDraft.lmBaseUrl, settingsDraft.apiKey)}
-        onClose={() => setShowSettingsModal(false)}
-        onSubmit={onSettingsSubmit}
-      />
+        <SettingsModal
+          open={showSettingsModal}
+          settingsDraft={settingsDraft}
+          availableModels={availableModels}
+          modelsLoading={modelsLoading}
+          setSettingsDraft={setSettingsDraft}
+          onRefreshModels={() => void loadModels(settingsDraft.lmBaseUrl, settingsDraft.apiKey)}
+          onClose={() => setShowSettingsModal(false)}
+          onSubmit={onSettingsSubmit}
+        />
 
-      <PersonaModal
-        open={showPersonaModal}
-        personas={personas}
-        personaModalTab={personaModalTab}
-        setPersonaModalTab={setPersonaModalTab}
-        editingPersonaId={editingPersonaId}
-        personaDraft={personaDraft}
-        setPersonaDraft={setPersonaDraft}
-        onClose={() => setShowPersonaModal(false)}
-        onEditPersona={startEditPersona}
-        onDeletePersona={(personaId) => void deletePersona(personaId)}
-        onSubmitPersona={onPersonaSubmit}
-        onResetDraft={onResetDraft}
-        generationTheme={generationTheme}
-        setGenerationTheme={setGenerationTheme}
-        generationCount={generationCount}
-        setGenerationCount={setGenerationCount}
-        generationLoading={generationLoading}
-        generatedDrafts={generatedDrafts}
-        onSubmitGenerate={onGenerateSubmit}
-        onSaveGenerated={(draft) => void onSaveGenerated(draft)}
-        onMoveGeneratedToEditor={onMoveGeneratedToEditor}
-      />
+        <PersonaModal
+          open={showPersonaModal}
+          personas={personas}
+          personaModalTab={personaModalTab}
+          setPersonaModalTab={setPersonaModalTab}
+          editingPersonaId={editingPersonaId}
+          personaDraft={personaDraft}
+          setPersonaDraft={setPersonaDraft}
+          onClose={() => setShowPersonaModal(false)}
+          onEditPersona={startEditPersona}
+          onDeletePersona={(personaId) => void deletePersona(personaId)}
+          onSubmitPersona={onPersonaSubmit}
+          onResetDraft={onResetDraft}
+          generationTheme={generationTheme}
+          setGenerationTheme={setGenerationTheme}
+          generationCount={generationCount}
+          setGenerationCount={setGenerationCount}
+          generationLoading={generationLoading}
+          generatedDrafts={generatedDrafts}
+          onSubmitGenerate={onGenerateSubmit}
+          onSaveGenerated={(draft) => void onSaveGenerated(draft)}
+          onMoveGeneratedToEditor={onMoveGeneratedToEditor}
+        />
 
-      <ErrorToast error={error} onClose={clearError} />
-    </div>
+        <ErrorToast error={error} onClose={clearError} />
+      </div>
+    </>
   );
 }

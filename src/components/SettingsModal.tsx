@@ -99,7 +99,7 @@ export function SettingsModal({
               onChange={(e) => setSettingsDraft((v) => ({ ...v, apiKey: e.target.value }))}
             />
           </label>
-          <button type="submit">Сохранить</button>
+          <button type="submit" className="primary">Сохранить</button>
         </form>
       </div>
     </div>

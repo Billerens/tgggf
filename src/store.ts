@@ -241,6 +241,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         chatId: activeChatId,
         role: "assistant",
         content: answer.content,
+        comfyPrompt: answer.comfyPrompt,
         createdAt: nowIso(),
       };
 

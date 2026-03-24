@@ -25,9 +25,35 @@ interface TgGfDb extends DBSchema {
 const DB_NAME = "tg-gf-db";
 const DB_VERSION = 1;
 const SETTINGS_KEY = "main";
+const DEV_PROXY_BASE_URL = "/lmstudio";
+const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
+
+function resolveDefaultBaseUrl() {
+  const fromEnv = import.meta.env.VITE_LM_BASE_URL?.trim();
+  if (fromEnv) return fromEnv;
+  return import.meta.env.DEV ? DEV_PROXY_BASE_URL : FALLBACK_PROD_BASE_URL;
+}
+
+function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettings {
+  const merged: AppSettings = { ...DEFAULT_SETTINGS, ...(current ?? {}) };
+
+  const trimmedBaseUrl = merged.lmBaseUrl.trim();
+  if (!trimmedBaseUrl) {
+    merged.lmBaseUrl = DEFAULT_SETTINGS.lmBaseUrl;
+  } else if (!import.meta.env.DEV && trimmedBaseUrl === DEV_PROXY_BASE_URL) {
+    // Auto-fix old persisted dev proxy URL in production static builds.
+    merged.lmBaseUrl = DEFAULT_SETTINGS.lmBaseUrl;
+  } else {
+    merged.lmBaseUrl = trimmedBaseUrl;
+  }
+
+  merged.model = merged.model.trim() || DEFAULT_SETTINGS.model;
+  merged.apiKey = merged.apiKey.trim();
+  return merged;
+}
 
 const DEFAULT_SETTINGS: AppSettings = {
-  lmBaseUrl: "/lmstudio",
+  lmBaseUrl: resolveDefaultBaseUrl(),
   model: "local-model",
   temperature: 0.7,
   maxTokens: 600,
@@ -123,7 +149,7 @@ export const dbApi = {
   async getSettings() {
     const db = await getDb();
     const current = await db.get("settings", SETTINGS_KEY);
-    return { ...DEFAULT_SETTINGS, ...(current ?? {}) };
+    return normalizeSettings(current);
   },
 
   async saveSettings(settings: AppSettings) {

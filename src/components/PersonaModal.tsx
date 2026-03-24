@@ -84,18 +84,18 @@ export function PersonaModal({
           <div className="split">
             <div className="persona-list">
               {personas.map((persona) => (
-                <div key={persona.id} className="persona-row">
-                  <button type="button" className="grow" onClick={() => onEditPersona(persona)}>
+                <div key={persona.id} className={`persona-item ${persona.id === editingPersonaId ? "active" : ""}`}>
+                  <div className="persona-item-content" onClick={() => onEditPersona(persona)} style={{cursor: 'pointer'}}>
                     <strong>{persona.name}</strong>
                     <span>{persona.personalityPrompt || "Без описания"}</span>
-                  </button>
+                  </div>
                   <button
                     type="button"
-                    className="danger mini"
+                    className="icon-btn danger mini"
                     onClick={() => onDeletePersona(persona.id)}
                     disabled={personas.length <= 1}
                   >
-                    <Trash2 size={12} />
+                    <Trash2 size={16} />
                   </button>
                 </div>
               ))}
@@ -133,7 +133,7 @@ export function PersonaModal({
                 onChange={(e) => setPersonaDraft((v) => ({ ...v, avatarUrl: e.target.value }))}
               />
               <div className="inline-row">
-                <button type="submit">{editingPersonaId ? "Сохранить" : "Создать"}</button>
+                <button type="submit" className="primary">{editingPersonaId ? "Сохранить" : "Создать"}</button>
                 <button type="button" onClick={onResetDraft}>
                   Сбросить
                 </button>
@@ -178,7 +178,7 @@ export function PersonaModal({
                     <strong>Стиль:</strong> {draft.stylePrompt}
                   </p>
                   <div className="inline-row">
-                    <button type="button" onClick={() => onSaveGenerated(draft)}>
+                    <button type="button" className="primary" onClick={() => onSaveGenerated(draft)}>
                       Сохранить
                     </button>
                     <button type="button" onClick={() => onMoveGeneratedToEditor(draft)}>
