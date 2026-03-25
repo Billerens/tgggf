@@ -4,6 +4,7 @@ import type { GeneratedPersonaDraft } from "./lmstudio";
 import { generatePersonaDrafts, listModels } from "./lmstudio";
 import { useAppStore } from "./store";
 import { ChatPane } from "./components/ChatPane";
+import { ChatDetailsModal } from "./components/ChatDetailsModal";
 import { ErrorToast } from "./components/ErrorToast";
 import { PersonaModal } from "./components/PersonaModal";
 import { SettingsModal } from "./components/SettingsModal";
@@ -38,6 +39,7 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chats");
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
+  const [showChatDetailsModal, setShowChatDetailsModal] = useState(false);
   const [personaModalTab, setPersonaModalTab] = useState<PersonaModalTab>("editor");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
@@ -223,6 +225,18 @@ export default function App() {
             setSidebarTab("personas");
             setMobileSidebarOpen(true);
           }}
+          onOpenChatDetails={() => setShowChatDetailsModal(true)}
+        />
+
+        <ChatDetailsModal
+          open={showChatDetailsModal}
+          chat={activeChat}
+          persona={activePersona}
+          messages={messages}
+          memories={activeMemories}
+          runtimeState={activePersonaState}
+          settings={settings}
+          onClose={() => setShowChatDetailsModal(false)}
         />
 
         <SettingsModal

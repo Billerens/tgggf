@@ -69,7 +69,7 @@ function inferTopicsFromMessage(text: string) {
   );
 }
 
-function relationshipStageFromDepth(depth: number): RelationshipStage {
+export function relationshipStageFromDepth(depth: number): RelationshipStage {
   if (depth >= 85) return "bonded";
   if (depth >= 65) return "close";
   if (depth >= 45) return "friendly";
@@ -296,31 +296,16 @@ function nextMood(persona: Persona, trust: number, engagement: number) {
   return baseline;
 }
 
+import { calculateStateEvolution } from "./personaBehaviors";
+
 export function evolvePersonaState(
   prev: PersonaRuntimeState,
   persona: Persona,
   userMessage: string,
   assistantMessage: string,
 ): PersonaRuntimeState {
-  const behavior = persona.advanced.behavior;
-  const trustDelta = clampDelta(Math.round((behavior.empathy - 55) / 26), -2, 2);
-  const engagementDelta = clampDelta(
-    Math.round((behavior.curiosity + behavior.initiative - 110) / 24),
-    -3,
-    3,
-  );
-  const energyPenalty = userMessage.length > 220 || assistantMessage.length > 260 ? -5 : -2;
-  const energyDelta = energyPenalty + Math.round(behavior.initiative / 45);
-
-  const trust = clamp(prev.trust + trustDelta, 0, 100);
-  const engagement = clamp(prev.engagement + engagementDelta, 0, 100);
-  const energy = clamp(prev.energy + energyDelta, 0, 100);
-  const relationshipDepthDelta = clampDelta(
-    Math.round((trustDelta + Math.max(0, engagementDelta)) / 2),
-    -2,
-    3,
-  );
-  const relationshipDepth = clamp(prev.relationshipDepth + relationshipDepthDelta, 0, 100);
+  const evolution = calculateStateEvolution(persona, prev, userMessage, assistantMessage);
+  
   const topics = normalizeTopics([
     ...prev.activeTopics,
     ...inferTopicsFromMessage(userMessage),
@@ -329,13 +314,8 @@ export function evolvePersonaState(
 
   return {
     ...prev,
-    mood: nextMood(persona, trust, engagement),
-    trust,
-    engagement,
-    energy,
-    relationshipDepth,
+    ...evolution,
     activeTopics: topics.slice(-8),
-    relationshipStage: relationshipStageFromDepth(relationshipDepth),
     updatedAt: new Date().toISOString(),
   };
 }

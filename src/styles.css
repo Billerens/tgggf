@@ -207,6 +207,24 @@ html, body {
 }
 
 .chat-header h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing:-0.01em; display:flex; align-items:center; gap:12px; }
+.chat-title-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.chat-title-btn:hover {
+  color: var(--accent);
+}
+.chat-title-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
 .chat-header p { margin: 4px 0 0; font-size: 14px; color: var(--text-secondary); }
 .persona-header-row {
   margin-top: 8px;
@@ -378,6 +396,12 @@ button.primary:hover:not(:disabled) { background: #3b82f6; box-shadow: 0 0 16px 
 button.danger { color: var(--danger); border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.05); }
 button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.6); }
 .mini { padding: 6px 12px; font-size: 12px; border-radius: 8px;}
+.icon-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 10px;
+}
 
 /* Mobile Navigation (Bottom bar) */
 .mobile-bottom-nav {
@@ -411,9 +435,135 @@ button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border
   display: flex; justify-content: space-between; align-items: center;
 }
 .modal-header h2 { margin:0; font-size: 20px;}
+.modal-subtitle {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
 .modal-tabs { display: flex; gap: 8px; padding: 16px 24px 0; border-bottom: 1px solid var(--border-light);}
 .modal-tabs button { flex: 1; border-bottom-left-radius: 0; border-bottom-right-radius: 0; border: none; background: transparent; padding-bottom:12px; border-bottom: 2px solid transparent;}
 .modal-tabs button.active { background: transparent; color: var(--text-primary); border-bottom-color: var(--accent); }
+
+.chat-details-body {
+  padding: 20px 24px 24px;
+  overflow-y: auto;
+}
+.attachment-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+}
+.attachment-card {
+  border: 1px solid var(--border-light);
+  background: rgba(255,255,255,0.02);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.attachment-card img {
+  width: 100%;
+  height: 170px;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.03);
+}
+.attachment-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.attachment-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: none;
+  padding: 0 12px 12px;
+}
+.attachment-link:hover {
+  text-decoration: underline;
+}
+
+.status-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
+.status-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.02);
+  padding: 12px;
+}
+.status-card h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+.status-card p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.memory-section {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.02);
+  padding: 12px;
+}
+.memory-section h4 {
+  margin: 0;
+  font-size: 14px;
+}
+.memory-summary {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.memory-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.memory-item {
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.02);
+  padding: 10px;
+}
+.memory-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.memory-head span {
+  color: var(--text-secondary);
+}
+.memory-item p {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.memory-item time {
+  margin-top: 8px;
+  display: block;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
 
 .form { display: flex; flex-direction: column; gap: 20px; padding: 24px; overflow-y: auto;}
 .form h4 { margin:0; font-size: 16px;}

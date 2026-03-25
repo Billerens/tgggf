@@ -21,6 +21,7 @@ interface ChatPaneProps {
   onDeleteChat: () => void;
   onSubmitMessage: (event: FormEvent) => void;
   onOpenSidebar: () => void;
+  onOpenChatDetails: () => void;
 }
 
 function parsePersonaControlRaw(raw: string | undefined) {
@@ -120,6 +121,7 @@ export function ChatPane({
   onDeleteChat,
   onSubmitMessage,
   onOpenSidebar,
+  onOpenChatDetails,
 }: ChatPaneProps) {
   const relationshipBadge =
     activePersonaState
@@ -151,7 +153,16 @@ export function ChatPane({
       <header className="chat-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
           <div>
-            <h2>{activeChat?.title ?? "Новый чат"}</h2>
+            <h2>
+              <button
+                type="button"
+                className="chat-title-btn"
+                onClick={onOpenChatDetails}
+                title="Открыть детали чата"
+              >
+                {activeChat?.title ?? "Новый чат"}
+              </button>
+            </h2>
             <div className="persona-header-row">
               <div
                 className="chat-header-persona"
