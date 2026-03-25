@@ -137,105 +137,6 @@ function isValidMemoryKind(value: unknown): value is PersonaMemoryKind {
   return value === "fact" || value === "preference" || value === "goal" || value === "event";
 }
 
-function normalizeIntentToken(intent: string) {
-  return intent
-    .toLowerCase()
-    .replace(/[\s-]+/g, "_")
-    .replace(/[^\wа-яё_]/gi, "");
-}
-
-interface IntentStateDelta {
-  trust: number;
-  engagement: number;
-  energy: number;
-  mood?: PersonaRuntimeState["mood"];
-  relationshipDepth: number;
-  relationshipType?: RelationshipType;
-}
-
-function intentDeltaFromList(intents: string[], currentTrust: number): IntentStateDelta {
-  const normalized = intents.map(normalizeIntentToken);
-  const has = (patterns: string[]) => normalized.some((intent) => patterns.some((pattern) => intent.includes(pattern)));
-  const hostile = has(["hostile", "abusive", "abuse", "tox", "insult", "агресс", "оскорб"]);
-  const rude = has(["rude", "negative", "frustrat", "complain", "груб", "негатив", "раздраж"]);
-  const gratitude = has(["gratitude", "thanks", "appreciat", "praise", "благодар", "спасибо"]);
-  const selfDisclosure = has(["self_disclosure", "preference_shared", "fact_shared", "goal_shared", "memory_store"]);
-  const confused = has(["confused", "uncertain", "clarif", "question"]);
-  const disengaged = has(["disengaged", "bored", "offtopic", "silent"]);
-  const bonding = has(["bonding", "connection", "closeness", "supportive", "vulnerability_shared"]);
-  const mentoring = has(["mentor", "coaching", "teaching"]);
-  const playfulBond = has(["playful_banter", "flirting_light", "joking"]);
-  const romanticCue = has(["romantic", "affection", "flirt", "intimate"]);
-
-  let trust = 0;
-  let engagement = 0;
-  let energy = 0;
-  let relationshipDepth = 0;
-  let relationshipType: RelationshipType | undefined;
-  let mood: PersonaRuntimeState["mood"] | undefined;
-
-  if (hostile) {
-    trust -= 16;
-    engagement -= 10;
-    energy -= 6;
-    relationshipDepth -= 12;
-    relationshipType = "neutral";
-    mood = "angry";
-  } else if (rude) {
-    trust -= 9;
-    engagement -= 6;
-    energy -= 3;
-    relationshipDepth -= 7;
-    mood = currentTrust <= 32 ? "upset" : "annoyed";
-  }
-
-  if (gratitude) {
-    trust += 7;
-    engagement += 4;
-    relationshipDepth += 4;
-    if (!mood && currentTrust >= 52) {
-      mood = "warm";
-    }
-  }
-
-  if (selfDisclosure) {
-    trust += 2;
-    engagement += 3;
-    relationshipDepth += 5;
-  }
-
-  if (confused) {
-    engagement += 2;
-  }
-
-  if (disengaged) {
-    engagement -= 6;
-    relationshipDepth -= 3;
-    if (!mood) {
-      mood = "calm";
-    }
-  }
-
-  if (bonding) {
-    relationshipDepth += 6;
-    relationshipType = relationshipType ?? "friendship";
-  }
-  if (mentoring) {
-    relationshipType = "mentor";
-    relationshipDepth += 2;
-  }
-  if (playfulBond) {
-    relationshipType = relationshipType ?? "playful";
-    relationshipDepth += 2;
-  }
-  if (romanticCue) {
-    relationshipType = "romantic";
-    relationshipDepth += 4;
-  }
-
-  return { trust, engagement, energy, mood, relationshipDepth, relationshipType };
-}
-
 function normalizeState(state: PersonaRuntimeState, personaId: string, chatId: string): PersonaRuntimeState {
   const rawType = (state as Partial<PersonaRuntimeState>).relationshipType;
   const rawDepth = (state as Partial<PersonaRuntimeState>).relationshipDepth;
@@ -283,17 +184,6 @@ export function ensurePersonaState(
 ): PersonaRuntimeState {
   if (!state) return createInitialPersonaState(persona, chatId);
   return normalizeState(state, persona.id, chatId);
-}
-
-function nextMood(persona: Persona, trust: number, engagement: number) {
-  const baseline = persona.advanced.emotion.baselineMood;
-  if (trust <= 14) return "angry";
-  if (trust <= 28) return "upset";
-  if (trust <= 44) return "annoyed";
-  if (trust >= 72 && engagement >= 60) return "warm";
-  if (engagement >= 78 && persona.advanced.behavior.creativity >= 60) return "inspired";
-  if (persona.advanced.behavior.directness >= 70) return "focused";
-  return baseline;
 }
 
 import { calculateStateEvolution } from "./personaBehaviors";
@@ -380,16 +270,6 @@ function clampDelta(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
-function isHostileUserMessage(text: string | undefined) {
-  const lower = (text ?? "").toLowerCase();
-  return /(туп|идиот|ненавиж|бесишь|пош[её]л|дебил|агресс|оскорб|fuck|stupid|hate|idiot)/i.test(lower);
-}
-
-function isSupportiveUserMessage(text: string | undefined) {
-  const lower = (text ?? "").toLowerCase();
-  return /(спасибо|благодар|класс|отлично|хорошо|супер|great|thanks|awesome)/i.test(lower);
-}
-
 function sanitizeTopicList(topics: unknown) {
   if (!Array.isArray(topics)) return [];
   return topics.filter((item): item is string => typeof item === "string").slice(0, 8);
@@ -434,23 +314,10 @@ export function applyPersonaControlProposal({
   const intents = Array.isArray(control.intents)
     ? control.intents.filter((intent): intent is string => typeof intent === "string").slice(0, 12)
     : [];
-  const intentDelta = intentDeltaFromList(intents, baseState.trust);
-  const hostileUser = isHostileUserMessage(userMessage);
-  const supportiveUser = isSupportiveUserMessage(userMessage);
-
-  const rawTrustDelta =
-    clampDelta(stateDelta.trust ?? 0, -28, 14) + clampDelta(intentDelta.trust, -18, 10);
-  const trustDelta = hostileUser ? rawTrustDelta : Math.max(rawTrustDelta, supportiveUser ? 0 : -2);
-
-  const rawEngagementDelta =
-    clampDelta(stateDelta.engagement ?? 0, -28, 15) + clampDelta(intentDelta.engagement, -14, 9);
-  const engagementDelta = hostileUser ? rawEngagementDelta : Math.max(rawEngagementDelta, -3);
-
-  const rawRelationshipDepthDelta =
-    clampDelta(stateDelta.relationshipDepth ?? 0, -18, 14) + clampDelta(intentDelta.relationshipDepth, -14, 10);
-  const relationshipDepthDelta = hostileUser
-    ? rawRelationshipDepthDelta
-    : Math.max(rawRelationshipDepthDelta, supportiveUser ? 0 : -2);
+  const trustDelta = clampDelta(stateDelta.trust ?? 0, -8, 6);
+  const engagementDelta = clampDelta(stateDelta.engagement ?? 0, -8, 8);
+  const energyDelta = clampDelta(stateDelta.energy ?? 0, -10, 10);
+  const relationshipDepthDelta = clampDelta(stateDelta.relationshipDepth ?? 0, -6, 6);
 
   const nextTrust = clamp(
     baseState.trust + trustDelta,
@@ -463,7 +330,7 @@ export function applyPersonaControlProposal({
     100,
   );
   const nextEnergy = clamp(
-    baseState.energy + clampDelta(stateDelta.energy ?? 0, -22, 16) + clampDelta(intentDelta.energy, -9, 6),
+    baseState.energy + energyDelta,
     0,
     100,
   );
@@ -474,16 +341,7 @@ export function applyPersonaControlProposal({
   );
 
   const proposedMood = stateDelta.mood;
-  const mood =
-    (isValidMood(proposedMood) ? proposedMood : undefined) ??
-    intentDelta.mood ??
-    nextMood(persona, nextTrust, nextEngagement);
-  const safeMood =
-    !hostileUser && (mood === "angry" || mood === "upset")
-      ? nextTrust >= 55
-        ? "warm"
-        : "calm"
-      : mood;
+  const mood = (isValidMood(proposedMood) ? proposedMood : undefined) ?? baseState.mood;
   const proposedStage = stateDelta.relationshipStage;
   if (isValidRelationshipStage(proposedStage)) {
     nextRelationshipDepth = alignDepthToStage(nextRelationshipDepth, proposedStage);
@@ -493,10 +351,7 @@ export function applyPersonaControlProposal({
     : relationshipStageFromDepth(nextRelationshipDepth);
   const relationshipType = isValidRelationshipType(stateDelta.relationshipType)
     ? stateDelta.relationshipType
-    : intentDelta.relationshipType ?? baseState.relationshipType;
-  const safeRelationshipType = !hostileUser && relationshipType === "neutral" && supportiveUser
-    ? baseState.relationshipType
-    : relationshipType;
+    : baseState.relationshipType;
 
   const addTopics = sanitizeTopicList(stateDelta.activeTopicsAdd);
   const activeTopics = normalizeTopics([...baseState.activeTopics, ...addTopics]).slice(-8);
@@ -506,9 +361,9 @@ export function applyPersonaControlProposal({
     trust: nextTrust,
     engagement: nextEngagement,
     energy: nextEnergy,
-    relationshipType: safeRelationshipType,
+    relationshipType,
     relationshipDepth: nextRelationshipDepth,
-    mood: safeMood,
+    mood,
     relationshipStage,
     activeTopics,
     updatedAt: new Date().toISOString(),
