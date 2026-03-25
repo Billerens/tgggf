@@ -10,6 +10,7 @@ type ControlMemoryRemoveItem = NonNullable<PersonaControlPayload["memory_remove"
 export interface AssistantContentParts {
   visibleText: string;
   comfyPrompt?: string;
+  comfyPrompts?: string[];
   personaControl?: PersonaControlPayload;
 }
 
@@ -270,13 +271,13 @@ function normalizePersonaControl(input: unknown): PersonaControlPayload | undefi
 }
 
 export function splitAssistantContent(rawContent: string): AssistantContentParts {
-  let comfyPrompt: string | undefined;
+  const comfyPrompts: string[] = [];
   let personaControl: PersonaControlPayload | undefined;
   const visibleText = rawContent
     .replace(COMFY_UI_PROMPT_BLOCK_REGEX, (_, inner: string) => {
       const candidate = inner.trim();
-      if (!comfyPrompt && candidate) {
-        comfyPrompt = candidate;
+      if (candidate) {
+        comfyPrompts.push(candidate);
       }
       return "";
     })
@@ -290,5 +291,10 @@ export function splitAssistantContent(rawContent: string): AssistantContentParts
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  return { visibleText, comfyPrompt, personaControl };
+  return {
+    visibleText,
+    comfyPrompt: comfyPrompts[0],
+    comfyPrompts: comfyPrompts.length > 0 ? comfyPrompts : undefined,
+    personaControl,
+  };
 }

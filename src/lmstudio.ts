@@ -95,25 +95,10 @@ function relationshipExpressionRule(state: PersonaRuntimeState | undefined) {
   return `Отношения: type=${state.relationshipType}, depth=${state.relationshipDepth}, stage=${state.relationshipStage}. ${typeRule[state.relationshipType]} ${depthRule}`;
 }
 
-const ROLEPLAY_HINT_REGEX =
-  /(role[\s-]?play|ролепл|ролев|отыгр|играем\s+роль|сценк|\bрп\b)/i;
 const IMAGE_REQUEST_HINT_REGEX =
   /(картин|изображен|фото|фотк|рисунк|арт|иллюстрац|покажи\s+как\s+выгляд|visual|image|picture|draw|render)/i;
 const IMAGE_DENY_HINT_REGEX =
   /(без\s+картин|не\s+рисуй|без\s+изображ|no\s+image|text\s+only)/i;
-
-function isRoleplayAllowed(
-  recentMessages: ChatCompletionContext["recentMessages"],
-  userInput: string,
-) {
-  const userLines = [
-    ...(recentMessages ?? [])
-      .filter((message) => message.role === "user")
-      .map((message) => message.content),
-    userInput,
-  ].slice(-8);
-  return userLines.some((line) => ROLEPLAY_HINT_REGEX.test(line));
-}
 
 function isImagePromptAllowed(
   recentMessages: ChatCompletionContext["recentMessages"],
@@ -129,15 +114,8 @@ function isImagePromptAllowed(
   return false;
 }
 
-function sanitizeAssistantText(content: string, allowRoleplay: boolean) {
-  if (allowRoleplay || !content) return content;
-  const stripped = content
-    .replace(/(^|[\s>])\*[^*\n]{1,140}\*(?=$|[\s.,!?;:])/gm, "$1")
-    .replace(/(^|[\s>])_[^_\n]{1,140}_(?=$|[\s.,!?;:])/gm, "$1")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]{2,}/g, " ")
-    .trim();
-  return stripped || content;
+function sanitizeAssistantText(content: string) {
+  return content;
 }
 
 function formatRecentMessages(
@@ -164,7 +142,6 @@ export function buildSystemPrompt(
   persona: Persona,
   settings: Pick<AppSettings, "userGender">,
   context?: ChatCompletionContext,
-  roleplayAllowed = false,
 ) {
   const runtimeState = context?.runtimeState;
   const advanced = persona.advanced;
@@ -183,13 +160,11 @@ export function buildSystemPrompt(
     "Это текстовый чат, а не физическая реальность.",
     "Не описывай физические действия/жесты/прикосновения как реально происходящие в мире.",
     "Не заявляй, что ты что-то видишь, слышишь или находишься рядом, если это не дано в тексте.",
-    roleplayAllowed
-      ? "Roleplay разрешён, так как пользователь явно запросил его в текущем диалоге."
-      : "Roleplay выключен. Не используй ремарки действий в *...* и не отыгрывай сцену.",
+    "Roleplay формат сообщений разрешён, только если пользователь явно запросил его в текущем диалоге или памяти.",
     "По умолчанию отвечай только текстом.",
     "Добавляй изображение только когда пользователь явно просит картинку/визуализацию.",
     "Не добавляй изображение в small talk и приветствиях.",
-    "Если изображение нужно, добавь ровно один блок:",
+    "Если изображения нужны, добавь по одному блоку для каждого изображения (если их несколько) или один (если изображение нужно одно):",
     "<comfyui_prompt>",
     "detailed prompt in English",
     "</comfyui_prompt>",
@@ -267,6 +242,7 @@ export function buildSystemPrompt(
 interface NativeChatResult {
   content: string;
   comfyPrompt?: string;
+  comfyPrompts?: string[];
   personaControl?: PersonaControlPayload;
   responseId?: string;
 }
@@ -278,7 +254,6 @@ export async function requestChatCompletion(
   previousResponseId?: string,
   context?: ChatCompletionContext,
 ): Promise<NativeChatResult> {
-  const roleplayAllowed = isRoleplayAllowed(context?.recentMessages, userInput);
   const imagePromptAllowed = isImagePromptAllowed(
     context?.recentMessages,
     userInput,
@@ -289,12 +264,7 @@ export async function requestChatCompletion(
   const payload: Record<string, unknown> = {
     model: settings.model,
     input: formatRecentMessages(context?.recentMessages, userInput),
-    system_prompt: buildSystemPrompt(
-      persona,
-      settings,
-      context,
-      roleplayAllowed,
-    ),
+    system_prompt: buildSystemPrompt(persona, settings, context),
     max_output_tokens: settings.maxTokens,
     temperature: settings.temperature,
     store: true,
@@ -327,28 +297,37 @@ export async function requestChatCompletion(
     .map((item) => item.content?.trim() ?? "")
     .filter(Boolean);
   const rawContent = messageChunks.join("\n\n");
-  const { visibleText, comfyPrompt, personaControl } =
+  const { visibleText, comfyPrompt, comfyPrompts, personaControl } =
     splitAssistantContent(rawContent);
-  const sanitizedContent = sanitizeAssistantText(visibleText, roleplayAllowed);
-  const sanitizedComfyPrompt = imagePromptAllowed ? comfyPrompt : undefined;
+  const sanitizedContent = sanitizeAssistantText(visibleText);
+  const sanitizedComfyPrompts = imagePromptAllowed
+    ? comfyPrompts && comfyPrompts.length > 0
+      ? comfyPrompts
+      : comfyPrompt
+        ? [comfyPrompt]
+        : []
+    : [];
+  const sanitizedComfyPrompt = sanitizedComfyPrompts[0];
   const filteredImageOnlyResponse =
     !sanitizedContent &&
-    !sanitizedComfyPrompt &&
+    sanitizedComfyPrompts.length === 0 &&
     !personaControl &&
-    Boolean(comfyPrompt) &&
+    Boolean(comfyPrompt || (comfyPrompts && comfyPrompts.length > 0)) &&
     !imagePromptAllowed;
   const fallbackContent = filteredImageOnlyResponse
     ? "Могу отправить изображение по явному запросу. Опиши, что именно нужно сгенерировать."
     : "";
   const finalContent = sanitizedContent || fallbackContent;
 
-  if (!finalContent && !sanitizedComfyPrompt && !personaControl) {
+  if (!finalContent && sanitizedComfyPrompts.length === 0 && !personaControl) {
     throw new Error("LMStudio returned an empty response.");
   }
 
   return {
     content: finalContent,
     comfyPrompt: sanitizedComfyPrompt,
+    comfyPrompts:
+      sanitizedComfyPrompts.length > 0 ? sanitizedComfyPrompts : undefined,
     personaControl,
     responseId: data.response_id,
   };

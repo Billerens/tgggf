@@ -3,12 +3,26 @@ import type {
   NativeChatResponse,
   Persona,
   PersonaAdvancedProfile,
-  PersonaSelfGender,
   PersonaRuntimeState,
 } from "./types";
-import type { LayeredMemoryContextCard, PersonaControlPayload } from "./personaDynamics";
-import { buildAdvancedProfileFromLegacy, normalizeAdvancedProfile } from "./personaProfiles";
+import type {
+  LayeredMemoryContextCard,
+  PersonaControlPayload,
+} from "./personaDynamics";
+import {
+  buildAdvancedProfileFromLegacy,
+  normalizeAdvancedProfile,
+} from "./personaProfiles";
 import { splitAssistantContent } from "./messageContent";
+import {
+  getToneUsageExamples,
+  getExpressivenessBehavior,
+  getDirectnessBehavior,
+  getHumanizedMoodResponse,
+  formatMemoryContextWithUsage,
+  getValuesImplementation,
+  getSocialInteractionRules,
+} from "./personaBehaviors";
 
 export interface ChatCompletionContext {
   runtimeState?: PersonaRuntimeState;
@@ -16,10 +30,18 @@ export interface ChatCompletionContext {
   recentMessages?: Array<{ role: "user" | "assistant"; content: string }>;
 }
 
-function sentenceLengthRule(sentenceLength: Persona["advanced"]["voice"]["sentenceLength"]) {
-  if (sentenceLength === "short") return "Пиши короткими фразами и абзацами.";
-  if (sentenceLength === "long") return "Допустимы более развёрнутые абзацы с объяснениями.";
-  return "Используй сбалансированную длину фраз.";
+function sentenceLengthRule(
+  sentenceLength: Persona["advanced"]["voice"]["sentenceLength"],
+  expressiveness: number,
+) {
+  let base = "Используй сбалансированную длину фраз.";
+  if (sentenceLength === "short") base = "Пиши короткими фразами и абзацами.";
+  if (sentenceLength === "long")
+    base = "Допустимы более развёрнутые абзацы с объяснениями.";
+
+  if (expressiveness >= 80)
+    return `${base} В моменты волнения или радости фразы могут становиться короче и эмоциональнее.`;
+  return base;
 }
 
 function userGenderLabel(gender: AppSettings["userGender"]) {
@@ -29,64 +51,12 @@ function userGenderLabel(gender: AppSettings["userGender"]) {
   return "не указан";
 }
 
-function inferPersonaGenderFromName(name: string): Exclude<PersonaSelfGender, "auto"> {
-  const token = name
-    .trim()
-    .split(/\s+/)
-    .at(-1)
-    ?.toLowerCase() ?? "";
-  if (!token) return "neutral";
-
-  const maleNameExceptions = new Set(["никита", "илья", "кузьма", "фома", "лука"]);
-  if (maleNameExceptions.has(token)) return "male";
-
-  if (/[ая]$/.test(token)) return "female";
-  if (/[ое]$/.test(token)) return "neutral";
-  return "male";
-}
-
-function resolvePersonaSelfGender(persona: Persona): Exclude<PersonaSelfGender, "auto"> {
-  const configured = persona.advanced.core.selfGender;
-  if (configured === "female" || configured === "male" || configured === "neutral") return configured;
-  return inferPersonaGenderFromName(persona.name);
-}
-
 function personaSelfGenderRule(persona: Persona) {
-  const selfGender = resolvePersonaSelfGender(persona);
-  if (selfGender === "female") {
-    return "Говори о себе в женском роде (например: сделала, написала, готова).";
-  }
-  if (selfGender === "male") {
-    return "Говори о себе в мужском роде (например: сделал, написал, готов).";
-  }
-  return "Используй безличные или нейтральные формулировки, избегая гендерного согласования о себе.";
+  return getSocialInteractionRules(persona);
 }
 
 function moodExpressionRule(state: PersonaRuntimeState | undefined) {
-  if (!state) {
-    return "Отражай настроение мягко, без резких скачков стиля.";
-  }
-
-  switch (state.mood) {
-    case "angry":
-      return "mood=angry: отвечай сухо и коротко, жёстко обозначай границы, без эмодзи и без дружелюбных фраз.";
-    case "upset":
-      return "mood=upset: отвечай сдержанно и прохладно, меньше инициативы, больше дистанции.";
-    case "annoyed":
-      return "mood=annoyed: отвечай более резко и лаконично, с пониженной теплотой.";
-    case "warm":
-      return "mood=warm: отвечай поддерживающе и дружелюбно.";
-    case "inspired":
-      return "mood=inspired: отвечай энергично, вовлекающе, с идеями и вариативностью.";
-    case "focused":
-      return "mood=focused: отвечай структурно, по делу, с минимальной лирикой.";
-    case "analytical":
-      return "mood=analytical: отвечай логично, с разбором и критериями.";
-    case "playful":
-      return "mood=playful: допускай лёгкий игривый тон без клоунады.";
-    default:
-      return "mood=calm: отвечай спокойно и нейтрально.";
-  }
+  return getHumanizedMoodResponse(state?.mood || "calm");
 }
 
 function energyExpressionRule(state: PersonaRuntimeState | undefined) {
@@ -115,20 +85,27 @@ function relationshipExpressionRule(state: PersonaRuntimeState | undefined) {
 
   const depth = state.relationshipDepth;
   let depthRule = "Держи умеренную дистанцию.";
-  if (depth >= 85) depthRule = "Можно говорить максимально доверительно и тепло.";
+  if (depth >= 85)
+    depthRule = "Можно говорить максимально доверительно и тепло.";
   else if (depth >= 65) depthRule = "Можно общаться заметно ближе обычного.";
   else if (depth >= 45) depthRule = "Допустим дружеский персональный тон.";
-  else if (depth >= 25) depthRule = "Лёгкая персонализация без излишней интимности.";
+  else if (depth >= 25)
+    depthRule = "Лёгкая персонализация без излишней интимности.";
 
   return `Отношения: type=${state.relationshipType}, depth=${state.relationshipDepth}, stage=${state.relationshipStage}. ${typeRule[state.relationshipType]} ${depthRule}`;
 }
 
-const ROLEPLAY_HINT_REGEX = /(role[\s-]?play|ролепл|ролев|отыгр|играем\s+роль|сценк|\bрп\b)/i;
+const ROLEPLAY_HINT_REGEX =
+  /(role[\s-]?play|ролепл|ролев|отыгр|играем\s+роль|сценк|\bрп\b)/i;
 const IMAGE_REQUEST_HINT_REGEX =
   /(картин|изображен|фото|фотк|рисунк|арт|иллюстрац|покажи\s+как\s+выгляд|visual|image|picture|draw|render)/i;
-const IMAGE_DENY_HINT_REGEX = /(без\s+картин|не\s+рисуй|без\s+изображ|no\s+image|text\s+only)/i;
+const IMAGE_DENY_HINT_REGEX =
+  /(без\s+картин|не\s+рисуй|без\s+изображ|no\s+image|text\s+only)/i;
 
-function isRoleplayAllowed(recentMessages: ChatCompletionContext["recentMessages"], userInput: string) {
+function isRoleplayAllowed(
+  recentMessages: ChatCompletionContext["recentMessages"],
+  userInput: string,
+) {
   const userLines = [
     ...(recentMessages ?? [])
       .filter((message) => message.role === "user")
@@ -138,7 +115,10 @@ function isRoleplayAllowed(recentMessages: ChatCompletionContext["recentMessages
   return userLines.some((line) => ROLEPLAY_HINT_REGEX.test(line));
 }
 
-function isImagePromptAllowed(recentMessages: ChatCompletionContext["recentMessages"], userInput: string) {
+function isImagePromptAllowed(
+  recentMessages: ChatCompletionContext["recentMessages"],
+  userInput: string,
+) {
   void recentMessages;
 
   const latest = userInput.trim();
@@ -160,38 +140,6 @@ function sanitizeAssistantText(content: string, allowRoleplay: boolean) {
   return stripped || content;
 }
 
-function formatMemoryCardLines(memoryCard: LayeredMemoryContextCard | undefined) {
-  if (!memoryCard) {
-    return [
-      "Short-term:",
-      "- (нет)",
-      "Episodic:",
-      "- (нет)",
-      "Long-term:",
-      "- (нет)",
-    ];
-  }
-
-  const shortTerm = memoryCard.shortTerm.length > 0 ? memoryCard.shortTerm : ["(нет)"];
-  const episodic =
-    memoryCard.episodic.length > 0
-      ? memoryCard.episodic.map((memory) => `${memory.kind}: ${memory.content}`)
-      : ["(нет)"];
-  const longTerm =
-    memoryCard.longTerm.length > 0
-      ? memoryCard.longTerm.map((memory) => `${memory.kind}: ${memory.content}`)
-      : ["(нет)"];
-
-  return [
-    "Short-term:",
-    ...shortTerm.map((line) => `- ${line}`),
-    "Episodic:",
-    ...episodic.map((line) => `- ${line}`),
-    "Long-term:",
-    ...longTerm.map((line) => `- ${line}`),
-  ];
-}
-
 function formatRecentMessages(
   recentMessages: ChatCompletionContext["recentMessages"] | undefined,
   userInput: string,
@@ -200,7 +148,10 @@ function formatRecentMessages(
 
   const lines = [
     "КОНТЕКСТ ПОСЛЕДНИХ РЕПЛИК:",
-    ...recentMessages.map((message) => `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content}`),
+    ...recentMessages.map(
+      (message) =>
+        `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content}`,
+    ),
     "",
     "ТЕКУЩЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:",
     userInput,
@@ -217,7 +168,13 @@ export function buildSystemPrompt(
 ) {
   const runtimeState = context?.runtimeState;
   const advanced = persona.advanced;
-  const memoryLines = formatMemoryCardLines(context?.memoryCard);
+
+  const memories = [
+    ...(context?.memoryCard?.shortTerm || []),
+    ...(context?.memoryCard?.episodic.map((m) => m.content) || []),
+    ...(context?.memoryCard?.longTerm.map((m) => m.content) || []),
+  ];
+  const memoryContext = formatMemoryContextWithUsage(memories);
 
   return [
     "=== HARD CONSTRAINTS ===",
@@ -254,55 +211,55 @@ export function buildSystemPrompt(
     "=== PERSONA CORE ===",
     `Имя: ${persona.name}`,
     `Архетип: ${advanced.core.archetype}`,
-    `Legacy-характер: ${persona.personalityPrompt || "Не указан."}`,
-    `Legacy-внешность: ${persona.appearancePrompt || "Не указано."}`,
-    `Legacy-стиль: ${persona.stylePrompt || "Не указан."}`,
+    `Характер: ${persona.personalityPrompt || "Не указан."}`,
+    `Внешность: ${persona.appearancePrompt || "Не указано."}`,
     `Предыстория: ${advanced.core.backstory || "Не задана."}`,
     `Цели: ${advanced.core.goals}`,
-    `Ценности: ${advanced.core.values}`,
+    getValuesImplementation(
+      advanced.core.values
+        .split(",")
+        .map((v) => v.trim())
+        .filter(Boolean),
+    ),
     `Границы: ${advanced.core.boundaries}`,
     `Экспертиза: ${advanced.core.expertise}`,
     "",
     "=== VOICE & BEHAVIOR ===",
-    `Тон: ${advanced.voice.tone}`,
-    `Лексика: ${advanced.voice.lexicalStyle}`,
-    sentenceLengthRule(advanced.voice.sentenceLength),
+    `Тон: ${advanced.voice.tone}. ${getToneUsageExamples(advanced.voice.tone)}`,
+    `Стиль лексики: ${advanced.voice.lexicalStyle}`,
+    sentenceLengthRule(
+      advanced.voice.sentenceLength,
+      advanced.voice.expressiveness,
+    ),
     `Формальность: ${advanced.voice.formality}/100`,
-    `Экспрессивность: ${advanced.voice.expressiveness}/100`,
+    getExpressivenessBehavior(advanced.voice.expressiveness),
     `Эмодзи: ${advanced.voice.emoji}/100`,
     `Инициативность: ${advanced.behavior.initiative}/100`,
     `Эмпатия: ${advanced.behavior.empathy}/100`,
-    `Прямота: ${advanced.behavior.directness}/100`,
+    getDirectnessBehavior(advanced.behavior.directness),
     `Любопытство: ${advanced.behavior.curiosity}/100`,
-    `Сложные вопросы: ${advanced.behavior.challenge}/100`,
     `Креативность: ${advanced.behavior.creativity}/100`,
     "",
     "=== EMOTION & RUNTIME ===",
     `Базовое настроение: ${advanced.emotion.baselineMood}`,
     `Теплота: ${advanced.emotion.warmth}/100`,
     `Стабильность: ${advanced.emotion.stability}/100`,
-    `Позитивные триггеры: ${advanced.emotion.positiveTriggers}`,
-    `Негативные триггеры: ${advanced.emotion.negativeTriggers}`,
     runtimeState
-      ? `Текущее состояние: mood=${runtimeState.mood}; trust=${runtimeState.trust}; energy=${runtimeState.energy}; engagement=${runtimeState.engagement}; relationshipType=${runtimeState.relationshipType}; relationshipDepth=${runtimeState.relationshipDepth}; stage=${runtimeState.relationshipStage}; topics=${runtimeState.activeTopics.join(", ") || "-"}.`
+      ? `Текущее состояние: mood=${runtimeState.mood}; trust=${runtimeState.trust}; energy=${runtimeState.energy}; engagement=${runtimeState.engagement}; relationshipType=${runtimeState.relationshipType}; relationshipDepth=${runtimeState.relationshipDepth}; stage=${runtimeState.relationshipStage}.`
       : "Текущее состояние: нет данных, начни нейтрально-тепло.",
     "",
     "=== MEMORY CONTEXT ===",
-    "Используй слои памяти с приоритетом: short-term > episodic > long-term.",
-    ...memoryLines,
+    memoryContext,
     "",
     "=== RESPONSE POLICY ===",
     "Сохраняй консистентность характера между ответами.",
-    "Обязательно отражай текущее состояние/настроение в стиле ответа.",
     moodExpressionRule(runtimeState),
     energyExpressionRule(runtimeState),
     relationshipExpressionRule(runtimeState),
     "Если вопрос неясен, задай 1 уточняющий вопрос.",
-    "Для сложных задач давай структурированный ответ с шагами.",
     personaSelfGenderRule(persona),
     `Пол пользователя: ${userGenderLabel(settings.userGender)}.`,
-    "Если пол задан, учитывай его в обращении и согласовании форм.",
-    "Если пол не указан, используй нейтральные формулировки.",
+    "Учитывай пол пользователя в обращении и согласовании форм.",
     "Не показывай persona_control пользователю как часть обычного текста.",
   ].join("\n");
 }
@@ -322,14 +279,22 @@ export async function requestChatCompletion(
   context?: ChatCompletionContext,
 ): Promise<NativeChatResult> {
   const roleplayAllowed = isRoleplayAllowed(context?.recentMessages, userInput);
-  const imagePromptAllowed = isImagePromptAllowed(context?.recentMessages, userInput);
+  const imagePromptAllowed = isImagePromptAllowed(
+    context?.recentMessages,
+    userInput,
+  );
   const baseUrl = settings.lmBaseUrl.replace(/\/+$/, "");
   const endpoint = `${baseUrl}/api/v1/chat`;
 
   const payload: Record<string, unknown> = {
     model: settings.model,
     input: formatRecentMessages(context?.recentMessages, userInput),
-    system_prompt: buildSystemPrompt(persona, settings, context, roleplayAllowed),
+    system_prompt: buildSystemPrompt(
+      persona,
+      settings,
+      context,
+      roleplayAllowed,
+    ),
     max_output_tokens: settings.maxTokens,
     temperature: settings.temperature,
     store: true,
@@ -338,7 +303,9 @@ export async function requestChatCompletion(
     payload.previous_response_id = previousResponseId;
   }
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
   if (settings.apiKey.trim()) {
     headers.Authorization = `Bearer ${settings.apiKey.trim()}`;
   }
@@ -360,11 +327,16 @@ export async function requestChatCompletion(
     .map((item) => item.content?.trim() ?? "")
     .filter(Boolean);
   const rawContent = messageChunks.join("\n\n");
-  const { visibleText, comfyPrompt, personaControl } = splitAssistantContent(rawContent);
+  const { visibleText, comfyPrompt, personaControl } =
+    splitAssistantContent(rawContent);
   const sanitizedContent = sanitizeAssistantText(visibleText, roleplayAllowed);
   const sanitizedComfyPrompt = imagePromptAllowed ? comfyPrompt : undefined;
   const filteredImageOnlyResponse =
-    !sanitizedContent && !sanitizedComfyPrompt && !personaControl && Boolean(comfyPrompt) && !imagePromptAllowed;
+    !sanitizedContent &&
+    !sanitizedComfyPrompt &&
+    !personaControl &&
+    Boolean(comfyPrompt) &&
+    !imagePromptAllowed;
   const fallbackContent = filteredImageOnlyResponse
     ? "Могу отправить изображение по явному запросу. Опиши, что именно нужно сгенерировать."
     : "";
@@ -433,7 +405,9 @@ function parseModelKeys(data: unknown): string[] {
   return [];
 }
 
-export async function listModels(settings: Pick<AppSettings, "lmBaseUrl" | "apiKey">) {
+export async function listModels(
+  settings: Pick<AppSettings, "lmBaseUrl" | "apiKey">,
+) {
   const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
   const headers = authHeaders(settings.apiKey);
 
@@ -482,11 +456,17 @@ function normalizeGeneratedPersonas(data: unknown): GeneratedPersonaDraft[] {
       const rec = item as Record<string, unknown>;
       const name = typeof rec.name === "string" ? rec.name.trim() : "";
       const personalityPrompt =
-        typeof rec.personalityPrompt === "string" ? rec.personalityPrompt.trim() : "";
+        typeof rec.personalityPrompt === "string"
+          ? rec.personalityPrompt.trim()
+          : "";
       const appearancePrompt =
-        typeof rec.appearancePrompt === "string" ? rec.appearancePrompt.trim() : "";
-      const stylePrompt = typeof rec.stylePrompt === "string" ? rec.stylePrompt.trim() : "";
-      const avatarUrl = typeof rec.avatarUrl === "string" ? rec.avatarUrl.trim() : "";
+        typeof rec.appearancePrompt === "string"
+          ? rec.appearancePrompt.trim()
+          : "";
+      const stylePrompt =
+        typeof rec.stylePrompt === "string" ? rec.stylePrompt.trim() : "";
+      const avatarUrl =
+        typeof rec.avatarUrl === "string" ? rec.avatarUrl.trim() : "";
       const advancedRaw =
         rec.advanced && typeof rec.advanced === "object"
           ? (rec.advanced as Partial<PersonaAdvancedProfile>)
@@ -500,7 +480,14 @@ function normalizeGeneratedPersonas(data: unknown): GeneratedPersonaDraft[] {
           }),
       );
 
-      return { name, personalityPrompt, appearancePrompt, stylePrompt, advanced, avatarUrl };
+      return {
+        name,
+        personalityPrompt,
+        appearancePrompt,
+        stylePrompt,
+        advanced,
+        avatarUrl,
+      };
     })
     .filter((v): v is GeneratedPersonaDraft => Boolean(v));
 }
@@ -532,7 +519,7 @@ export async function generatePersonaDrafts(
   const input = [
     `Сгенерируй ${safeCount} разных персонажей.`,
     `Тема/контекст: ${theme || "универсальный собеседник"}.`,
-    "У каждого должен быть уникальный характер, внешность и стиль речи.",
+    "У каждого должен быть уникальный характер, внешность и стиль речи и другие параметры.",
   ].join("\n");
 
   const response = await fetch(endpoint, {
@@ -550,7 +537,9 @@ export async function generatePersonaDrafts(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Ошибка генерации персонажей (${response.status}): ${body}`);
+    throw new Error(
+      `Ошибка генерации персонажей (${response.status}): ${body}`,
+    );
   }
 
   const data = (await response.json()) as NativeChatResponse;

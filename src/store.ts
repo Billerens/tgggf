@@ -408,6 +408,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         role: "assistant",
         content: answer.content,
         comfyPrompt: answer.comfyPrompt,
+        comfyPrompts: answer.comfyPrompts,
         personaControlRaw: answer.personaControl ? JSON.stringify(answer.personaControl) : undefined,
         createdAt: nowIso(),
       };

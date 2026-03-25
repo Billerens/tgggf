@@ -234,25 +234,39 @@ export function ChatPane({
               ? splitAssistantContent(msg.content)
               : { visibleText: msg.content };
           const textToRender = parsed.visibleText;
-          const comfyPromptToRender =
-            msg.role === "assistant" && showSystemImageBlock ? msg.comfyPrompt || parsed.comfyPrompt : undefined;
+          const comfyPromptsToRender =
+            msg.role === "assistant" && showSystemImageBlock
+              ? (() => {
+                  const next = [
+                    ...(msg.comfyPrompts ?? []),
+                    ...(parsed.comfyPrompts ?? []),
+                    ...(msg.comfyPrompt ? [msg.comfyPrompt] : []),
+                    ...(parsed.comfyPrompt ? [parsed.comfyPrompt] : []),
+                  ]
+                    .map((value) => value.trim())
+                    .filter(Boolean);
+                  return Array.from(new Set(next));
+                })()
+              : [];
           const personaControlToRender =
             msg.role === "assistant" && showStatusChangeDetails
               ? parsePersonaControlRaw(msg.personaControlRaw) ?? parsed.personaControl
               : undefined;
           const statusDetails = buildStatusDetails(personaControlToRender);
 
-          if (!textToRender && !comfyPromptToRender && !statusDetails) return null;
+          if (!textToRender && comfyPromptsToRender.length === 0 && !statusDetails) return null;
 
           return (
             <article key={msg.id} className={`bubble ${msg.role}`}>
               {textToRender ? <p>{textToRender}</p> : null}
-              {comfyPromptToRender ? (
-                <section className="comfy-prompt-block" aria-label="ComfyUI prompt">
-                  <div className="comfy-prompt-head">ComfyUI prompt</div>
-                  <pre>{comfyPromptToRender}</pre>
+              {comfyPromptsToRender.map((prompt, index) => (
+                <section key={`${msg.id}-comfy-${index}`} className="comfy-prompt-block" aria-label="ComfyUI prompt">
+                  <div className="comfy-prompt-head">
+                    {comfyPromptsToRender.length > 1 ? `ComfyUI prompt #${index + 1}` : "ComfyUI prompt"}
+                  </div>
+                  <pre>{prompt}</pre>
                 </section>
-              ) : null}
+              ))}
               {statusDetails ? (
                 <section className="status-change-block" aria-label="Изменения статуса">
                   <div className="comfy-prompt-head">Изменения статуса</div>

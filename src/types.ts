@@ -96,6 +96,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   comfyPrompt?: string;
+  comfyPrompts?: string[];
   personaControlRaw?: string;
   createdAt: string;
 }
