@@ -95,25 +95,6 @@ function relationshipExpressionRule(state: PersonaRuntimeState | undefined) {
   return `Отношения: type=${state.relationshipType}, depth=${state.relationshipDepth}, stage=${state.relationshipStage}. ${typeRule[state.relationshipType]} ${depthRule}`;
 }
 
-const IMAGE_REQUEST_HINT_REGEX =
-  /(картин|изображен|фото|фотк|рисунк|арт|иллюстрац|покажи\s+как\s+выгляд|visual|image|picture|draw|render)/i;
-const IMAGE_DENY_HINT_REGEX =
-  /(без\s+картин|не\s+рисуй|без\s+изображ|no\s+image|text\s+only)/i;
-
-function isImagePromptAllowed(
-  recentMessages: ChatCompletionContext["recentMessages"],
-  userInput: string,
-) {
-  void recentMessages;
-
-  const latest = userInput.trim();
-  if (IMAGE_DENY_HINT_REGEX.test(latest)) return false;
-  if (IMAGE_REQUEST_HINT_REGEX.test(latest)) return true;
-
-  // Do not carry image mode forever. Require explicit current ask.
-  return false;
-}
-
 function sanitizeAssistantText(content: string) {
   return content;
 }
@@ -164,7 +145,7 @@ export function buildSystemPrompt(
     "По умолчанию отвечай только текстом.",
     "Добавляй изображение только когда пользователь явно просит картинку/визуализацию.",
     "Не добавляй изображение в small talk и приветствиях.",
-    "Если изображения нужны, добавь по одному блоку для каждого изображения (если их несколько) или один (если изображение нужно одно):",
+    "Если изображения нужны, добавь по одному блоку <comfyui_prompt>...</comfyui_prompt> для каждого изображения (если их несколько) или один (если изображение нужно одно):",
     "<comfyui_prompt>",
     "detailed prompt in English",
     "</comfyui_prompt>",
@@ -254,10 +235,6 @@ export async function requestChatCompletion(
   previousResponseId?: string,
   context?: ChatCompletionContext,
 ): Promise<NativeChatResult> {
-  const imagePromptAllowed = isImagePromptAllowed(
-    context?.recentMessages,
-    userInput,
-  );
   const baseUrl = settings.lmBaseUrl.replace(/\/+$/, "");
   const endpoint = `${baseUrl}/api/v1/chat`;
 
@@ -300,20 +277,18 @@ export async function requestChatCompletion(
   const { visibleText, comfyPrompt, comfyPrompts, personaControl } =
     splitAssistantContent(rawContent);
   const sanitizedContent = sanitizeAssistantText(visibleText);
-  const sanitizedComfyPrompts = imagePromptAllowed
-    ? comfyPrompts && comfyPrompts.length > 0
+  const sanitizedComfyPrompts =
+    comfyPrompts && comfyPrompts.length > 0
       ? comfyPrompts
       : comfyPrompt
         ? [comfyPrompt]
-        : []
-    : [];
+        : [];
   const sanitizedComfyPrompt = sanitizedComfyPrompts[0];
   const filteredImageOnlyResponse =
     !sanitizedContent &&
     sanitizedComfyPrompts.length === 0 &&
     !personaControl &&
-    Boolean(comfyPrompt || (comfyPrompts && comfyPrompts.length > 0)) &&
-    !imagePromptAllowed;
+    Boolean(comfyPrompt || (comfyPrompts && comfyPrompts.length > 0));
   const fallbackContent = filteredImageOnlyResponse
     ? "Могу отправить изображение по явному запросу. Опиши, что именно нужно сгенерировать."
     : "";
