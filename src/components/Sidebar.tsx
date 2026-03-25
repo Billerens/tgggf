@@ -1,4 +1,5 @@
 import { MessageCircle, Plus, Settings, Users, X } from "lucide-react";
+import { Logo } from "./Logo";
 import type { ChatSession, Persona } from "../types";
 import type { SidebarTab } from "../ui/types";
 import { formatDate } from "../ui/format";
@@ -49,9 +50,11 @@ export function Sidebar({
         </div>
         
         <div className="sidebar-header">
-          <div>
-            <h1>tg-gf</h1>
-            <p>Локальный AI-чат</p>
+          <div className="logo-container">
+            <Logo size={32} />
+            <div>
+              <p style={{ margin: 0, fontWeight: 700, fontSize: '18px', color: 'var(--text-primary)' }}>Persona Chat</p>
+            </div>
           </div>
           <div className="header-actions">
             <button type="button" onClick={onOpenPersonas} title="Управление персонами" className="icon-btn">
@@ -119,7 +122,7 @@ export function Sidebar({
                   }}
                 >
                   <strong>{persona.name}</strong>
-                  <span>{persona.stylePrompt || "Стиль не задан"}</span>
+                  <span>{persona.advanced.core.archetype || persona.stylePrompt || "Стиль не задан"}</span>
                 </div>
                 <button
                   type="button"

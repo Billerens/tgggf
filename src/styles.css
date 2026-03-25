@@ -99,12 +99,25 @@ html, body {
 }
 
 .sidebar-header h1 {
-  margin: 0; font-size: 24px; font-weight: 700;
-  background: linear-gradient(135deg, #fff, #94a3b8);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  letter-spacing: -0.02em;
+  display: none;
+}
+
+.logo-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 8px var(--accent-glow));
+  transition: transform 0.3s ease;
+}
+
+.logo:hover {
+  transform: scale(1.05);
 }
 .sidebar-header p { margin: 4px 0 0; font-size: 13px; color: var(--text-secondary); }
 
@@ -195,6 +208,49 @@ html, body {
 
 .chat-header h2 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing:-0.01em; display:flex; align-items:center; gap:12px; }
 .chat-header p { margin: 4px 0 0; font-size: 14px; color: var(--text-secondary); }
+.persona-header-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.chat-header-persona {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  user-select: none;
+}
+.chat-header-persona:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.persona-state-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 15px;
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  line-height: 1;
+}
+.state-pill svg {
+  color: var(--accent);
+}
 .mobile-menu-btn { display: none; }
 
 .messages {
@@ -310,7 +366,7 @@ button, input, select {
   background: var(--bg-surface-solid);
   color: var(--text-primary);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   outline: none;
 }
 button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 500; }
@@ -361,15 +417,84 @@ button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border
 
 .form { display: flex; flex-direction: column; gap: 20px; padding: 24px; overflow-y: auto;}
 .form h4 { margin:0; font-size: 16px;}
+.persona-section {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.015);
+}
+.persona-section h5 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+}
+.slider-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.slider-field input[type="range"] {
+  width: 100%;
+}
+.checkbox-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-primary);
+}
+.checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
 label { display: flex; flex-direction: column; gap: 8px; font-size: 14px; font-weight: 500; color: var(--text-secondary); }
 input, select, .form textarea { 
   padding: 12px 16px; 
-  background: rgba(255,255,255,0.02); 
+  background: rgba(255, 255, 255, 0.03); 
   border: 1px solid var(--border-light); 
   border-radius: var(--radius-sm); 
   font-family: inherit;
   color: var(--text-primary);
   line-height: 1.5;
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.select-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  flex: 1;
+}
+
+.select-container select {
+  appearance: none;
+  width: 100%;
+  padding-right: 40px;
+}
+
+.select-icon {
+  position: absolute;
+  right: 12px;
+  pointer-events: none;
+  color: var(--text-secondary);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s ease;
+}
+
+.select-container:focus-within .select-icon {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+select option {
+  background-color: var(--bg-surface-solid);
+  color: var(--text-primary);
 }
 .form textarea {
   resize: vertical;
@@ -405,9 +530,25 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
 }
 .comfy-prompt-head { font-size: 11px; font-weight:700; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; }
 .comfy-prompt-block pre { margin: 0; font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all; }
+.status-change-block {
+  margin-top: 12px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+}
+.status-change-block pre {
+  margin: 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 /* Responsive / Mobile (Dock & Bottom Sheet) */
 @media (max-width: 768px) {
+  .mobile-hide { display: none; }
   .messenger {
     display: flex; flex-direction: column;
     padding: 0; gap: 0;
@@ -422,6 +563,9 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
     border-bottom: 1px solid var(--border-light);
   }
   .chat-header h2 { font-size: 20px; }
+  .persona-header-row {
+    gap: 8px;
+  }
   
   .messages {
     padding: 20px 16px 180px; /* Space for composer and bottom nav */

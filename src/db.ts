@@ -1,5 +1,15 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
-import type { AppSettings, ChatMessage, ChatSession, Persona } from "./types";
+import { normalizeMemoryRecord } from "./personaDynamics";
+import { normalizePersonaRecord } from "./personaProfiles";
+import type {
+  AppSettings,
+  ChatMessage,
+  ChatSession,
+  Persona,
+  PersonaMemory,
+  PersonaRuntimeState,
+  UserGender,
+} from "./types";
 
 interface TgGfDb extends DBSchema {
   personas: {
@@ -16,6 +26,16 @@ interface TgGfDb extends DBSchema {
     value: ChatMessage;
     indexes: { "by-chat": string; "by-createdAt": string };
   };
+  personaStates: {
+    key: string;
+    value: PersonaRuntimeState;
+    indexes: { "by-persona": string; "by-updatedAt": string };
+  };
+  memories: {
+    key: string;
+    value: PersonaMemory;
+    indexes: { "by-chat": string; "by-persona": string; "by-updatedAt": string };
+  };
   settings: {
     key: string;
     value: AppSettings;
@@ -23,7 +43,7 @@ interface TgGfDb extends DBSchema {
 }
 
 const DB_NAME = "tg-gf-db";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
@@ -49,6 +69,12 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
 
   merged.model = merged.model.trim() || DEFAULT_SETTINGS.model;
   merged.apiKey = merged.apiKey.trim();
+  const allowedGenders: UserGender[] = ["unspecified", "male", "female", "nonbinary"];
+  if (!allowedGenders.includes(merged.userGender)) {
+    merged.userGender = DEFAULT_SETTINGS.userGender;
+  }
+  merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
+  merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
   return merged;
 }
 
@@ -58,6 +84,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   temperature: 0.7,
   maxTokens: 600,
   apiKey: "",
+  userGender: "unspecified",
+  showSystemImageBlock: true,
+  showStatusChangeDetails: false,
 };
 
 let dbPromise: Promise<IDBPDatabase<TgGfDb>> | null = null;
@@ -66,17 +95,38 @@ function getDb() {
   if (!dbPromise) {
     dbPromise = openDB<TgGfDb>(DB_NAME, DB_VERSION, {
       upgrade(db) {
-        db.createObjectStore("personas", { keyPath: "id" });
+        if (!db.objectStoreNames.contains("personas")) {
+          db.createObjectStore("personas", { keyPath: "id" });
+        }
 
-        const chats = db.createObjectStore("chats", { keyPath: "id" });
-        chats.createIndex("by-persona", "personaId");
-        chats.createIndex("by-updatedAt", "updatedAt");
+        if (!db.objectStoreNames.contains("chats")) {
+          const chats = db.createObjectStore("chats", { keyPath: "id" });
+          chats.createIndex("by-persona", "personaId");
+          chats.createIndex("by-updatedAt", "updatedAt");
+        }
 
-        const messages = db.createObjectStore("messages", { keyPath: "id" });
-        messages.createIndex("by-chat", "chatId");
-        messages.createIndex("by-createdAt", "createdAt");
+        if (!db.objectStoreNames.contains("messages")) {
+          const messages = db.createObjectStore("messages", { keyPath: "id" });
+          messages.createIndex("by-chat", "chatId");
+          messages.createIndex("by-createdAt", "createdAt");
+        }
 
-        db.createObjectStore("settings");
+        if (!db.objectStoreNames.contains("personaStates")) {
+          const personaStates = db.createObjectStore("personaStates", { keyPath: "chatId" });
+          personaStates.createIndex("by-persona", "personaId");
+          personaStates.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("memories")) {
+          const memories = db.createObjectStore("memories", { keyPath: "id" });
+          memories.createIndex("by-chat", "chatId");
+          memories.createIndex("by-persona", "personaId");
+          memories.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("settings")) {
+          db.createObjectStore("settings");
+        }
       },
     });
   }
@@ -88,18 +138,28 @@ export const dbApi = {
   async getPersonas() {
     const db = await getDb();
     const rows = await db.getAll("personas");
-    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const normalized = rows.map((row) => normalizePersonaRecord(row));
+    await Promise.all(normalized.map((row) => db.put("personas", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
   async savePersona(persona: Persona) {
     const db = await getDb();
-    await db.put("personas", persona);
+    await db.put("personas", normalizePersonaRecord(persona));
   },
 
   async deletePersona(personaId: string) {
     const db = await getDb();
-    const tx = db.transaction(["personas", "chats", "messages"], "readwrite");
+    const tx = db.transaction(["personas", "chats", "messages", "personaStates", "memories"], "readwrite");
     await tx.objectStore("personas").delete(personaId);
+    const personaStateKeys = await tx.objectStore("personaStates").index("by-persona").getAllKeys(personaId);
+    for (const key of personaStateKeys) {
+      await tx.objectStore("personaStates").delete(key);
+    }
+    const memoryKeys = await tx.objectStore("memories").index("by-persona").getAllKeys(personaId);
+    for (const key of memoryKeys) {
+      await tx.objectStore("memories").delete(key);
+    }
 
     const chats = await tx.objectStore("chats").index("by-persona").getAll(personaId);
     for (const chat of chats) {
@@ -107,6 +167,11 @@ export const dbApi = {
       const messages = await tx.objectStore("messages").index("by-chat").getAll(chat.id);
       for (const msg of messages) {
         await tx.objectStore("messages").delete(msg.id);
+      }
+      await tx.objectStore("personaStates").delete(chat.id);
+      const memories = await tx.objectStore("memories").index("by-chat").getAll(chat.id);
+      for (const memory of memories) {
+        await tx.objectStore("memories").delete(memory.id);
       }
     }
 
@@ -126,11 +191,16 @@ export const dbApi = {
 
   async deleteChat(chatId: string) {
     const db = await getDb();
-    const tx = db.transaction(["chats", "messages"], "readwrite");
+    const tx = db.transaction(["chats", "messages", "personaStates", "memories"], "readwrite");
     await tx.objectStore("chats").delete(chatId);
     const messages = await tx.objectStore("messages").index("by-chat").getAll(chatId);
     for (const msg of messages) {
       await tx.objectStore("messages").delete(msg.id);
+    }
+    await tx.objectStore("personaStates").delete(chatId);
+    const memories = await tx.objectStore("memories").index("by-chat").getAll(chatId);
+    for (const memory of memories) {
+      await tx.objectStore("memories").delete(memory.id);
     }
     await tx.done;
   },
@@ -144,6 +214,44 @@ export const dbApi = {
   async saveMessage(message: ChatMessage) {
     const db = await getDb();
     await db.put("messages", message);
+  },
+
+  async getPersonaState(chatId: string) {
+    const db = await getDb();
+    return db.get("personaStates", chatId);
+  },
+
+  async savePersonaState(state: PersonaRuntimeState) {
+    const db = await getDb();
+    await db.put("personaStates", state);
+  },
+
+  async getMemories(chatId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("memories", "by-chat", chatId);
+    const normalized = rows.map((row) => normalizeMemoryRecord(row));
+    await Promise.all(normalized.map((row) => db.put("memories", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async saveMemories(memories: PersonaMemory[]) {
+    if (memories.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("memories", "readwrite");
+    for (const memory of memories) {
+      await tx.store.put(normalizeMemoryRecord(memory));
+    }
+    await tx.done;
+  },
+
+  async deleteMemories(ids: string[]) {
+    if (ids.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("memories", "readwrite");
+    for (const memoryId of ids) {
+      await tx.store.delete(memoryId);
+    }
+    await tx.done;
   },
 
   async getSettings() {

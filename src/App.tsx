@@ -9,13 +9,15 @@ import { PersonaModal } from "./components/PersonaModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import type { Persona } from "./types";
-import { emptyPersonaDraft, type PersonaModalTab, type SidebarTab } from "./ui/types";
+import { createEmptyPersonaDraft, type PersonaModalTab, type SidebarTab } from "./ui/types";
 
 export default function App() {
   const {
     personas,
     chats,
     messages,
+    activePersonaState,
+    activeMemories,
     activePersonaId,
     activeChatId,
     settings,
@@ -39,7 +41,7 @@ export default function App() {
   const [personaModalTab, setPersonaModalTab] = useState<PersonaModalTab>("editor");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
-  const [personaDraft, setPersonaDraft] = useState(emptyPersonaDraft);
+  const [personaDraft, setPersonaDraft] = useState(createEmptyPersonaDraft);
   const [editingPersonaId, setEditingPersonaId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState("");
   const [settingsDraft, setSettingsDraft] = useState(settings);
@@ -98,6 +100,7 @@ export default function App() {
       personalityPrompt: persona.personalityPrompt,
       appearancePrompt: persona.appearancePrompt,
       stylePrompt: persona.stylePrompt,
+      advanced: persona.advanced,
       avatarUrl: persona.avatarUrl,
     });
     setShowPersonaModal(true);
@@ -109,12 +112,12 @@ export default function App() {
     if (!personaDraft.name.trim()) return;
     await savePersona({ ...personaDraft, id: editingPersonaId ?? undefined });
     setEditingPersonaId(null);
-    setPersonaDraft(emptyPersonaDraft);
+    setPersonaDraft(createEmptyPersonaDraft());
   };
 
   const onResetDraft = () => {
     setEditingPersonaId(null);
-    setPersonaDraft(emptyPersonaDraft);
+    setPersonaDraft(createEmptyPersonaDraft());
   };
 
   const onSettingsSubmit = async (event: FormEvent) => {
@@ -150,7 +153,8 @@ export default function App() {
       personalityPrompt: draft.personalityPrompt,
       appearancePrompt: draft.appearancePrompt,
       stylePrompt: draft.stylePrompt,
-      avatarUrl: "",
+      advanced: draft.advanced,
+      avatarUrl: draft.avatarUrl || "",
     });
   };
 
@@ -160,7 +164,8 @@ export default function App() {
       personalityPrompt: draft.personalityPrompt,
       appearancePrompt: draft.appearancePrompt,
       stylePrompt: draft.stylePrompt,
-      avatarUrl: "",
+      advanced: draft.advanced,
+      avatarUrl: draft.avatarUrl || "",
     });
     setEditingPersonaId(null);
     setPersonaModalTab("editor");
@@ -205,6 +210,10 @@ export default function App() {
           messageInput={messageInput}
           setMessageInput={setMessageInput}
           isLoading={isLoading}
+          activePersonaState={activePersonaState}
+          memoryCount={activeMemories.length}
+          showSystemImageBlock={settings.showSystemImageBlock}
+          showStatusChangeDetails={settings.showStatusChangeDetails}
           onDeleteChat={() => {
             if (!activeChatId) return;
             void deleteChat(activeChatId);

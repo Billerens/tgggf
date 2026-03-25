@@ -1,7 +1,20 @@
 export type ChatRole = "system" | "user" | "assistant";
-export type MoodId = "calm" | "warm" | "playful" | "focused" | "analytical" | "inspired";
-export type RelationshipStage = "new" | "familiar" | "trusted";
+export type MoodId =
+  | "calm"
+  | "warm"
+  | "playful"
+  | "focused"
+  | "analytical"
+  | "inspired"
+  | "annoyed"
+  | "upset"
+  | "angry";
+export type RelationshipStage = "new" | "acquaintance" | "friendly" | "close" | "bonded";
+export type RelationshipType = "neutral" | "friendship" | "romantic" | "mentor" | "playful";
 export type PersonaMemoryKind = "fact" | "preference" | "goal" | "event";
+export type PersonaMemoryLayer = "short_term" | "episodic" | "long_term";
+export type UserGender = "unspecified" | "male" | "female" | "nonbinary";
+export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
 
 export interface PersonaCoreProfile {
   archetype: string;
@@ -10,6 +23,7 @@ export interface PersonaCoreProfile {
   values: string;
   boundaries: string;
   expertise: string;
+  selfGender: PersonaSelfGender;
 }
 
 export interface PersonaVoiceProfile {
@@ -82,6 +96,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   comfyPrompt?: string;
+  personaControlRaw?: string;
   createdAt: string;
 }
 
@@ -92,6 +107,8 @@ export interface PersonaRuntimeState {
   trust: number;
   energy: number;
   engagement: number;
+  relationshipType: RelationshipType;
+  relationshipDepth: number;
   relationshipStage: RelationshipStage;
   activeTopics: string[];
   updatedAt: string;
@@ -101,6 +118,7 @@ export interface PersonaMemory {
   id: string;
   chatId: string;
   personaId: string;
+  layer: PersonaMemoryLayer;
   kind: PersonaMemoryKind;
   content: string;
   salience: number;
@@ -115,6 +133,9 @@ export interface AppSettings {
   temperature: number;
   maxTokens: number;
   apiKey: string;
+  userGender: UserGender;
+  showSystemImageBlock: boolean;
+  showStatusChangeDetails: boolean;
 }
 
 export interface NativeChatResponse {
