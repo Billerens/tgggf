@@ -19,10 +19,7 @@
   },
   "29": {
     "inputs": {
-      "images": [
-        "912:674",
-        0
-      ]
+      "images": ["912:674", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -150,10 +147,7 @@
   },
   "224": {
     "inputs": {
-      "images": [
-        "760",
-        0
-      ]
+      "images": ["760", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -162,10 +156,7 @@
   },
   "225": {
     "inputs": {
-      "images": [
-        "762",
-        0
-      ]
+      "images": ["762", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -174,10 +165,7 @@
   },
   "226": {
     "inputs": {
-      "images": [
-        "763",
-        0
-      ]
+      "images": ["763", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -186,10 +174,7 @@
   },
   "227": {
     "inputs": {
-      "images": [
-        "764",
-        0
-      ]
+      "images": ["764", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -198,10 +183,7 @@
   },
   "228": {
     "inputs": {
-      "images": [
-        "765",
-        0
-      ]
+      "images": ["765", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -210,10 +192,7 @@
   },
   "229": {
     "inputs": {
-      "images": [
-        "766",
-        0
-      ]
+      "images": ["766", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -222,10 +201,7 @@
   },
   "230": {
     "inputs": {
-      "images": [
-        "767",
-        0
-      ]
+      "images": ["767", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -234,10 +210,7 @@
   },
   "231": {
     "inputs": {
-      "images": [
-        "761",
-        0
-      ]
+      "images": ["761", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -247,10 +220,7 @@
   "245": {
     "inputs": {
       "text_0": "(masturbation:1.2), (Hitachi Magic Wand:1.2), solo, 1girl, pressing the wand against her panties, (vibrations visible through the fabric:1.1), wet spot forming.",
-      "text": [
-        "546:600",
-        0
-      ]
+      "text": ["546:600", 0]
     },
     "class_type": "ShowText|pysssss",
     "_meta": {
@@ -262,58 +232,22 @@
       "filename": "TXT2IMG_ADetailer_%time",
       "path": "",
       "extension": "png",
-      "steps": [
-        "910:705",
-        0
-      ],
-      "cfg": [
-        "910:706",
-        0
-      ],
-      "modelname": [
-        "282",
-        0
-      ],
-      "sampler_name": [
-        "910:708",
-        0
-      ],
-      "scheduler_name": [
-        "910:709",
-        0
-      ],
-      "positive": [
-        "996",
-        0
-      ],
-      "negative": [
-        "1073",
-        0
-      ],
-      "seed_value": [
-        "137",
-        0
-      ],
-      "width": [
-        "141",
-        0
-      ],
-      "height": [
-        "141",
-        1
-      ],
+      "steps": ["910:705", 0],
+      "cfg": ["910:706", 0],
+      "modelname": ["282", 0],
+      "sampler_name": ["910:708", 0],
+      "scheduler_name": ["910:709", 0],
+      "positive": ["996", 0],
+      "negative": ["1073", 0],
+      "seed_value": ["137", 0],
+      "width": ["141", 0],
+      "height": ["141", 1],
       "lossless_webp": true,
       "quality_jpeg_or_webp": 100,
       "optimize_png": false,
       "counter": 0,
-      "denoise": [
-        "269",
-        0
-      ],
-      "clip_skip": [
-        "144",
-        0
-      ],
+      "denoise": ["269", 0],
+      "clip_skip": ["144", 0],
       "time_format": "%Y-%m-%d-%H%M%S",
       "save_workflow_as_json": false,
       "embed_workflow": true,
@@ -322,10 +256,7 @@
       "easy_remix": true,
       "show_preview": true,
       "custom": "",
-      "images": [
-        "912:674",
-        0
-      ]
+      "images": ["912:674", 0]
     },
     "class_type": "Image Saver",
     "_meta": {
@@ -356,10 +287,7 @@
   },
   "274": {
     "inputs": {
-      "images": [
-        "687",
-        0
-      ]
+      "images": ["687", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -373,10 +301,7 @@
       "return_all": false,
       "node_title": "",
       "allowed_float_decimals": 2,
-      "any_input": [
-        "436",
-        0
-      ]
+      "any_input": ["436", 0]
     },
     "class_type": "WidgetToString",
     "_meta": {
@@ -436,10 +361,7 @@
   },
   "407": {
     "inputs": {
-      "images": [
-        "909",
-        0
-      ]
+      "images": ["909", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -598,10 +520,7 @@
     "inputs": {
       "sage_attention": "disabled",
       "allow_compile": false,
-      "model": [
-        "436",
-        0
-      ]
+      "model": ["436", 0]
     },
     "class_type": "PathchSageAttentionKJ",
     "_meta": {
@@ -621,10 +540,7 @@
   },
   "532": {
     "inputs": {
-      "images": [
-        "908",
-        0
-      ]
+      "images": ["908", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -648,14 +564,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "546:599",
-        0
-      ],
-      "clip": [
-        "436",
-        1
-      ]
+      "model": ["546:599", 0],
+      "clip": ["436", 1]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -668,14 +578,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -688,14 +592,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -708,14 +606,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -728,14 +620,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -748,14 +634,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -768,14 +648,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -788,14 +662,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -808,14 +676,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "547",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "model": ["547", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -875,14 +737,8 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": [
-        "586",
-        0
-      ],
-      "clip": [
-        "586",
-        1
-      ]
+      "model": ["586", 0],
+      "clip": ["586", 1]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -892,14 +748,8 @@
   "621": {
     "inputs": {
       "expression": "min(a, b)",
-      "a": [
-        "141",
-        0
-      ],
-      "b": [
-        "141",
-        1
-      ]
+      "a": ["141", 0],
+      "b": ["141", 1]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -917,18 +767,9 @@
   },
   "687": {
     "inputs": {
-      "switch": [
-        "665",
-        0
-      ],
-      "on_false": [
-        "546:83",
-        0
-      ],
-      "on_true": [
-        "1134",
-        0
-      ]
+      "switch": ["665", 0],
+      "on_false": ["546:83", 0],
+      "on_true": ["1134", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1006,14 +847,8 @@
   },
   "716": {
     "inputs": {
-      "boolean_a": [
-        "665",
-        0
-      ],
-      "boolean_b": [
-        "698",
-        0
-      ]
+      "boolean_a": ["665", 0],
+      "boolean_b": ["698", 0]
     },
     "class_type": "vsLinx_BooleanAndOperator",
     "_meta": {
@@ -1022,14 +857,8 @@
   },
   "760": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1038,14 +867,8 @@
   },
   "761": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1054,14 +877,8 @@
   },
   "762": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1070,14 +887,8 @@
   },
   "763": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1086,14 +897,8 @@
   },
   "764": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1102,14 +907,8 @@
   },
   "765": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1118,14 +917,8 @@
   },
   "766": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1134,14 +927,8 @@
   },
   "767": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1261,14 +1048,8 @@
   },
   "870": {
     "inputs": {
-      "bypass": [
-        "888",
-        0
-      ],
-      "any": [
-        "906",
-        0
-      ]
+      "bypass": ["888", 0],
+      "any": ["906", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1277,14 +1058,8 @@
   },
   "873": {
     "inputs": {
-      "bypass": [
-        "1016",
-        0
-      ],
-      "any": [
-        "861",
-        0
-      ]
+      "bypass": ["1016", 0],
+      "any": ["861", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1293,10 +1068,7 @@
   },
   "888": {
     "inputs": {
-      "boolean": [
-        "869",
-        0
-      ]
+      "boolean": ["869", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1305,18 +1077,9 @@
   },
   "906": {
     "inputs": {
-      "switch": [
-        "849",
-        0
-      ],
-      "on_false": [
-        "912:669",
-        0
-      ],
-      "on_true": [
-        "890:847",
-        0
-      ]
+      "switch": ["849", 0],
+      "on_false": ["912:669", 0],
+      "on_true": ["890:847", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1325,18 +1088,9 @@
   },
   "907": {
     "inputs": {
-      "switch": [
-        "849",
-        0
-      ],
-      "on_false": [
-        "912:669",
-        1
-      ],
-      "on_true": [
-        "890:847",
-        1
-      ]
+      "switch": ["849", 0],
+      "on_false": ["912:669", 1],
+      "on_true": ["890:847", 1]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1345,14 +1099,8 @@
   },
   "908": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "546:83",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["546:83", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1361,14 +1109,8 @@
   },
   "909": {
     "inputs": {
-      "bypass": [
-        "665",
-        0
-      ],
-      "any": [
-        "333",
-        0
-      ]
+      "bypass": ["665", 0],
+      "any": ["333", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1388,14 +1130,8 @@
   },
   "979": {
     "inputs": {
-      "bypass": [
-        "982",
-        0
-      ],
-      "any": [
-        "890:913",
-        0
-      ]
+      "bypass": ["982", 0],
+      "any": ["890:913", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1404,10 +1140,7 @@
   },
   "980": {
     "inputs": {
-      "boolean": [
-        "849",
-        0
-      ]
+      "boolean": ["849", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1416,14 +1149,8 @@
   },
   "982": {
     "inputs": {
-      "boolean_a": [
-        "980",
-        0
-      ],
-      "boolean_b": [
-        "983",
-        0
-      ]
+      "boolean_a": ["980", 0],
+      "boolean_b": ["983", 0]
     },
     "class_type": "vsLinx_BooleanOrOperator",
     "_meta": {
@@ -1432,10 +1159,7 @@
   },
   "983": {
     "inputs": {
-      "boolean": [
-        "665",
-        0
-      ]
+      "boolean": ["665", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1444,18 +1168,12 @@
   },
   "996": {
     "inputs": {
-      "text": [
-        "1072",
-        0
-      ],
+      "text": ["1072", 0],
       "id": 0,
       "node_title": "",
       "only_enabled": true,
       "debug": false,
-      "powerloraloader_model": [
-        "547",
-        0
-      ]
+      "powerloraloader_model": ["547", 0]
     },
     "class_type": "vsLinx_AppendLorasFromNodeToString",
     "_meta": {
@@ -1491,14 +1209,8 @@
   },
   "1015": {
     "inputs": {
-      "boolean_a": [
-        "869",
-        0
-      ],
-      "boolean_b": [
-        "665",
-        0
-      ]
+      "boolean_a": ["869", 0],
+      "boolean_b": ["665", 0]
     },
     "class_type": "vsLinx_BooleanAndOperator",
     "_meta": {
@@ -1507,10 +1219,7 @@
   },
   "1016": {
     "inputs": {
-      "boolean": [
-        "1015",
-        0
-      ]
+      "boolean": ["1015", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1540,7 +1249,7 @@
   },
   "1053": {
     "inputs": {
-      "text": "lowres, (worst quality, low quality, bad anatomy, bad hands:1.3), abstract, signature,",
+      "text": "lowres, (worst quality, low quality, bad anatomy, bad hands:1.3), abstract, signature, bad face, bad eyes, bad teeth, bad mouth",
       "Add wildcard": "Select wildcard"
     },
     "class_type": "vsLinx_ImpactMultilineWildcardText",
@@ -1586,18 +1295,9 @@
   },
   "1072": {
     "inputs": {
-      "switch": [
-        "665",
-        0
-      ],
-      "on_false": [
-        "546:600",
-        0
-      ],
-      "on_true": [
-        "911:693",
-        0
-      ]
+      "switch": ["665", 0],
+      "on_false": ["546:600", 0],
+      "on_true": ["911:693", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1606,18 +1306,9 @@
   },
   "1073": {
     "inputs": {
-      "switch": [
-        "665",
-        0
-      ],
-      "on_false": [
-        "546:571",
-        0
-      ],
-      "on_true": [
-        "911:694",
-        0
-      ]
+      "switch": ["665", 0],
+      "on_false": ["546:571", 0],
+      "on_true": ["911:694", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1720,18 +1411,9 @@
   },
   "910:706": {
     "inputs": {
-      "switch": [
-        "716",
-        0
-      ],
-      "on_false": [
-        "266",
-        0
-      ],
-      "on_true": [
-        "700",
-        0
-      ]
+      "switch": ["716", 0],
+      "on_false": ["266", 0],
+      "on_true": ["700", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1740,18 +1422,9 @@
   },
   "910:705": {
     "inputs": {
-      "switch": [
-        "716",
-        0
-      ],
-      "on_false": [
-        "133",
-        0
-      ],
-      "on_true": [
-        "699",
-        0
-      ]
+      "switch": ["716", 0],
+      "on_false": ["133", 0],
+      "on_true": ["699", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1760,18 +1433,9 @@
   },
   "910:703": {
     "inputs": {
-      "switch": [
-        "716",
-        0
-      ],
-      "on_false": [
-        "1101",
-        0
-      ],
-      "on_true": [
-        "701",
-        0
-      ]
+      "switch": ["716", 0],
+      "on_false": ["1101", 0],
+      "on_true": ["701", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1780,18 +1444,9 @@
   },
   "910:704": {
     "inputs": {
-      "switch": [
-        "716",
-        0
-      ],
-      "on_false": [
-        "490",
-        0
-      ],
-      "on_true": [
-        "702",
-        0
-      ]
+      "switch": ["716", 0],
+      "on_false": ["490", 0],
+      "on_true": ["702", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1800,18 +1455,9 @@
   },
   "910:708": {
     "inputs": {
-      "switch": [
-        "716",
-        0
-      ],
-      "on_false": [
-        "1101",
-        1
-      ],
-      "on_true": [
-        "701",
-        1
-      ]
+      "switch": ["716", 0],
+      "on_false": ["1101", 1],
+      "on_true": ["701", 1]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1820,18 +1466,9 @@
   },
   "910:709": {
     "inputs": {
-      "switch": [
-        "716",
-        0
-      ],
-      "on_false": [
-        "490",
-        1
-      ],
-      "on_true": [
-        "702",
-        1
-      ]
+      "switch": ["716", 0],
+      "on_false": ["490", 1],
+      "on_true": ["702", 1]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1840,10 +1477,7 @@
   },
   "546:458": {
     "inputs": {
-      "scheduler": [
-        "490",
-        0
-      ],
+      "scheduler": ["490", 0],
       "extra_scheduler": "None"
     },
     "class_type": "ImpactSchedulerAdapter",
@@ -1853,18 +1487,9 @@
   },
   "546:6": {
     "inputs": {
-      "width": [
-        "141",
-        0
-      ],
-      "height": [
-        "141",
-        1
-      ],
-      "batch_size": [
-        "142",
-        0
-      ]
+      "width": ["141", 0],
+      "height": ["141", 1],
+      "batch_size": ["142", 0]
     },
     "class_type": "EmptyLatentImage",
     "_meta": {
@@ -1875,10 +1500,7 @@
     "inputs": {
       "sampling": "v_prediction",
       "zsnr": true,
-      "model": [
-        "588",
-        0
-      ]
+      "model": ["588", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1889,10 +1511,7 @@
     "inputs": {
       "sampling": "eps",
       "zsnr": false,
-      "model": [
-        "588",
-        0
-      ]
+      "model": ["588", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1912,10 +1531,7 @@
   "546:143": {
     "inputs": {
       "expression": "a * (-1)\n",
-      "a": [
-        "144",
-        0
-      ]
+      "a": ["144", 0]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -1924,14 +1540,8 @@
   },
   "546:2": {
     "inputs": {
-      "stop_at_clip_layer": [
-        "546:143",
-        0
-      ],
-      "clip": [
-        "547",
-        1
-      ]
+      "stop_at_clip_layer": ["546:143", 0],
+      "clip": ["547", 1]
     },
     "class_type": "CLIPSetLastLayer",
     "_meta": {
@@ -1942,10 +1552,7 @@
     "inputs": {
       "sampling": "v_prediction",
       "zsnr": true,
-      "model": [
-        "526",
-        0
-      ]
+      "model": ["526", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1956,10 +1563,7 @@
     "inputs": {
       "sampling": "eps",
       "zsnr": false,
-      "model": [
-        "526",
-        0
-      ]
+      "model": ["526", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1968,18 +1572,9 @@
   },
   "546:598": {
     "inputs": {
-      "switch": [
-        "1068",
-        0
-      ],
-      "on_false": [
-        "546:1108",
-        0
-      ],
-      "on_true": [
-        "546:581",
-        0
-      ]
+      "switch": ["1068", 0],
+      "on_false": ["546:1108", 0],
+      "on_true": ["546:581", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1988,18 +1583,9 @@
   },
   "546:599": {
     "inputs": {
-      "switch": [
-        "1067",
-        0
-      ],
-      "on_false": [
-        "546:161",
-        0
-      ],
-      "on_true": [
-        "546:81",
-        0
-      ]
+      "switch": ["1067", 0],
+      "on_false": ["546:161", 0],
+      "on_true": ["546:81", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2009,48 +1595,18 @@
   "546:575": {
     "inputs": {
       "add_noise": "disable",
-      "noise_seed": [
-        "137",
-        0
-      ],
-      "steps": [
-        "133",
-        0
-      ],
-      "cfg": [
-        "266",
-        0
-      ],
-      "sampler_name": [
-        "1101",
-        0
-      ],
-      "scheduler": [
-        "490",
-        0
-      ],
-      "start_at_step": [
-        "587",
-        0
-      ],
+      "noise_seed": ["137", 0],
+      "steps": ["133", 0],
+      "cfg": ["266", 0],
+      "sampler_name": ["1101", 0],
+      "scheduler": ["490", 0],
+      "start_at_step": ["587", 0],
       "end_at_step": 10000,
       "return_with_leftover_noise": "disable",
-      "model": [
-        "546:598",
-        0
-      ],
-      "positive": [
-        "546:573",
-        0
-      ],
-      "negative": [
-        "546:572",
-        0
-      ],
-      "latent_image": [
-        "546:576",
-        0
-      ]
+      "model": ["546:598", 0],
+      "positive": ["546:573", 0],
+      "negative": ["546:572", 0],
+      "latent_image": ["546:576", 0]
     },
     "class_type": "KSamplerAdvanced",
     "_meta": {
@@ -2059,14 +1615,8 @@
   },
   "546:572": {
     "inputs": {
-      "text": [
-        "546:571",
-        0
-      ],
-      "clip": [
-        "546:1110",
-        0
-      ]
+      "text": ["546:571", 0],
+      "clip": ["546:1110", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2075,14 +1625,8 @@
   },
   "546:1110": {
     "inputs": {
-      "stop_at_clip_layer": [
-        "546:143",
-        0
-      ],
-      "clip": [
-        "588",
-        1
-      ]
+      "stop_at_clip_layer": ["546:143", 0],
+      "clip": ["588", 1]
     },
     "class_type": "CLIPSetLastLayer",
     "_meta": {
@@ -2091,14 +1635,8 @@
   },
   "546:83": {
     "inputs": {
-      "samples": [
-        "546:596",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
+      "samples": ["546:596", 0],
+      "vae": ["436", 2]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -2107,18 +1645,9 @@
   },
   "546:596": {
     "inputs": {
-      "switch": [
-        "790",
-        0
-      ],
-      "on_false": [
-        "546:82",
-        0
-      ],
-      "on_true": [
-        "546:575",
-        0
-      ]
+      "switch": ["790", 0],
+      "on_false": ["546:82", 0],
+      "on_true": ["546:575", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2128,10 +1657,7 @@
   "546:496": {
     "inputs": {
       "separator": "",
-      "text2": [
-        "1050",
-        0
-      ]
+      "text2": ["1050", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -2140,14 +1666,8 @@
   },
   "546:573": {
     "inputs": {
-      "text": [
-        "546:600",
-        0
-      ],
-      "clip": [
-        "546:1110",
-        0
-      ]
+      "text": ["546:600", 0],
+      "clip": ["546:1110", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2157,10 +1677,7 @@
   "546:497": {
     "inputs": {
       "separator": "",
-      "text1": [
-        "546:496",
-        0
-      ]
+      "text1": ["546:496", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -2169,14 +1686,8 @@
   },
   "546:261": {
     "inputs": {
-      "text": [
-        "546:571",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "text": ["546:571", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2185,46 +1696,16 @@
   },
   "546:82": {
     "inputs": {
-      "seed": [
-        "137",
-        0
-      ],
-      "steps": [
-        "133",
-        0
-      ],
-      "cfg": [
-        "266",
-        0
-      ],
-      "sampler_name": [
-        "1101",
-        0
-      ],
-      "scheduler": [
-        "490",
-        0
-      ],
-      "denoise": [
-        "269",
-        0
-      ],
-      "model": [
-        "547",
-        0
-      ],
-      "positive": [
-        "546:241",
-        0
-      ],
-      "negative": [
-        "546:261",
-        0
-      ],
-      "latent_image": [
-        "546:6",
-        0
-      ]
+      "seed": ["137", 0],
+      "steps": ["133", 0],
+      "cfg": ["266", 0],
+      "sampler_name": ["1101", 0],
+      "scheduler": ["490", 0],
+      "denoise": ["269", 0],
+      "model": ["547", 0],
+      "positive": ["546:241", 0],
+      "negative": ["546:261", 0],
+      "latent_image": ["546:6", 0]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -2234,48 +1715,18 @@
   "546:576": {
     "inputs": {
       "add_noise": "enable",
-      "noise_seed": [
-        "137",
-        0
-      ],
-      "steps": [
-        "133",
-        0
-      ],
-      "cfg": [
-        "266",
-        0
-      ],
-      "sampler_name": [
-        "1101",
-        0
-      ],
-      "scheduler": [
-        "490",
-        0
-      ],
+      "noise_seed": ["137", 0],
+      "steps": ["133", 0],
+      "cfg": ["266", 0],
+      "sampler_name": ["1101", 0],
+      "scheduler": ["490", 0],
       "start_at_step": 0,
-      "end_at_step": [
-        "587",
-        0
-      ],
+      "end_at_step": ["587", 0],
       "return_with_leftover_noise": "enable",
-      "model": [
-        "547",
-        0
-      ],
-      "positive": [
-        "546:241",
-        0
-      ],
-      "negative": [
-        "546:261",
-        0
-      ],
-      "latent_image": [
-        "546:6",
-        0
-      ]
+      "model": ["547", 0],
+      "positive": ["546:241", 0],
+      "negative": ["546:261", 0],
+      "latent_image": ["546:6", 0]
     },
     "class_type": "KSamplerAdvanced",
     "_meta": {
@@ -2285,10 +1736,7 @@
   "546:600": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": [
-        "546:497",
-        0
-      ],
+      "populated_text": ["546:497", 0],
       "mode": "populate",
       "seed": 473300939158167,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
@@ -2301,10 +1749,7 @@
   "546:571": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": [
-        "1053",
-        0
-      ],
+      "populated_text": ["1053", 0],
       "mode": "populate",
       "seed": 237849892630485,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
@@ -2316,14 +1761,8 @@
   },
   "546:241": {
     "inputs": {
-      "text": [
-        "546:600",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "text": ["546:600", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2333,10 +1772,7 @@
   "653:639": {
     "inputs": {
       "text": "",
-      "clip": [
-        "562",
-        1
-      ]
+      "clip": ["562", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2346,10 +1782,7 @@
   "653:641": {
     "inputs": {
       "text": "",
-      "clip": [
-        "564",
-        1
-      ]
+      "clip": ["564", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2359,10 +1792,7 @@
   "653:640": {
     "inputs": {
       "text": "",
-      "clip": [
-        "566",
-        1
-      ]
+      "clip": ["566", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2372,10 +1802,7 @@
   "653:652": {
     "inputs": {
       "text": "",
-      "clip": [
-        "565",
-        1
-      ]
+      "clip": ["565", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2385,10 +1812,7 @@
   "653:645": {
     "inputs": {
       "text": "",
-      "clip": [
-        "570",
-        1
-      ]
+      "clip": ["570", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2398,10 +1822,7 @@
   "653:648": {
     "inputs": {
       "text": "",
-      "clip": [
-        "569",
-        1
-      ]
+      "clip": ["569", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2411,10 +1832,7 @@
   "653:647": {
     "inputs": {
       "text": "",
-      "clip": [
-        "578",
-        1
-      ]
+      "clip": ["578", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2424,10 +1842,7 @@
   "653:650": {
     "inputs": {
       "text": "",
-      "clip": [
-        "582",
-        1
-      ]
+      "clip": ["582", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2436,18 +1851,9 @@
   },
   "890:868": {
     "inputs": {
-      "switch": [
-        "864",
-        0
-      ],
-      "on_false": [
-        "528",
-        0
-      ],
-      "on_true": [
-        "865:1115",
-        0
-      ]
+      "switch": ["864", 0],
+      "on_false": ["528", 0],
+      "on_true": ["865:1115", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2456,18 +1862,9 @@
   },
   "890:867": {
     "inputs": {
-      "switch": [
-        "864",
-        0
-      ],
-      "on_false": [
-        "15",
-        0
-      ],
-      "on_true": [
-        "865:836",
-        0
-      ]
+      "switch": ["864", 0],
+      "on_false": ["15", 0],
+      "on_true": ["865:836", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2476,10 +1873,7 @@
   },
   "890:839": {
     "inputs": {
-      "mask": [
-        "890:848",
-        2
-      ]
+      "mask": ["890:848", 2]
     },
     "class_type": "MaskToImage",
     "_meta": {
@@ -2488,18 +1882,9 @@
   },
   "890:913": {
     "inputs": {
-      "switch": [
-        "849",
-        0
-      ],
-      "on_false": [
-        "1134",
-        0
-      ],
-      "on_true": [
-        "890:846",
-        0
-      ]
+      "switch": ["849", 0],
+      "on_false": ["1134", 0],
+      "on_true": ["890:846", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2509,10 +1894,7 @@
   "890:855": {
     "inputs": {
       "expression": "a + 0.5",
-      "a": [
-        "910:706",
-        0
-      ]
+      "a": ["910:706", 0]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -2522,10 +1904,7 @@
   "890:854": {
     "inputs": {
       "expression": "((a < 10) * a + (a >= 10) * max(18, a - 10))",
-      "a": [
-        "910:705",
-        0
-      ]
+      "a": ["910:705", 0]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -2534,14 +1913,8 @@
   },
   "890:846": {
     "inputs": {
-      "samples": [
-        "890:845",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
+      "samples": ["890:845", 0],
+      "vae": ["436", 2]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -2550,46 +1923,16 @@
   },
   "890:845": {
     "inputs": {
-      "seed": [
-        "707",
-        0
-      ],
-      "steps": [
-        "910:705",
-        0
-      ],
-      "cfg": [
-        "910:706",
-        0
-      ],
-      "sampler_name": [
-        "910:703",
-        0
-      ],
-      "scheduler": [
-        "910:704",
-        0
-      ],
-      "denoise": [
-        "690",
-        0
-      ],
-      "model": [
-        "547",
-        0
-      ],
-      "positive": [
-        "870",
-        0
-      ],
-      "negative": [
-        "907",
-        0
-      ],
-      "latent_image": [
-        "890:847",
-        2
-      ]
+      "seed": ["707", 0],
+      "steps": ["910:705", 0],
+      "cfg": ["910:706", 0],
+      "sampler_name": ["910:703", 0],
+      "scheduler": ["910:704", 0],
+      "denoise": ["690", 0],
+      "model": ["547", 0],
+      "positive": ["870", 0],
+      "negative": ["907", 0],
+      "latent_image": ["890:847", 2]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -2599,26 +1942,11 @@
   "890:847": {
     "inputs": {
       "noise_mask": true,
-      "positive": [
-        "911:695",
-        0
-      ],
-      "negative": [
-        "911:696",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ],
-      "pixels": [
-        "890:848",
-        1
-      ],
-      "mask": [
-        "890:848",
-        2
-      ]
+      "positive": ["911:695", 0],
+      "negative": ["911:696", 0],
+      "vae": ["436", 2],
+      "pixels": ["890:848", 1],
+      "mask": ["890:848", 2]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -2627,14 +1955,8 @@
   },
   "890:842": {
     "inputs": {
-      "samples": [
-        "890:841",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
+      "samples": ["890:841", 0],
+      "vae": ["436", 2]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -2643,46 +1965,16 @@
   },
   "890:841": {
     "inputs": {
-      "seed": [
-        "707",
-        0
-      ],
-      "steps": [
-        "890:854",
-        0
-      ],
-      "cfg": [
-        "890:855",
-        1
-      ],
-      "sampler_name": [
-        "910:703",
-        0
-      ],
-      "scheduler": [
-        "910:704",
-        0
-      ],
-      "denoise": [
-        "863",
-        0
-      ],
-      "model": [
-        "547",
-        0
-      ],
-      "positive": [
-        "890:837",
-        0
-      ],
-      "negative": [
-        "890:837",
-        1
-      ],
-      "latent_image": [
-        "890:837",
-        2
-      ]
+      "seed": ["707", 0],
+      "steps": ["890:854", 0],
+      "cfg": ["890:855", 1],
+      "sampler_name": ["910:703", 0],
+      "scheduler": ["910:704", 0],
+      "denoise": ["863", 0],
+      "model": ["547", 0],
+      "positive": ["890:837", 0],
+      "negative": ["890:837", 1],
+      "latent_image": ["890:837", 2]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -2702,33 +1994,21 @@
       "mask_fill_holes": true,
       "mask_expand_pixels": 0,
       "mask_invert": false,
-      "mask_blend_pixels": [
-        "792",
-        0
-      ],
+      "mask_blend_pixels": ["792", 0],
       "mask_hipass_filter": 0.1,
       "extend_for_outpainting": false,
       "extend_up_factor": 1,
       "extend_down_factor": 1,
       "extend_left_factor": 1,
       "extend_right_factor": 1,
-      "context_from_mask_extend_factor": [
-        "793",
-        0
-      ],
+      "context_from_mask_extend_factor": ["793", 0],
       "output_resize_to_target_size": false,
       "output_target_width": 2048,
       "output_target_height": 2048,
       "output_padding": "32",
       "device_mode": "gpu (much faster)",
-      "image": [
-        "1134",
-        0
-      ],
-      "mask": [
-        "1134",
-        1
-      ]
+      "image": ["1134", 0],
+      "mask": ["1134", 1]
     },
     "class_type": "InpaintCropImproved",
     "_meta": {
@@ -2737,14 +2017,8 @@
   },
   "890:843": {
     "inputs": {
-      "stitcher": [
-        "890:848",
-        0
-      ],
-      "inpainted_image": [
-        "890:842",
-        0
-      ]
+      "stitcher": ["890:848", 0],
+      "inpainted_image": ["890:842", 0]
     },
     "class_type": "InpaintStitchImproved",
     "_meta": {
@@ -2753,18 +2027,9 @@
   },
   "890:850": {
     "inputs": {
-      "switch": [
-        "849",
-        0
-      ],
-      "on_false": [
-        "912:672",
-        0
-      ],
-      "on_true": [
-        "890:852",
-        0
-      ]
+      "switch": ["849", 0],
+      "on_false": ["912:672", 0],
+      "on_true": ["890:852", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2774,19 +2039,10 @@
   "890:852": {
     "inputs": {
       "method": "mkl",
-      "strength": [
-        "976",
-        0
-      ],
+      "strength": ["976", 0],
       "multithread": true,
-      "image_ref": [
-        "1134",
-        0
-      ],
-      "image_target": [
-        "890:843",
-        0
-      ]
+      "image_ref": ["1134", 0],
+      "image_target": ["890:843", 0]
     },
     "class_type": "ColorMatch",
     "_meta": {
@@ -2796,26 +2052,11 @@
   "890:837": {
     "inputs": {
       "noise_mask": true,
-      "positive": [
-        "911:695",
-        0
-      ],
-      "negative": [
-        "911:696",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ],
-      "pixels": [
-        "890:930",
-        0
-      ],
-      "mask": [
-        "890:840",
-        0
-      ]
+      "positive": ["911:695", 0],
+      "negative": ["911:696", 0],
+      "vae": ["436", 2],
+      "pixels": ["890:930", 0],
+      "mask": ["890:840", 0]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -2825,18 +2066,9 @@
   "890:930": {
     "inputs": {
       "upscale_method": "nearest-exact",
-      "factor": [
-        "890:868",
-        0
-      ],
-      "upscale_model": [
-        "890:867",
-        0
-      ],
-      "image": [
-        "890:846",
-        0
-      ]
+      "factor": ["890:868", 0],
+      "upscale_model": ["890:867", 0],
+      "image": ["890:846", 0]
     },
     "class_type": "vsLinx_UpscaleByFactorWithModel",
     "_meta": {
@@ -2846,18 +2078,9 @@
   "890:929": {
     "inputs": {
       "upscale_method": "nearest-exact",
-      "factor": [
-        "890:868",
-        0
-      ],
-      "upscale_model": [
-        "890:867",
-        0
-      ],
-      "image": [
-        "890:839",
-        0
-      ]
+      "factor": ["890:868", 0],
+      "upscale_model": ["890:867", 0],
+      "image": ["890:839", 0]
     },
     "class_type": "vsLinx_UpscaleByFactorWithModel",
     "_meta": {
@@ -2867,10 +2090,7 @@
   "890:840": {
     "inputs": {
       "channel": "red",
-      "image": [
-        "890:929",
-        0
-      ]
+      "image": ["890:929", 0]
     },
     "class_type": "ImageToMask",
     "_meta": {
@@ -2879,14 +2099,8 @@
   },
   "911:695": {
     "inputs": {
-      "text": [
-        "911:693",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "text": ["911:693", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2895,14 +2109,8 @@
   },
   "911:696": {
     "inputs": {
-      "text": [
-        "911:694",
-        0
-      ],
-      "clip": [
-        "546:2",
-        0
-      ]
+      "text": ["911:694", 0],
+      "clip": ["546:2", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2912,10 +2120,7 @@
   "911:693": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": [
-        "1070",
-        0
-      ],
+      "populated_text": ["1070", 0],
       "mode": "populate",
       "seed": 368154881456163,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
@@ -2928,10 +2133,7 @@
   "911:694": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": [
-        "1071",
-        0
-      ],
+      "populated_text": ["1071", 0],
       "mode": "populate",
       "seed": 584369153637514,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
@@ -2943,14 +2145,8 @@
   },
   "912:672": {
     "inputs": {
-      "stitcher": [
-        "912:668",
-        0
-      ],
-      "inpainted_image": [
-        "912:670",
-        0
-      ]
+      "stitcher": ["912:668", 0],
+      "inpainted_image": ["912:670", 0]
     },
     "class_type": "InpaintStitchImproved",
     "_meta": {
@@ -2959,14 +2155,8 @@
   },
   "912:670": {
     "inputs": {
-      "samples": [
-        "912:671",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
+      "samples": ["912:671", 0],
+      "vae": ["436", 2]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -2975,46 +2165,16 @@
   },
   "912:671": {
     "inputs": {
-      "seed": [
-        "707",
-        0
-      ],
-      "steps": [
-        "910:705",
-        0
-      ],
-      "cfg": [
-        "910:706",
-        0
-      ],
-      "sampler_name": [
-        "910:703",
-        0
-      ],
-      "scheduler": [
-        "910:704",
-        0
-      ],
-      "denoise": [
-        "690",
-        0
-      ],
-      "model": [
-        "547",
-        0
-      ],
-      "positive": [
-        "870",
-        0
-      ],
-      "negative": [
-        "907",
-        0
-      ],
-      "latent_image": [
-        "912:669",
-        2
-      ]
+      "seed": ["707", 0],
+      "steps": ["910:705", 0],
+      "cfg": ["910:706", 0],
+      "sampler_name": ["910:703", 0],
+      "scheduler": ["910:704", 0],
+      "denoise": ["690", 0],
+      "model": ["547", 0],
+      "positive": ["870", 0],
+      "negative": ["907", 0],
+      "latent_image": ["912:669", 2]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -3024,26 +2184,11 @@
   "912:669": {
     "inputs": {
       "noise_mask": true,
-      "positive": [
-        "911:695",
-        0
-      ],
-      "negative": [
-        "911:696",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ],
-      "pixels": [
-        "912:668",
-        1
-      ],
-      "mask": [
-        "912:668",
-        2
-      ]
+      "positive": ["911:695", 0],
+      "negative": ["911:696", 0],
+      "vae": ["436", 2],
+      "pixels": ["912:668", 1],
+      "mask": ["912:668", 2]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -3063,33 +2208,21 @@
       "mask_fill_holes": true,
       "mask_expand_pixels": 0,
       "mask_invert": false,
-      "mask_blend_pixels": [
-        "792",
-        0
-      ],
+      "mask_blend_pixels": ["792", 0],
       "mask_hipass_filter": 0.1,
       "extend_for_outpainting": false,
       "extend_up_factor": 1,
       "extend_down_factor": 1,
       "extend_left_factor": 1,
       "extend_right_factor": 1,
-      "context_from_mask_extend_factor": [
-        "793",
-        0
-      ],
+      "context_from_mask_extend_factor": ["793", 0],
       "output_resize_to_target_size": false,
       "output_target_width": 2048,
       "output_target_height": 2048,
       "output_padding": "32",
       "device_mode": "gpu (much faster)",
-      "image": [
-        "1134",
-        0
-      ],
-      "mask": [
-        "1134",
-        1
-      ]
+      "image": ["1134", 0],
+      "mask": ["1134", 1]
     },
     "class_type": "InpaintCropImproved",
     "_meta": {
@@ -3098,18 +2231,9 @@
   },
   "912:674": {
     "inputs": {
-      "switch": [
-        "665",
-        0
-      ],
-      "on_false": [
-        "546:83",
-        0
-      ],
-      "on_true": [
-        "890:850",
-        0
-      ]
+      "switch": ["665", 0],
+      "on_false": ["546:83", 0],
+      "on_true": ["890:850", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {

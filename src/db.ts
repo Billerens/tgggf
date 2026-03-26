@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ChatSession,
   EndpointAuthConfig,
+  GeneratorSession,
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
@@ -42,10 +43,15 @@ interface TgGfDb extends DBSchema {
     key: string;
     value: AppSettings;
   };
+  generatorSessions: {
+    key: string;
+    value: GeneratorSession;
+    indexes: { "by-persona": string; "by-updatedAt": string };
+  };
 }
 
 const DB_NAME = "tg-gf-db";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
@@ -90,6 +96,10 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
 
   merged.model = merged.model.trim() || DEFAULT_SETTINGS.model;
   merged.comfyBaseUrl = merged.comfyBaseUrl.trim() || DEFAULT_SETTINGS.comfyBaseUrl;
+  if (!Number.isFinite(merged.chatStyleStrength)) {
+    merged.chatStyleStrength = DEFAULT_SETTINGS.chatStyleStrength;
+  }
+  merged.chatStyleStrength = Math.max(0, Math.min(1, Number(merged.chatStyleStrength)));
   merged.apiKey = merged.apiKey.trim();
   merged.lmAuth = normalizeAuthConfig(merged.lmAuth, DEFAULT_SETTINGS.lmAuth);
   merged.comfyAuth = normalizeAuthConfig(
@@ -114,12 +124,60 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   return merged;
 }
 
+function normalizeChatSession(chat: ChatSession): ChatSession {
+  const next: ChatSession = { ...chat };
+  if (typeof next.chatStyleStrength === "number" && Number.isFinite(next.chatStyleStrength)) {
+    next.chatStyleStrength = Math.max(0, Math.min(1, Number(next.chatStyleStrength)));
+  } else {
+    delete next.chatStyleStrength;
+  }
+  return next;
+}
+
+function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession {
+  const next: GeneratorSession = {
+    ...session,
+    topic: session.topic.trim(),
+    status:
+      session.status === "running" ||
+      session.status === "stopped" ||
+      session.status === "completed" ||
+      session.status === "error"
+        ? session.status
+        : "stopped",
+    requestedCount:
+      typeof session.requestedCount === "number" && Number.isFinite(session.requestedCount)
+        ? Math.max(1, Math.floor(session.requestedCount))
+        : null,
+    delaySeconds: Number.isFinite(session.delaySeconds)
+      ? Math.max(0, Math.min(120, Number(session.delaySeconds)))
+      : 0,
+    completedCount: Number.isFinite(session.completedCount)
+      ? Math.max(0, Math.floor(session.completedCount))
+      : 0,
+    entries: Array.isArray(session.entries)
+      ? session.entries
+          .filter((entry) => Boolean(entry?.id))
+          .map((entry) => ({
+            ...entry,
+            iteration: Number.isFinite(entry.iteration) ? Math.max(1, Math.floor(entry.iteration)) : 1,
+            prompt: (entry.prompt ?? "").trim(),
+            imageUrls: Array.isArray(entry.imageUrls)
+              ? entry.imageUrls.map((url) => (url ?? "").trim()).filter(Boolean)
+              : [],
+          }))
+      : [],
+  };
+  return next;
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   lmBaseUrl: resolveDefaultBaseUrl(),
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
   model: "local-model",
   temperature: 0.7,
   maxTokens: 600,
+  chatStyleStrength: 0.9,
   apiKey: "",
   lmAuth: {
     mode: "none",
@@ -180,6 +238,12 @@ function getDb() {
         if (!db.objectStoreNames.contains("settings")) {
           db.createObjectStore("settings");
         }
+
+        if (!db.objectStoreNames.contains("generatorSessions")) {
+          const sessions = db.createObjectStore("generatorSessions", { keyPath: "id" });
+          sessions.createIndex("by-persona", "personaId");
+          sessions.createIndex("by-updatedAt", "updatedAt");
+        }
       },
     });
   }
@@ -203,7 +267,10 @@ export const dbApi = {
 
   async deletePersona(personaId: string) {
     const db = await getDb();
-    const tx = db.transaction(["personas", "chats", "messages", "personaStates", "memories"], "readwrite");
+    const tx = db.transaction(
+      ["personas", "chats", "messages", "personaStates", "memories", "generatorSessions"],
+      "readwrite",
+    );
     await tx.objectStore("personas").delete(personaId);
     const personaStateKeys = await tx.objectStore("personaStates").index("by-persona").getAllKeys(personaId);
     for (const key of personaStateKeys) {
@@ -228,18 +295,28 @@ export const dbApi = {
       }
     }
 
+    const generatorSessionKeys = await tx
+      .objectStore("generatorSessions")
+      .index("by-persona")
+      .getAllKeys(personaId);
+    for (const key of generatorSessionKeys) {
+      await tx.objectStore("generatorSessions").delete(key);
+    }
+
     await tx.done;
   },
 
   async getChats(personaId: string) {
     const db = await getDb();
     const rows = await db.getAllFromIndex("chats", "by-persona", personaId);
-    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const normalized = rows.map((row) => normalizeChatSession(row));
+    await Promise.all(normalized.map((row) => db.put("chats", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
   async saveChat(chat: ChatSession) {
     const db = await getDb();
-    await db.put("chats", chat);
+    await db.put("chats", normalizeChatSession(chat));
   },
 
   async deleteChat(chatId: string) {
@@ -316,6 +393,33 @@ export const dbApi = {
   async saveSettings(settings: AppSettings) {
     const db = await getDb();
     await db.put("settings", settings, SETTINGS_KEY);
+  },
+
+  async getGeneratorSessions(personaId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("generatorSessions", "by-persona", personaId);
+    const normalized = rows.map((row) => normalizeGeneratorSession(row));
+    await Promise.all(normalized.map((row) => db.put("generatorSessions", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async getGeneratorSession(sessionId: string) {
+    const db = await getDb();
+    const row = await db.get("generatorSessions", sessionId);
+    if (!row) return null;
+    const normalized = normalizeGeneratorSession(row);
+    await db.put("generatorSessions", normalized);
+    return normalized;
+  },
+
+  async saveGeneratorSession(session: GeneratorSession) {
+    const db = await getDb();
+    await db.put("generatorSessions", normalizeGeneratorSession(session));
+  },
+
+  async deleteGeneratorSession(sessionId: string) {
+    const db = await getDb();
+    await db.delete("generatorSessions", sessionId);
   },
 };
 

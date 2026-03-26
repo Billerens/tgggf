@@ -37,12 +37,33 @@ interface ComfyHistoryEntry {
   outputs?: Record<string, ComfyHistoryNodeOutput>;
 }
 
+export interface ComfyGenerationItem {
+  prompt: string;
+  width?: number;
+  height?: number;
+  seed?: number;
+  checkpointName?: string;
+  styleReferenceImage?: string;
+  styleStrength?: number;
+  compositionStrength?: number;
+  forceHiResFix?: boolean;
+  enableUpscaler?: boolean;
+  upscaleFactor?: number;
+}
+
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 const POSITIVE_PROMPT_NODE_ID = "1050";
+const SIZE_NODE_ID = "141";
+const SEED_NODE_ID = "137";
+const STYLE_IMAGE_NODE_ID = "420";
+const STYLE_STRENGTH_NODE_ID = "430";
+const COMPOSITION_STRENGTH_NODE_ID = "431";
+const HIRES_FIX_NODE_ID = "849";
 const OUTPUT_TITLE_PREFERENCES = [
   "Preview after Detailing",
   "Preview after Inpaint",
 ];
+const WEBP_QUALITY = 82;
 const HISTORY_TIMEOUT_MS = 180000;
 const HISTORY_POLL_INTERVAL_MS = 1200;
 
@@ -127,6 +148,85 @@ function setPositivePrompt(workflow: ComfyWorkflow, prompt: string) {
   node.inputs.text = prompt;
 }
 
+function setSize(workflow: ComfyWorkflow, width?: number, height?: number) {
+  if (!width || !height) return;
+  const node = workflow[SIZE_NODE_ID];
+  if (!node || !node.inputs) return;
+  node.inputs.Xi = width;
+  node.inputs.Xf = width;
+  node.inputs.Yi = height;
+  node.inputs.Yf = height;
+}
+
+function setSeed(workflow: ComfyWorkflow, seed?: number) {
+  if (!Number.isFinite(seed)) return;
+  const node = workflow[SEED_NODE_ID];
+  if (!node || !node.inputs) return;
+  node.inputs.seed = Math.max(0, Math.floor(seed as number));
+}
+
+function setSliderValue(workflow: ComfyWorkflow, nodeId: string, value?: number) {
+  if (!Number.isFinite(value)) return;
+  const node = workflow[nodeId];
+  if (!node || !node.inputs) return;
+  node.inputs.Xi = value;
+  node.inputs.Xf = value;
+}
+
+function setBooleanValue(workflow: ComfyWorkflow, nodeId: string, value?: boolean) {
+  if (typeof value !== "boolean") return;
+  const node = workflow[nodeId];
+  if (!node || !node.inputs) return;
+  node.inputs.value = value;
+}
+
+function setBooleanByTitle(
+  workflow: ComfyWorkflow,
+  titleTokens: string[],
+  value?: boolean,
+) {
+  if (typeof value !== "boolean") return;
+  const loweredTokens = titleTokens.map((token) => token.toLowerCase());
+  for (const node of Object.values(workflow)) {
+    const title = node._meta?.title?.toLowerCase() ?? "";
+    if (!title || !node.inputs) continue;
+    if (!loweredTokens.some((token) => title.includes(token))) continue;
+    node.inputs.value = value;
+  }
+}
+
+function setUpscaleFactorByTitle(workflow: ComfyWorkflow, value?: number) {
+  if (!Number.isFinite(value)) return;
+  const next = Number(value);
+  for (const node of Object.values(workflow)) {
+    const title = node._meta?.title?.toLowerCase() ?? "";
+    if (!title || !title.includes("upscale factor") || !node.inputs) continue;
+    if (typeof node.inputs.value === "number") {
+      node.inputs.value = next;
+    }
+    if (typeof node.inputs.Xi === "number" || typeof node.inputs.Xf === "number") {
+      node.inputs.Xi = next;
+      node.inputs.Xf = next;
+    }
+  }
+}
+
+function setStyleImageFilename(workflow: ComfyWorkflow, filename?: string) {
+  if (!filename) return;
+  const node = workflow[STYLE_IMAGE_NODE_ID];
+  if (!node || !node.inputs) return;
+  node.inputs.image = filename;
+}
+
+function setCheckpointName(workflow: ComfyWorkflow, checkpointName?: string) {
+  const value = checkpointName?.trim();
+  if (!value) return;
+  for (const node of Object.values(workflow)) {
+    if (!node.inputs || typeof node.inputs.ckpt_name !== "string") continue;
+    node.inputs.ckpt_name = value;
+  }
+}
+
 function resolveCheckpointName(workflow: ComfyWorkflow) {
   for (const node of Object.values(workflow)) {
     const ckptName = node.inputs?.ckpt_name;
@@ -152,19 +252,28 @@ function sanitizeWorkflowForApi(workflow: ComfyWorkflow) {
     if (dependsOnWidgetToString) {
       node.inputs.modelname = checkpointName;
     }
+
+    // Force Comfy-side output compression to WEBP.
+    node.inputs.extension = "webp";
+    node.inputs.lossless_webp = false;
+    node.inputs.quality_jpeg_or_webp = WEBP_QUALITY;
   }
 }
 
-function resolvePreferredOutputNodeIds(workflow: ComfyWorkflow) {
-  const preferred: string[] = [];
+function resolveOutputNodeGroups(workflow: ComfyWorkflow) {
+  const preview: string[] = [];
+  const saverNodes: string[] = [];
   for (const [nodeId, node] of Object.entries(workflow)) {
+    if (node.class_type === "Image Saver") {
+      saverNodes.push(nodeId);
+    }
     const title = node._meta?.title ?? "";
     if (!title) continue;
     if (OUTPUT_TITLE_PREFERENCES.some((token) => title.includes(token))) {
-      preferred.push(nodeId);
+      preview.push(nodeId);
     }
   }
-  return preferred;
+  return { saver: saverNodes, preview };
 }
 
 function buildUiWorkflowForExtraPngInfo(workflow: ComfyWorkflow): ComfyUiWorkflow {
@@ -178,6 +287,67 @@ function buildUiWorkflowForExtraPngInfo(workflow: ComfyWorkflow): ComfyUiWorkflo
   );
 
   return { nodes };
+}
+
+function dataUrlToBlob(dataUrl: string) {
+  const [meta, payload] = dataUrl.split(",");
+  if (!meta || !payload) {
+    throw new Error("Некорректный data URL.");
+  }
+  const mimeMatch = /data:([^;]+);base64/.exec(meta);
+  const mimeType = mimeMatch?.[1] ?? "application/octet-stream";
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+async function sourceToBlob(source: string) {
+  if (source.startsWith("data:")) {
+    return dataUrlToBlob(source);
+  }
+  const response = await fetch(source);
+  if (!response.ok) {
+    throw new Error(`Не удалось загрузить reference image (${response.status}).`);
+  }
+  return response.blob();
+}
+
+function extensionFromBlob(blob: Blob) {
+  if (blob.type.includes("webp")) return "webp";
+  if (blob.type.includes("jpeg")) return "jpg";
+  return "png";
+}
+
+async function uploadReferenceImage(
+  baseUrl: string,
+  source: string,
+  auth?: EndpointAuthConfig,
+) {
+  const blob = await sourceToBlob(source);
+  const ext = extensionFromBlob(blob);
+  const filename = `tg_gf_ref_${Date.now()}_${Math.floor(Math.random() * 100000)}.${ext}`;
+
+  const form = new FormData();
+  form.append("image", blob, filename);
+  form.append("overwrite", "true");
+  form.append("type", "input");
+
+  const response = await fetch(`${baseUrl}/upload/image`, {
+    method: "POST",
+    headers: buildAuthHeaders(auth),
+    body: form,
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`ComfyUI /upload/image error (${response.status}): ${body}`);
+  }
+
+  const payload = (await response.json()) as { name?: string };
+  return (payload.name ?? filename).trim();
 }
 
 async function queuePrompt(
@@ -264,17 +434,24 @@ function collectImageUrls(
   historyEntry: ComfyHistoryEntry,
 ) {
   const outputs = historyEntry.outputs ?? {};
-  const preferredNodeIds = resolvePreferredOutputNodeIds(workflow);
+  const nodeGroups = resolveOutputNodeGroups(workflow);
 
-  const preferredImages = preferredNodeIds.flatMap(
+  const saverImages = nodeGroups.saver.flatMap(
     (nodeId) => outputs[nodeId]?.images ?? [],
   );
-  const fallbackImages =
-    preferredImages.length > 0
-      ? []
-      : Object.values(outputs).flatMap((nodeOutput) => nodeOutput.images ?? []);
+  const previewImages = nodeGroups.preview.flatMap(
+    (nodeId) => outputs[nodeId]?.images ?? [],
+  );
+  const fallbackImages = Object.values(outputs).flatMap(
+    (nodeOutput) => nodeOutput.images ?? [],
+  );
 
-  const images = preferredImages.length > 0 ? preferredImages : fallbackImages;
+  const images =
+    saverImages.length > 0
+      ? saverImages
+      : previewImages.length > 0
+        ? previewImages
+        : fallbackImages;
   const urls = images
     .filter((image) => Boolean(image?.filename))
     .map((image) => buildViewUrl(baseUrl, image));
@@ -283,26 +460,138 @@ function collectImageUrls(
 }
 
 export async function generateComfyImages(
-  prompts: string[],
+  itemsOrPrompts: Array<string | ComfyGenerationItem>,
   baseUrlOverride?: string,
   auth?: EndpointAuthConfig,
+  onPromptResult?: (imageUrls: string[], index: number, total: number) => void | Promise<void>,
 ) {
-  const cleanedPrompts = prompts.map((prompt) => prompt.trim()).filter(Boolean);
-  if (cleanedPrompts.length === 0) return [];
+  const normalizedItems = itemsOrPrompts
+    .map((item) =>
+      typeof item === "string"
+        ? { prompt: item.trim() }
+        : {
+            prompt: item.prompt.trim(),
+            width: item.width,
+            height: item.height,
+            seed: item.seed,
+            checkpointName: item.checkpointName,
+            styleReferenceImage: item.styleReferenceImage,
+            styleStrength: item.styleStrength,
+            compositionStrength: item.compositionStrength,
+            forceHiResFix: item.forceHiResFix,
+            enableUpscaler: item.enableUpscaler,
+            upscaleFactor: item.upscaleFactor,
+          },
+    )
+    .filter((item) => Boolean(item.prompt));
+
+  if (normalizedItems.length === 0) return [];
 
   const baseUrl = getComfyBaseUrl(baseUrlOverride);
   const template = await loadWorkflowTemplate();
   const resultUrls: string[] = [];
 
-  for (const prompt of cleanedPrompts) {
+  for (const [index, item] of normalizedItems.entries()) {
     const workflow = createWorkflowInstance(template);
-    setPositivePrompt(workflow, prompt);
+    setPositivePrompt(workflow, item.prompt);
+    setSize(workflow, item.width, item.height);
+    setSeed(workflow, item.seed);
+    setCheckpointName(workflow, item.checkpointName);
+    setSliderValue(workflow, STYLE_STRENGTH_NODE_ID, item.styleStrength);
+    setSliderValue(workflow, COMPOSITION_STRENGTH_NODE_ID, item.compositionStrength);
+    setBooleanValue(workflow, HIRES_FIX_NODE_ID, item.forceHiResFix);
+    setBooleanByTitle(workflow, ["enable upscaler", "use hi-res fix"], item.enableUpscaler);
+    setUpscaleFactorByTitle(workflow, item.upscaleFactor);
+    if (item.styleReferenceImage) {
+      const uploadedFilename = await uploadReferenceImage(
+        baseUrl,
+        item.styleReferenceImage,
+        auth,
+      );
+      setStyleImageFilename(workflow, uploadedFilename);
+    }
     sanitizeWorkflowForApi(workflow);
     const promptId = await queuePrompt(baseUrl, workflow, auth);
     const historyEntry = await waitForHistory(baseUrl, promptId, auth);
     const imageUrls = collectImageUrls(baseUrl, workflow, historyEntry);
+    if (onPromptResult) {
+      await onPromptResult(imageUrls, index, normalizedItems.length);
+    }
     resultUrls.push(...imageUrls);
   }
 
   return Array.from(new Set(resultUrls));
+}
+
+function parseCheckpointArray(payload: unknown): string[] {
+  if (Array.isArray(payload)) {
+    return payload
+      .map((v) => (typeof v === "string" ? v.trim() : ""))
+      .filter(Boolean);
+  }
+  if (payload && typeof payload === "object") {
+    const obj = payload as Record<string, unknown>;
+    const candidates = [obj.models, obj.checkpoints, obj.data];
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) continue;
+      const parsed = candidate
+        .map((v) => (typeof v === "string" ? v.trim() : ""))
+        .filter(Boolean);
+      if (parsed.length > 0) return parsed;
+    }
+  }
+  return [];
+}
+
+function parseCheckpointObjectInfo(payload: unknown): string[] {
+  if (!payload || typeof payload !== "object") return [];
+  const result = new Set<string>();
+  for (const nodeDef of Object.values(payload as Record<string, unknown>)) {
+    if (!nodeDef || typeof nodeDef !== "object") continue;
+    const inputs = (nodeDef as Record<string, unknown>).input;
+    if (!inputs || typeof inputs !== "object") continue;
+    const required = (inputs as Record<string, unknown>).required;
+    if (!required || typeof required !== "object") continue;
+    const ckpt = (required as Record<string, unknown>).ckpt_name;
+    if (!Array.isArray(ckpt) || ckpt.length === 0) continue;
+    const choices = ckpt[0];
+    if (!Array.isArray(choices)) continue;
+    for (const choice of choices) {
+      if (typeof choice === "string" && choice.trim()) {
+        result.add(choice.trim());
+      }
+    }
+  }
+  return Array.from(result);
+}
+
+export async function listComfyCheckpoints(
+  baseUrlOverride?: string,
+  auth?: EndpointAuthConfig,
+) {
+  const baseUrl = getComfyBaseUrl(baseUrlOverride);
+  const headers = buildAuthHeaders(auth);
+
+  const endpoints = [
+    `${baseUrl}/models/checkpoints`,
+    `${baseUrl}/object_info`,
+  ];
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, { headers, cache: "no-store" });
+      if (!response.ok) continue;
+      const payload = (await response.json()) as unknown;
+      const fromArray = parseCheckpointArray(payload);
+      if (fromArray.length > 0) return fromArray.sort((a, b) => a.localeCompare(b));
+      const fromObjectInfo = parseCheckpointObjectInfo(payload);
+      if (fromObjectInfo.length > 0) {
+        return fromObjectInfo.sort((a, b) => a.localeCompare(b));
+      }
+    } catch {
+      // ignore and continue fallback endpoints
+    }
+  }
+
+  return [];
 }

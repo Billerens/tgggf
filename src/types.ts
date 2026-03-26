@@ -76,8 +76,12 @@ export interface Persona {
   personalityPrompt: string;
   appearancePrompt: string;
   stylePrompt: string;
+  imageCheckpoint: string;
   advanced: PersonaAdvancedProfile;
   avatarUrl: string;
+  fullBodyUrl: string;
+  fullBodySideUrl: string;
+  fullBodyBackUrl: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -87,6 +91,7 @@ export interface ChatSession {
   personaId: string;
   title: string;
   lastResponseId?: string;
+  chatStyleStrength?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -100,8 +105,32 @@ export interface ChatMessage {
   comfyPrompts?: string[];
   imageUrls?: string[];
   imageGenerationPending?: boolean;
+  imageGenerationExpected?: number;
+  imageGenerationCompleted?: number;
   personaControlRaw?: string;
   createdAt: string;
+}
+
+export interface GeneratorImageEntry {
+  id: string;
+  iteration: number;
+  prompt: string;
+  imageUrls: string[];
+  createdAt: string;
+}
+
+export interface GeneratorSession {
+  id: string;
+  personaId: string;
+  topic: string;
+  isInfinite: boolean;
+  requestedCount: number | null;
+  delaySeconds: number;
+  status: "running" | "stopped" | "completed" | "error";
+  completedCount: number;
+  entries: GeneratorImageEntry[];
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface PersonaRuntimeState {
@@ -137,6 +166,7 @@ export interface AppSettings {
   model: string;
   temperature: number;
   maxTokens: number;
+  chatStyleStrength: number;
   apiKey: string;
   lmAuth: EndpointAuthConfig;
   comfyAuth: EndpointAuthConfig;

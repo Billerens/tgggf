@@ -1,6 +1,6 @@
-import { MessageCircle, Plus, Settings, Users, X } from "lucide-react";
+import { ImagePlus, MessageCircle, Plus, Settings, Users, X } from "lucide-react";
 import { Logo } from "./Logo";
-import type { ChatSession, Persona } from "../types";
+import type { ChatSession, GeneratorSession, Persona } from "../types";
 import type { SidebarTab } from "../ui/types";
 import { formatDate } from "../ui/format";
 
@@ -11,10 +11,14 @@ interface SidebarProps {
   personas: Persona[];
   activeChatId: string | null;
   activePersonaId: string | null;
+  generationSessions: GeneratorSession[];
+  activeGenerationSessionId: string | null;
   onOpenPersonas: () => void;
   onOpenSettings: () => void;
   onCreateChat: () => void;
+  onCreateGenerationSession: () => void;
   onSelectChat: (chatId: string) => void;
+  onSelectGenerationSession: (sessionId: string) => void;
   onSelectPersona: (personaId: string) => void;
   onEditPersona: (persona: Persona) => void;
   isMobileOpen: boolean;
@@ -29,10 +33,14 @@ export function Sidebar({
   personas,
   activeChatId,
   activePersonaId,
+  generationSessions,
+  activeGenerationSessionId,
   onOpenPersonas,
   onOpenSettings,
   onCreateChat,
+  onCreateGenerationSession,
   onSelectChat,
+  onSelectGenerationSession,
   onSelectPersona,
   onEditPersona,
   isMobileOpen,
@@ -43,7 +51,13 @@ export function Sidebar({
     <>
       <aside className={`sidebar ${isMobileOpen ? "mobile-open" : ""}`}>
         <div className="sidebar-mobile-head">
-          <h2>{sidebarTab === "chats" ? "Чаты" : "Персоны"}</h2>
+          <h2>
+            {sidebarTab === "chats"
+              ? "Чаты"
+              : sidebarTab === "personas"
+                ? "Персоны"
+                : "Генерация"}
+          </h2>
           <button type="button" className="icon-btn" onClick={onCloseMobile}>
             <X size={20} />
           </button>
@@ -81,6 +95,13 @@ export function Sidebar({
           >
             Персоны
           </button>
+          <button
+            type="button"
+            className={sidebarTab === "generation" ? "active" : ""}
+            onClick={() => setSidebarTab("generation")}
+          >
+            Генерация
+          </button>
         </div>
 
         {sidebarTab === "chats" ? (
@@ -91,22 +112,35 @@ export function Sidebar({
               </button>
             </div>
             {chats.map((chat) => (
-              <button
-                key={chat.id}
-                type="button"
-                className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
-                onClick={() => {
-                  onSelectChat(chat.id);
-                  onCloseMobile();
-                }}
-              >
-                <strong>{chat.title}</strong>
-                <span>{formatDate(chat.updatedAt)}</span>
-              </button>
+              (() => {
+                const chatPersona = personas.find((persona) => persona.id === chat.personaId) ?? null;
+                const avatarLetter = (chatPersona?.name || "?").trim().charAt(0).toUpperCase();
+                return (
+                  <button
+                    key={chat.id}
+                    type="button"
+                    className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
+                    onClick={() => {
+                      onSelectChat(chat.id);
+                      onCloseMobile();
+                    }}
+                  >
+                    <div className="sidebar-item-main">
+                      <div className="sidebar-avatar" aria-hidden="true">
+                        {chatPersona?.avatarUrl ? <img src={chatPersona.avatarUrl} alt="" loading="lazy" /> : <span>{avatarLetter}</span>}
+                      </div>
+                      <div className="sidebar-item-text">
+                        <strong>{chat.title}</strong>
+                        <span>{formatDate(chat.updatedAt)}</span>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })()
             ))}
             {chats.length === 0 ? <p className="empty-state">Чатов пока нет</p> : null}
           </div>
-        ) : (
+        ) : sidebarTab === "personas" ? (
           <div className="sidebar-list">
             {personas.map((persona) => (
               <div
@@ -121,8 +155,15 @@ export function Sidebar({
                     onCloseMobile();
                   }}
                 >
-                  <strong>{persona.name}</strong>
-                  <span>{persona.advanced.core.archetype || persona.stylePrompt || "Стиль не задан"}</span>
+                  <div className="sidebar-item-main">
+                    <div className="sidebar-avatar" aria-hidden="true">
+                      {persona.avatarUrl ? <img src={persona.avatarUrl} alt="" loading="lazy" /> : <span>{persona.name.trim().charAt(0).toUpperCase()}</span>}
+                    </div>
+                    <div className="sidebar-item-text">
+                      <strong>{persona.name}</strong>
+                      <span>{persona.advanced.core.archetype || persona.stylePrompt || "Стиль не задан"}</span>
+                    </div>
+                  </div>
                 </div>
                 <button
                   type="button"
@@ -137,6 +178,51 @@ export function Sidebar({
                 </button>
               </div>
             ))}
+          </div>
+        ) : (
+          <div className="sidebar-list">
+            <div className="list-actions">
+              <button type="button" className="primary" onClick={onCreateGenerationSession}>
+                <Plus size={16} /> Новая сессия
+              </button>
+            </div>
+            {generationSessions.map((session) => {
+              const sessionPersona =
+                personas.find((persona) => persona.id === session.personaId) ?? null;
+              const title = session.topic.trim() || "Без темы";
+              const avatarLetter = (sessionPersona?.name || "?").trim().charAt(0).toUpperCase();
+              return (
+                <button
+                  key={session.id}
+                  type="button"
+                  className={`chat-item ${session.id === activeGenerationSessionId ? "active" : ""}`}
+                  onClick={() => {
+                    onSelectGenerationSession(session.id);
+                    onCloseMobile();
+                  }}
+                >
+                  <div className="sidebar-item-main">
+                    <div className="sidebar-avatar" aria-hidden="true">
+                      {sessionPersona?.avatarUrl ? (
+                        <img src={sessionPersona.avatarUrl} alt="" loading="lazy" />
+                      ) : (
+                        <span>{avatarLetter}</span>
+                      )}
+                    </div>
+                    <div className="sidebar-item-text">
+                      <strong>{title}</strong>
+                      <span>
+                        {sessionPersona?.name || "Персона"} • {formatDate(session.updatedAt)} •{" "}
+                        {session.completedCount}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+            {generationSessions.length === 0 ? (
+              <p className="empty-state">Сессий генератора пока нет</p>
+            ) : null}
           </div>
         )}
       </aside>
@@ -159,6 +245,13 @@ export function Sidebar({
         >
           <Users size={24} />
           Персоны
+        </button>
+        <button
+          className={`mobile-nav-btn ${sidebarTab === "generation" && isMobileOpen ? "active" : ""}`}
+          onClick={() => onToggleMobileTab("generation")}
+        >
+          <ImagePlus size={24} />
+          Генерация
         </button>
         <button
           className="mobile-nav-btn"

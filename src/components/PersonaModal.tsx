@@ -1,8 +1,9 @@
-import type { FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Sparkles, Trash2, UserRound, X } from "lucide-react";
 import type { GeneratedPersonaDraft } from "../lmstudio";
 import type { Persona } from "../types";
-import type { PersonaDraft, PersonaModalTab } from "../ui/types";
+import type { PersonaDraft, PersonaLookPack, PersonaModalTab } from "../ui/types";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface PersonaModalProps {
   open: boolean;
@@ -26,6 +27,19 @@ interface PersonaModalProps {
   onSubmitGenerate: (event: FormEvent) => void;
   onSaveGenerated: (draft: GeneratedPersonaDraft) => void;
   onMoveGeneratedToEditor: (draft: GeneratedPersonaDraft) => void;
+  lookGenerationLoading: boolean;
+  onGeneratePersonaLook: () => void;
+  lookPackageCount: number;
+  setLookPackageCount: (value: number) => void;
+  generatedLookPacks: PersonaLookPack[];
+  onApplyLookPack: (pack: PersonaLookPack) => void;
+  generateSideView: boolean;
+  setGenerateSideView: (value: boolean) => void;
+  generateBackView: boolean;
+  setGenerateBackView: (value: boolean) => void;
+  comfyCheckpoints: string[];
+  checkpointsLoading: boolean;
+  onRefreshCheckpoints: () => void;
 }
 
 interface SliderFieldProps {
@@ -67,7 +81,22 @@ export function PersonaModal({
   onSubmitGenerate,
   onSaveGenerated,
   onMoveGeneratedToEditor,
+  lookGenerationLoading,
+  onGeneratePersonaLook,
+  lookPackageCount,
+  setLookPackageCount,
+  generatedLookPacks,
+  onApplyLookPack,
+  generateSideView,
+  setGenerateSideView,
+  generateBackView,
+  setGenerateBackView,
+  comfyCheckpoints,
+  checkpointsLoading,
+  onRefreshCheckpoints,
 }: PersonaModalProps) {
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+
   if (!open) return null;
 
   return (
@@ -148,11 +177,234 @@ export function PersonaModal({
                   value={personaDraft.stylePrompt}
                   onChange={(event) => setPersonaDraft((prev) => ({ ...prev, stylePrompt: event.target.value }))}
                 />
+                <label>
+                  Checkpoint для генерации изображений
+                  <div className="inline-row">
+                    <select
+                      value={personaDraft.imageCheckpoint}
+                      onChange={(event) =>
+                        setPersonaDraft((prev) => ({ ...prev, imageCheckpoint: event.target.value }))
+                      }
+                    >
+                      <option value="">По умолчанию из workflow</option>
+                      {comfyCheckpoints.map((checkpoint) => (
+                        <option key={checkpoint} value={checkpoint}>
+                          {checkpoint}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={onRefreshCheckpoints}
+                      disabled={checkpointsLoading}
+                    >
+                      {checkpointsLoading ? "..." : "Обновить"}
+                    </button>
+                  </div>
+                </label>
                 <input
                   placeholder="URL аватара"
                   value={personaDraft.avatarUrl}
                   onChange={(event) => setPersonaDraft((prev) => ({ ...prev, avatarUrl: event.target.value }))}
                 />
+                <input
+                  placeholder="URL fullbody"
+                  value={personaDraft.fullBodyUrl}
+                  onChange={(event) => setPersonaDraft((prev) => ({ ...prev, fullBodyUrl: event.target.value }))}
+                />
+                <input
+                  placeholder="URL fullbody side"
+                  value={personaDraft.fullBodySideUrl}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({ ...prev, fullBodySideUrl: event.target.value }))
+                  }
+                />
+                <input
+                  placeholder="URL fullbody back"
+                  value={personaDraft.fullBodyBackUrl}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({ ...prev, fullBodyBackUrl: event.target.value }))
+                  }
+                />
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={generateSideView}
+                    onChange={(event) => setGenerateSideView(event.target.checked)}
+                  />
+                  <span>Генерировать fullbody side (опционально)</span>
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={generateBackView}
+                    onChange={(event) => setGenerateBackView(event.target.checked)}
+                  />
+                  <span>Генерировать fullbody back (опционально)</span>
+                </label>
+                <label>
+                  Количество пакетов для выбора
+                  <select
+                    value={lookPackageCount}
+                    onChange={(event) => setLookPackageCount(Number(event.target.value))}
+                  >
+                    <option value={1}>1</option>
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                    <option value={4}>4</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={onGeneratePersonaLook}
+                  disabled={lookGenerationLoading || !personaDraft.appearancePrompt.trim()}
+                >
+                  <Sparkles size={14} />{" "}
+                  {lookGenerationLoading ? "Генерирую внешний вид..." : "Сгенерировать внешность"}
+                </button>
+                {personaDraft.avatarUrl ||
+                personaDraft.fullBodyUrl ||
+                personaDraft.fullBodySideUrl ||
+                personaDraft.fullBodyBackUrl ? (
+                  <div className="persona-look-grid">
+                    {personaDraft.avatarUrl ? (
+                      <article className="persona-look-card avatar">
+                        <span>Avatar</span>
+                        <button
+                          type="button"
+                          className="persona-look-preview-btn"
+                          onClick={() => setPreviewSrc(personaDraft.avatarUrl)}
+                        >
+                          <img src={personaDraft.avatarUrl} alt="persona-avatar" loading="lazy" />
+                        </button>
+                      </article>
+                    ) : null}
+                    {personaDraft.fullBodyUrl ? (
+                      <article className="persona-look-card fullbody">
+                        <span>Fullbody</span>
+                        <button
+                          type="button"
+                          className="persona-look-preview-btn"
+                          onClick={() => setPreviewSrc(personaDraft.fullBodyUrl)}
+                        >
+                          <img src={personaDraft.fullBodyUrl} alt="persona-fullbody" loading="lazy" />
+                        </button>
+                      </article>
+                    ) : null}
+                    {personaDraft.fullBodySideUrl ? (
+                      <article className="persona-look-card fullbody">
+                        <span>Fullbody Side</span>
+                        <button
+                          type="button"
+                          className="persona-look-preview-btn"
+                          onClick={() => setPreviewSrc(personaDraft.fullBodySideUrl)}
+                        >
+                          <img src={personaDraft.fullBodySideUrl} alt="persona-fullbody-side" loading="lazy" />
+                        </button>
+                      </article>
+                    ) : null}
+                    {personaDraft.fullBodyBackUrl ? (
+                      <article className="persona-look-card fullbody">
+                        <span>Fullbody Back</span>
+                        <button
+                          type="button"
+                          className="persona-look-preview-btn"
+                          onClick={() => setPreviewSrc(personaDraft.fullBodyBackUrl)}
+                        >
+                          <img src={personaDraft.fullBodyBackUrl} alt="persona-fullbody-back" loading="lazy" />
+                        </button>
+                      </article>
+                    ) : null}
+                  </div>
+                ) : null}
+                {generatedLookPacks.length > 0 ? (
+                  <div className="generated-list">
+                    {generatedLookPacks.map((pack, index) => (
+                      <article key={`${pack.fullBodyUrl}-${index}`} className="generated-card">
+                        <strong>
+                          Пакет #{index + 1} {pack.status === "pending" ? "(генерируется...)" : ""}
+                        </strong>
+                        <div className="persona-look-grid">
+                          <article className="persona-look-card avatar">
+                            <span>Avatar</span>
+                            {pack.avatarUrl ? (
+                              <button
+                                type="button"
+                                className="persona-look-preview-btn"
+                                onClick={() => setPreviewSrc(pack.avatarUrl)}
+                              >
+                                <img src={pack.avatarUrl} alt={`look-pack-${index + 1}-avatar`} loading="lazy" />
+                              </button>
+                            ) : (
+                              <div className="image-skeleton-card image-skeleton-fill" />
+                            )}
+                          </article>
+                          <article className="persona-look-card fullbody">
+                            <span>Fullbody</span>
+                            {pack.fullBodyUrl ? (
+                              <button
+                                type="button"
+                                className="persona-look-preview-btn"
+                                onClick={() => setPreviewSrc(pack.fullBodyUrl)}
+                              >
+                                <img src={pack.fullBodyUrl} alt={`look-pack-${index + 1}-fullbody`} loading="lazy" />
+                              </button>
+                            ) : (
+                              <div className="image-skeleton-card image-skeleton-fill" />
+                            )}
+                          </article>
+                          {generateSideView ? (
+                            <article className="persona-look-card fullbody">
+                              <span>Side</span>
+                              {pack.fullBodySideUrl ? (
+                                <button
+                                  type="button"
+                                  className="persona-look-preview-btn"
+                                  onClick={() => setPreviewSrc(pack.fullBodySideUrl)}
+                                >
+                                  <img
+                                    src={pack.fullBodySideUrl}
+                                    alt={`look-pack-${index + 1}-side`}
+                                    loading="lazy"
+                                  />
+                                </button>
+                              ) : (
+                                <div className="image-skeleton-card image-skeleton-fill" />
+                              )}
+                            </article>
+                          ) : null}
+                          {generateBackView ? (
+                            <article className="persona-look-card fullbody">
+                              <span>Back</span>
+                              {pack.fullBodyBackUrl ? (
+                                <button
+                                  type="button"
+                                  className="persona-look-preview-btn"
+                                  onClick={() => setPreviewSrc(pack.fullBodyBackUrl)}
+                                >
+                                  <img
+                                    src={pack.fullBodyBackUrl}
+                                    alt={`look-pack-${index + 1}-back`}
+                                    loading="lazy"
+                                  />
+                                </button>
+                              ) : (
+                                <div className="image-skeleton-card image-skeleton-fill" />
+                              )}
+                            </article>
+                          ) : null}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onApplyLookPack(pack)}
+                          disabled={pack.status !== "ready"}
+                        >
+                          Применить этот пакет
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div className="persona-section">
@@ -691,6 +943,7 @@ export function PersonaModal({
           </div>
         )}
       </div>
+      <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
     </div>
   );
 }

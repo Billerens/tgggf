@@ -348,6 +348,92 @@ export interface GeneratedPersonaDraft {
   avatarUrl: string;
 }
 
+export interface PersonaLookPromptRequest {
+  name: string;
+  personalityPrompt: string;
+  appearancePrompt: string;
+  stylePrompt: string;
+  advanced: PersonaAdvancedProfile;
+}
+
+export interface PersonaLookPromptResponse {
+  avatarPrompt: string;
+  fullBodyPrompt: string;
+}
+
+export async function generateThemedComfyPrompt(
+  settings: AppSettings,
+  persona: Pick<Persona, "name" | "appearancePrompt" | "stylePrompt" | "personalityPrompt">,
+  topic: string,
+  iteration: number,
+): Promise<string> {
+  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
+  const endpoint = `${baseUrl}/api/v1/chat`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+  };
+
+  const systemPrompt = [
+    "Ты генератор одного ComfyUI prompt для изображения персонажа.",
+    "Ответ должен содержать только один блок <comfyui_prompt>...</comfyui_prompt> без markdown.",
+    "Внутри блока только comma-separated English tags.",
+    "Описывай строго одного человека (solo, single subject, one person).",
+    "Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
+    "Используй уместную одежду, если тема не требует специального костюма.",
+    "Добавляй композицию, свет, фон, ракурс, качество.",
+    "Без пояснений вне блока.",
+  ].join("\n");
+
+  const input = [
+    `Character name: ${persona.name || "Unknown"}`,
+    `Appearance: ${persona.appearancePrompt || "-"}`,
+    `Style: ${persona.stylePrompt || "-"}`,
+    `Personality: ${persona.personalityPrompt || "-"}`,
+    `Theme: ${topic}`,
+    `Iteration: ${iteration}`,
+    "Generate one unique prompt variation for this iteration.",
+  ].join("\n");
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: settings.model,
+      input,
+      system_prompt: systemPrompt,
+      max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
+      temperature: Math.max(0.5, Math.min(1, settings.temperature)),
+      store: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Ошибка генерации comfy prompt (${response.status}): ${body}`);
+  }
+
+  const data = (await response.json()) as NativeChatResponse;
+  const text = data.output
+    .filter((item) => item.type === "message")
+    .map((item) => item.content ?? "")
+    .join("\n")
+    .trim();
+
+  if (!text) {
+    throw new Error("Модель вернула пустой comfy prompt.");
+  }
+
+  const parsed = splitAssistantContent(text);
+  const prompt = (parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt ?? "").trim();
+  if (prompt) return prompt;
+
+  return text
+    .replace(/<\/?comfyui_prompt>/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeBaseUrl(url: string) {
   return url.replace(/\/+$/, "");
 }
@@ -584,4 +670,107 @@ export async function generatePersonaDrafts(
     throw new Error("Не удалось получить валидные карточки персонажей.");
   }
   return personas;
+}
+
+function parseLookPromptJson(text: string): PersonaLookPromptResponse {
+  const trimmed = text.trim();
+  const jsonStart = trimmed.indexOf("{");
+  const jsonEnd = trimmed.lastIndexOf("}");
+  const chunk =
+    jsonStart >= 0 && jsonEnd > jsonStart
+      ? trimmed.slice(jsonStart, jsonEnd + 1)
+      : trimmed;
+  const parsed = JSON.parse(chunk) as Partial<PersonaLookPromptResponse>;
+
+  const avatarPrompt = (parsed.avatarPrompt ?? "").trim();
+  const fullBodyPrompt = (parsed.fullBodyPrompt ?? "").trim();
+
+  if (!avatarPrompt || !fullBodyPrompt) {
+    throw new Error("Модель не вернула корректные prompts для avatar/fullbody.");
+  }
+
+  return {
+    avatarPrompt,
+    fullBodyPrompt,
+  };
+}
+
+export async function generatePersonaLookPrompts(
+  settings: AppSettings,
+  payload: PersonaLookPromptRequest,
+): Promise<PersonaLookPromptResponse> {
+  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
+  const endpoint = `${baseUrl}/api/v1/chat`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+  };
+
+  const systemPrompt = [
+    "Ты конвертер описаний внешности в ComfyUI prompts.",
+    "Верни ТОЛЬКО JSON объект без markdown и пояснений.",
+    'Формат строго: {"avatarPrompt":"...","fullBodyPrompt":"..."}',
+    "Оба промпта должны быть только comma-separated English tags.",
+    "Каждый тег короткий (1-2 слова), конкретный и визуальный.",
+    "Сохраняй консистентность идентичности между avatarPrompt и fullBodyPrompt.",
+    "Оба prompt должны описывать только одного человека: solo, single subject, без других людей в кадре.",
+    "Запрещены посторонние персонажи, лишние руки/лица/тела, группы людей и странные анатомические артефакты.",
+    "Запрещены коллажи/turnaround-sheet/несколько ракурсов в одном кадре: в одном prompt всегда один человек и один ракурс.",
+    "Одежда, волосы, цвет глаз, возрастной тип, телосложение и отличительные детали должны быть одинаковыми в обоих prompt.",
+    "В fullBodyPrompt явно фиксируй конкретный outfit (верх, низ, обувь/аксессуары при наличии), чтобы его можно было повторить без изменений в side/back.",
+    "По умолчанию используй нормальную уместную одежду (casual wear, dress, suit, smart casual) без странных/фетиш/костюмных элементов.",
+    "Если в описании нет явной тематики/роли, обязательно добавляй нейтральный повседневный гардероб и избегай эксцентричных костюмов.",
+    "Тематическую/спец-одежду добавляй только если это прямо следует из описания персонажа (Appearance/Style/Archetype).",
+    "Не добавляй провокационные/фетишные элементы гардероба, если они явно не запрошены в описании.",
+    "Обязательно повторяй стабильные признаки лица/волос/глаз/телосложения/стиля.",
+    "Разница между полями: avatarPrompt = close face portrait/headshot (лицо крупно в кадре); fullBodyPrompt = full body.",
+    "Для fullBodyPrompt всегда указывай clean/plain background (solid studio backdrop, no environment).",
+    "Для fullBodyPrompt задавай спокойную нейтральную позу (neutral standing pose, relaxed posture, arms relaxed).",
+    "Для avatarPrompt обязательно указывай внятный фон/окружение (например street, home interior, room, cafe, park), не оставляй пустой фон.",
+    "Без противоречащих тегов и без описаний предложениями.",
+  ].join("\n");
+
+  const input = [
+    `Name: ${payload.name || "Unknown"}`,
+    `Personality: ${payload.personalityPrompt || "-"}`,
+    `Appearance: ${payload.appearancePrompt || "-"}`,
+    `Style: ${payload.stylePrompt || "-"}`,
+    `Archetype: ${payload.advanced.core.archetype || "-"}`,
+    `Voice tone: ${payload.advanced.voice.tone || "-"}`,
+    `Emotion baseline: ${payload.advanced.emotion.baselineMood || "-"}`,
+    "Build two prompts for the same character identity.",
+  ].join("\n");
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: settings.model,
+      input,
+      system_prompt: systemPrompt,
+      max_output_tokens: Math.max(220, Math.min(700, settings.maxTokens)),
+      temperature: Math.max(0.4, Math.min(0.9, settings.temperature)),
+      store: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Ошибка генерации prompt'ов внешности (${response.status}): ${body}`,
+    );
+  }
+
+  const data = (await response.json()) as NativeChatResponse;
+  const text = data.output
+    .filter((item) => item.type === "message")
+    .map((item) => item.content ?? "")
+    .join("\n")
+    .trim();
+
+  if (!text) {
+    throw new Error("Модель вернула пустой ответ для prompts внешности.");
+  }
+
+  return parseLookPromptJson(text);
 }

@@ -2,6 +2,22 @@ function isDataUrl(value: string) {
   return value.startsWith("data:");
 }
 
+function sourceLooksLikeWebp(value: string) {
+  try {
+    const parsed = new URL(value, window.location.href);
+    const pathname = decodeURIComponent(parsed.pathname).toLowerCase();
+    if (pathname.endsWith(".webp")) return true;
+
+    const filename = parsed.searchParams.get("filename");
+    if (filename && decodeURIComponent(filename).toLowerCase().endsWith(".webp")) {
+      return true;
+    }
+  } catch {
+    return value.toLowerCase().includes(".webp");
+  }
+  return false;
+}
+
 function blobToDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -58,6 +74,9 @@ async function toLocalDataUrl(source: string) {
   if (!value) return "";
   if (isDataUrl(value)) return value;
   const blob = await fetchImageBlob(value);
+  if (blob.type === "image/webp" || sourceLooksLikeWebp(value)) {
+    return blobToDataUrl(blob);
+  }
   return convertBlobToWebpDataUrl(blob);
 }
 
@@ -78,4 +97,3 @@ export async function localizeImageUrls(sources: string[]) {
 
   return Array.from(new Set(localized));
 }
-

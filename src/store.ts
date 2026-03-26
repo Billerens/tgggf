@@ -38,6 +38,7 @@ interface AppState {
   activePersonaId: string | null;
   activeChatId: string | null;
   settings: AppSettings;
+  initialized: boolean;
   isLoading: boolean;
   error: string | null;
   initialize: () => Promise<void>;
@@ -47,6 +48,7 @@ interface AppState {
   deletePersona: (personaId: string) => Promise<void>;
   createChat: () => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
+  setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   saveSettings: (settings: AppSettings) => Promise<void>;
   clearError: () => void;
@@ -54,6 +56,11 @@ interface AppState {
 
 const nowIso = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
+const randomSeed = () => {
+  const values = new Uint32Array(2);
+  crypto.getRandomValues(values);
+  return (Number(values[0]) << 1) + Number(values[1]);
+};
 
 function titleFromText(text: string) {
   const first = text.replace(/\s+/g, " ").trim().slice(0, 48);
@@ -136,6 +143,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   activePersonaId: null,
   activeChatId: null,
   settings: DEFAULT_SETTINGS,
+  initialized: false,
   isLoading: false,
   error: null,
 
@@ -156,8 +164,12 @@ export const useAppStore = create<AppState>((set, get) => ({
           appearancePrompt:
             "Короткие серебристые волосы, спокойный взгляд, минималистичный футуристичный стиль.",
           stylePrompt: "Говорит понятно, спокойно и по делу, без лишней воды.",
+          imageCheckpoint: "",
           advanced: createDefaultAdvancedProfile(),
           avatarUrl: "",
+          fullBodyUrl: "",
+          fullBodySideUrl: "",
+          fullBodyBackUrl: "",
           createdAt: ts,
           updatedAt: ts,
         };
@@ -179,10 +191,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        initialized: true,
         isLoading: false,
       });
     } catch (error) {
-      set({ isLoading: false, error: (error as Error).message });
+      set({ initialized: true, isLoading: false, error: (error as Error).message });
     }
   },
 
@@ -233,8 +246,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         personalityPrompt: input.personalityPrompt.trim(),
         appearancePrompt: input.appearancePrompt.trim(),
         stylePrompt: input.stylePrompt.trim(),
+        imageCheckpoint: input.imageCheckpoint.trim(),
         advanced: normalizeAdvancedProfile(input.advanced ?? createDefaultAdvancedProfile()),
         avatarUrl: input.avatarUrl.trim(),
+        fullBodyUrl: input.fullBodyUrl.trim(),
+        fullBodySideUrl: input.fullBodySideUrl.trim(),
+        fullBodyBackUrl: input.fullBodyBackUrl.trim(),
         createdAt: get().personas.find((personaItem) => personaItem.id === input.id)?.createdAt ?? ts,
         updatedAt: ts,
       };
@@ -292,6 +309,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         id: id(),
         personaId: activePersonaId,
         title: "Новый чат",
+        chatStyleStrength: undefined,
         createdAt: ts,
         updatedAt: ts,
       };
@@ -343,6 +361,35 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  setChatStyleStrength: async (chatId, value) => {
+    set({ isLoading: true, error: null });
+    try {
+      const currentChat = get().chats.find((chat) => chat.id === chatId);
+      if (!currentChat) {
+        set({ isLoading: false });
+        return;
+      }
+      const normalizedValue =
+        typeof value === "number" && Number.isFinite(value)
+          ? Math.max(0, Math.min(1, Number(value)))
+          : undefined;
+      const updatedChat: ChatSession = {
+        ...currentChat,
+        chatStyleStrength: normalizedValue,
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveChat(updatedChat);
+      const chats = await dbApi.getChats(updatedChat.personaId);
+      set({
+        chats,
+        activeChatId: chatId,
         isLoading: false,
       });
     } catch (error) {
@@ -421,6 +468,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         assistantMessage = {
           ...assistantMessage,
           imageGenerationPending: true,
+          imageGenerationExpected: promptsForGeneration.length,
+          imageGenerationCompleted: 0,
         };
       }
 
@@ -444,20 +493,56 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       if (promptsForGeneration.length > 0) {
         void (async () => {
+          const aggregatedLocalizedUrls: string[] = [];
+          let completedCount = 0;
+          const styleReferenceImage =
+            activePersona.avatarUrl.trim() || activePersona.fullBodyUrl.trim() || undefined;
+          const chatStyleStrength =
+            typeof activeChat?.chatStyleStrength === "number"
+              ? activeChat.chatStyleStrength
+              : get().settings.chatStyleStrength;
+
           try {
-            const generatedImageUrls = await generateComfyImages(
-              promptsForGeneration,
+            await generateComfyImages(
+              promptsForGeneration.map((prompt) => ({
+                prompt,
+                checkpointName: activePersona.imageCheckpoint || undefined,
+                seed: randomSeed(),
+                styleReferenceImage,
+                styleStrength: styleReferenceImage ? chatStyleStrength : undefined,
+                compositionStrength: 0,
+              })),
               get().settings.comfyBaseUrl,
               get().settings.comfyAuth,
+              async (promptImageUrls) => {
+                completedCount += 1;
+                const localizedChunk = await localizeImageUrls(promptImageUrls);
+                for (const localized of localizedChunk) {
+                  if (!aggregatedLocalizedUrls.includes(localized)) {
+                    aggregatedLocalizedUrls.push(localized);
+                  }
+                }
+
+                await patchAssistantMessage({
+                  imageUrls: [...aggregatedLocalizedUrls],
+                  imageGenerationPending:
+                    completedCount < promptsForGeneration.length,
+                  imageGenerationExpected: promptsForGeneration.length,
+                  imageGenerationCompleted: completedCount,
+                });
+              },
             );
-            const localizedImageUrls = await localizeImageUrls(generatedImageUrls);
             await patchAssistantMessage({
-              imageUrls: localizedImageUrls,
+              imageUrls: [...aggregatedLocalizedUrls],
               imageGenerationPending: false,
+              imageGenerationExpected: promptsForGeneration.length,
+              imageGenerationCompleted: promptsForGeneration.length,
             });
           } catch {
             await patchAssistantMessage({
               imageGenerationPending: false,
+              imageGenerationExpected: promptsForGeneration.length,
+              imageGenerationCompleted: completedCount,
             });
           }
         })();

@@ -206,13 +206,24 @@ export function buildAdvancedProfileFromLegacy(persona: Pick<Persona, "personali
   return defaults;
 }
 
-type LegacyPersonaRecord = Omit<Persona, "advanced"> & {
+type LegacyPersonaRecord = Omit<
+  Persona,
+  "advanced" | "fullBodyUrl" | "fullBodySideUrl" | "fullBodyBackUrl" | "imageCheckpoint"
+> & {
   advanced?: Partial<PersonaAdvancedProfile>;
+  fullBodyUrl?: string;
+  fullBodySideUrl?: string;
+  fullBodyBackUrl?: string;
+  imageCheckpoint?: string;
 };
 
 export function normalizePersonaRecord(persona: LegacyPersonaRecord): Persona {
   return {
     ...persona,
+    imageCheckpoint: cleanText(persona.imageCheckpoint),
+    fullBodyUrl: cleanText(persona.fullBodyUrl),
+    fullBodySideUrl: cleanText(persona.fullBodySideUrl),
+    fullBodyBackUrl: cleanText(persona.fullBodyBackUrl),
     advanced: normalizeAdvancedProfile(persona.advanced ?? buildAdvancedProfileFromLegacy(persona)),
   };
 }

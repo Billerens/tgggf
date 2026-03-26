@@ -168,6 +168,38 @@ html, body {
 
 .persona-item-content { flex: 1; display:flex; flex-direction:column; gap:2px; overflow:hidden;}
 .persona-item-content strong { white-space: nowrap; overflow: hidden; text-overflow:ellipsis;}
+.sidebar-item-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.sidebar-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow: hidden;
+}
+.sidebar-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.04);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 700;
+}
+.sidebar-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 
 .chat-item.active, .persona-item.active {
   background: var(--surface-active);
@@ -248,6 +280,24 @@ html, body {
 }
 .chat-header-persona:hover {
   background: rgba(255, 255, 255, 0.07);
+}
+.chat-header-avatar {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.05);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+.chat-header-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .persona-state-badges {
   display: flex;
@@ -401,6 +451,76 @@ button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border
   height: 36px;
   padding: 0;
   border-radius: 10px;
+}
+
+.generation-pane .chat-header p {
+  margin: 8px 0 0;
+  max-width: 780px;
+}
+
+.generation-content {
+  padding: 24px 28px 28px;
+  overflow-y: auto;
+  display: grid;
+  gap: 18px;
+}
+
+.generation-form {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.generation-form textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+
+.generation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.generation-grid .checkbox-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.generation-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.generation-stats span {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.generation-gallery {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.015);
+  padding: 16px;
+}
+
+.generation-note {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 /* Mobile Navigation (Bottom bar) */
@@ -669,6 +789,43 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
 .generator-form { display:flex; flex-direction:column; gap:12px;}
 .generated-list { display:flex; flex-direction:column; gap:12px;}
 .generated-card { border: 1px solid var(--border-light); background: rgba(255,255,255,0.02); padding: 16px;}
+.persona-look-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.persona-look-card {
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.persona-look-card span {
+  font-size: 11px;
+  color: var(--text-secondary);
+  padding: 8px 10px 4px;
+}
+.persona-look-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.persona-look-card.avatar {
+  aspect-ratio: 1 / 1;
+}
+.persona-look-card.fullbody {
+  aspect-ratio: 2 / 3;
+}
+.persona-look-preview-btn {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
 
 .error-toast {
   position: fixed; top: 24px; left: 50%; transform: translateX(-50%);
@@ -736,6 +893,12 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   background-size: 200% 100%;
   animation: imageSkeletonShimmer 1.2s linear infinite;
 }
+.image-skeleton-fill {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+  border-radius: 0 0 10px 10px;
+}
 @keyframes imageSkeletonShimmer {
   to {
     background-position-x: -200%;
@@ -797,6 +960,12 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   
   .messages {
     padding: 20px 16px 180px; /* Space for composer and bottom nav */
+  }
+  .generation-content {
+    padding: 14px 14px 94px;
+  }
+  .generation-form {
+    padding: 14px;
   }
   .bubble { max-width: 95%; padding: 14px 18px;}
   

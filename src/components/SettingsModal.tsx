@@ -278,6 +278,25 @@ export function SettingsModal({
 
           {activeTab === "chat" ? (
             <>
+              <label>
+                Сила style reference в чате
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={settingsDraft.chatStyleStrength}
+                  onChange={(e) =>
+                    setSettingsDraft((v) => ({
+                      ...v,
+                      chatStyleStrength: Number(e.target.value),
+                    }))
+                  }
+                />
+                <small style={{ color: "var(--text-secondary)", display: "block", marginTop: 6 }}>
+                  Насколько строго Comfy держит внешность от референса (avatar/fullbody). Ниже = больше вариативности, выше = больше консистентности.
+                </small>
+              </label>
               <label className="checkbox-row">
                 <input
                   type="checkbox"

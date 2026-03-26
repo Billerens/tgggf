@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SendHorizontal, Trash2, ChevronDown, HeartHandshake, Brain, Database, Zap, Link2 } from "lucide-react";
 import { getMoodLabel } from "../personaProfiles";
 import type { ChatMessage, ChatSession, Persona, PersonaRuntimeState } from "../types";
@@ -125,6 +125,13 @@ export function ChatPane({
   onOpenChatDetails,
 }: ChatPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const node = messagesEndRef.current;
+    if (!node) return;
+    node.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages]);
 
   const relationshipBadge =
     activePersonaState
@@ -172,6 +179,13 @@ export function ChatPane({
                 onClick={onOpenSidebar}
                 title="Сменить персону"
               >
+                <span className="chat-header-avatar" aria-hidden="true">
+                  {activePersona?.avatarUrl ? (
+                    <img src={activePersona.avatarUrl} alt="" loading="lazy" />
+                  ) : (
+                    <span>{(activePersona?.name || "?").trim().charAt(0).toUpperCase()}</span>
+                  )}
+                </span>
                 {activePersona?.name ?? "Не выбрана"} <ChevronDown size={14} />
               </div>
               {activePersonaState ? (
@@ -257,10 +271,13 @@ export function ChatPane({
               : undefined;
           const statusDetails = buildStatusDetails(personaControlToRender);
           const imageUrlsToRender = msg.imageUrls ?? [];
-          const imageSkeletonCount = Math.max(
+          const fallbackExpected = Math.max(
             1,
             comfyPromptsToRender.length || (msg.comfyPrompt ? 1 : 0),
           );
+          const expectedCount = msg.imageGenerationExpected ?? fallbackExpected;
+          const completedCount = msg.imageGenerationCompleted ?? imageUrlsToRender.length;
+          const imageSkeletonCount = Math.max(0, expectedCount - completedCount);
 
           if (
             !textToRender &&
@@ -297,7 +314,7 @@ export function ChatPane({
                   ))}
                 </section>
               ) : null}
-              {msg.imageGenerationPending ? (
+              {msg.imageGenerationPending && imageSkeletonCount > 0 ? (
                 <section className="bubble-images" aria-label="Изображения создаются">
                   {Array.from({ length: imageSkeletonCount }).map((_, index) => (
                     <div key={`${msg.id}-skeleton-${index}`} className="image-skeleton-card" />
@@ -317,6 +334,7 @@ export function ChatPane({
         {messages.length === 0 ? (
           <p className="empty-state">Начните диалог: отправьте первое сообщение.</p>
         ) : null}
+        <div ref={messagesEndRef} aria-hidden="true" />
       </section>
 
       <div className="composer-wrapper">

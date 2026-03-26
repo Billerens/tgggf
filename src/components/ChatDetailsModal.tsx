@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import type { AppSettings, ChatMessage, ChatSession, Persona, PersonaMemory, PersonaRuntimeState } from "../types";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -11,6 +11,7 @@ interface ChatDetailsModalProps {
   memories: PersonaMemory[];
   runtimeState: PersonaRuntimeState | null;
   settings: AppSettings;
+  onUpdateChatStyleStrength: (chatId: string, value: number | null) => void;
   onClose: () => void;
 }
 
@@ -111,12 +112,30 @@ export function ChatDetailsModal({
   memories,
   runtimeState,
   settings,
+  onUpdateChatStyleStrength,
   onClose,
 }: ChatDetailsModalProps) {
   const [tab, setTab] = useState<DetailsTab>("attachments");
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [useGlobalStyleStrength, setUseGlobalStyleStrength] = useState(
+    typeof chat?.chatStyleStrength !== "number",
+  );
+  const [chatStyleStrengthDraft, setChatStyleStrengthDraft] = useState(
+    typeof chat?.chatStyleStrength === "number"
+      ? chat.chatStyleStrength
+      : settings.chatStyleStrength,
+  );
   const attachments = useMemo(() => extractImageAttachments(messages), [messages]);
   const memoryByLayer = useMemo(() => groupMemories(memories), [memories]);
+
+  useEffect(() => {
+    setUseGlobalStyleStrength(typeof chat?.chatStyleStrength !== "number");
+    setChatStyleStrengthDraft(
+      typeof chat?.chatStyleStrength === "number"
+        ? chat.chatStyleStrength
+        : settings.chatStyleStrength,
+    );
+  }, [chat?.id, chat?.chatStyleStrength, settings.chatStyleStrength]);
 
   if (!open) return null;
 
@@ -217,6 +236,51 @@ export function ChatDetailsModal({
                 <h4>Флаги</h4>
                 <p>Показывать ComfyUI: {settings.showSystemImageBlock ? "да" : "нет"}</p>
                 <p>Показывать изменения статуса: {settings.showStatusChangeDetails ? "да" : "нет"}</p>
+              </div>
+
+              <div className="status-card">
+                <h4>Style reference</h4>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={useGlobalStyleStrength}
+                    onChange={(event) => {
+                      const next = event.target.checked;
+                      setUseGlobalStyleStrength(next);
+                      if (chat) {
+                        onUpdateChatStyleStrength(
+                          chat.id,
+                          next ? null : chatStyleStrengthDraft,
+                        );
+                      }
+                    }}
+                  />
+                  Использовать глобальную силу style reference
+                </label>
+                <label>
+                  Сила style reference для этого чата
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={chatStyleStrengthDraft}
+                    disabled={useGlobalStyleStrength}
+                    onChange={(event) => {
+                      const parsed = Number(event.target.value);
+                      const next = Number.isFinite(parsed)
+                        ? Math.max(0, Math.min(1, parsed))
+                        : chatStyleStrengthDraft;
+                      setChatStyleStrengthDraft(next);
+                      if (!useGlobalStyleStrength && chat) {
+                        onUpdateChatStyleStrength(chat.id, next);
+                      }
+                    }}
+                  />
+                  <small style={{ color: "var(--text-secondary)", display: "block", marginTop: 6 }}>
+                    Приоритет выше глобальной настройки. Если включено наследование, используется значение из настроек.
+                  </small>
+                </label>
               </div>
             </div>
 
