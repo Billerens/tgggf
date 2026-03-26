@@ -127,6 +127,7 @@ function formatAppearanceProfile(
   if (!appearance) return "Не указано.";
   const parts = [
     appearance.faceDescription,
+    appearance.height,
     appearance.eyes,
     appearance.lips,
     appearance.hair,
@@ -379,9 +380,18 @@ export interface PersonaLookPromptRequest {
   advanced: PersonaAdvancedProfile;
 }
 
+export interface PersonaLookDetailPrompts {
+  face: string;
+  eyes: string;
+  nose: string;
+  lips: string;
+  hands: string;
+}
+
 export interface PersonaLookPromptResponse {
   avatarPrompt: string;
   fullBodyPrompt: string;
+  detailPrompts: PersonaLookDetailPrompts;
 }
 
 export async function generateThemedComfyPrompt(
@@ -616,6 +626,7 @@ function normalizeGeneratedPersonas(data: unknown): GeneratedPersonaDraft[] {
           appearancePrompt ??
           ""
         ).trim(),
+        height: (appearanceRaw?.height ?? "").trim(),
         eyes: (appearanceRaw?.eyes ?? "").trim(),
         lips: (appearanceRaw?.lips ?? "").trim(),
         hair: (appearanceRaw?.hair ?? "").trim(),
@@ -668,7 +679,7 @@ export async function generatePersonaDrafts(
     "Ты генератор карточек персонажей для ролевого AI-чата.",
     "Верни ТОЛЬКО JSON-массив без markdown и пояснений.",
     "Формат каждого элемента:",
-    '{"name":"...","personalityPrompt":"...","stylePrompt":"...","avatarUrl":"","appearance":{"faceDescription":"...","eyes":"...","lips":"...","hair":"...","ageType":"...","bodyType":"...","markers":"...","accessories":"...","clothingStyle":"...","skin":"..."},"advanced":{"core":{"archetype":"...","backstory":"...","goals":"...","values":"...","boundaries":"...","expertise":"...","selfGender":"auto|female|male|neutral"},"voice":{"tone":"...","lexicalStyle":"...","sentenceLength":"short|balanced|long","formality":0,"expressiveness":0,"emoji":0},"behavior":{"initiative":0,"empathy":0,"directness":0,"curiosity":0,"challenge":0,"creativity":0},"emotion":{"baselineMood":"calm|warm|playful|focused|analytical|inspired|annoyed|upset|angry","warmth":0,"stability":0,"positiveTriggers":"...","negativeTriggers":"..."},"memory":{"rememberFacts":true,"rememberPreferences":true,"rememberGoals":true,"rememberEvents":true,"maxMemories":24,"decayDays":30}}}',
+    '{"name":"...","personalityPrompt":"...","stylePrompt":"...","avatarUrl":"","appearance":{"faceDescription":"...","height":"...","eyes":"...","lips":"...","hair":"...","ageType":"...","bodyType":"...","markers":"...","accessories":"...","clothingStyle":"...","skin":"..."},"advanced":{"core":{"archetype":"...","backstory":"...","goals":"...","values":"...","boundaries":"...","expertise":"...","selfGender":"auto|female|male|neutral"},"voice":{"tone":"...","lexicalStyle":"...","sentenceLength":"short|balanced|long","formality":0,"expressiveness":0,"emoji":0},"behavior":{"initiative":0,"empathy":0,"directness":0,"curiosity":0,"challenge":0,"creativity":0},"emotion":{"baselineMood":"calm|warm|playful|focused|analytical|inspired|annoyed|upset|angry","warmth":0,"stability":0,"positiveTriggers":"...","negativeTriggers":"..."},"memory":{"rememberFacts":true,"rememberPreferences":true,"rememberGoals":true,"rememberEvents":true,"maxMemories":24,"decayDays":30}}}',
     "Все числовые поля в диапазоне 0..100 (кроме maxMemories и decayDays).",
     "maxMemories: 4..120, decayDays: 1..365.",
     "Поля appearance обязательны и должны быть осмысленно заполнены.",
@@ -732,16 +743,38 @@ function parseLookPromptJson(text: string): PersonaLookPromptResponse {
 
   const avatarPrompt = (parsed.avatarPrompt ?? "").trim();
   const fullBodyPrompt = (parsed.fullBodyPrompt ?? "").trim();
+  const detailPromptsRaw =
+    parsed.detailPrompts && typeof parsed.detailPrompts === "object"
+      ? (parsed.detailPrompts as Partial<PersonaLookDetailPrompts>)
+      : {};
+  const detailPrompts: PersonaLookDetailPrompts = {
+    face:
+      (detailPromptsRaw.face ?? "").trim() ||
+      "natural skin texture, clean facial symmetry, fine pores, realistic complexion, sharp facial details",
+    eyes:
+      (detailPromptsRaw.eyes ?? "").trim() ||
+      "detailed iris, crisp eyelashes, balanced eyelids, clear sclera, natural eye highlights",
+    nose:
+      (detailPromptsRaw.nose ?? "").trim() ||
+      "defined nose bridge, natural nostrils, smooth nose contour, realistic nose tip",
+    lips:
+      (detailPromptsRaw.lips ?? "").trim() ||
+      "clean lip contour, soft lip texture, natural lip shading, detailed cupid bow",
+    hands:
+      (detailPromptsRaw.hands ?? "").trim() ||
+      "anatomically correct hands, five fingers, clean nails, natural finger proportions, realistic knuckles",
+  };
 
   if (!avatarPrompt || !fullBodyPrompt) {
     throw new Error(
-      "Модель не вернула корректные prompts для avatar/fullbody.",
+      "Модель не вернула корректные prompts для avatar/fullbody/detailing.",
     );
   }
 
   return {
     avatarPrompt,
     fullBodyPrompt,
+    detailPrompts,
   };
 }
 
@@ -759,8 +792,9 @@ export async function generatePersonaLookPrompts(
   const systemPrompt = [
     "Ты конвертер описаний внешности в ComfyUI prompts.",
     "Верни ТОЛЬКО JSON объект без markdown и пояснений.",
-    'Формат строго: {"avatarPrompt":"...","fullBodyPrompt":"..."}',
+    'Формат строго: {"avatarPrompt":"...","fullBodyPrompt":"...","detailPrompts":{"face":"...","eyes":"...","nose":"...","lips":"...","hands":"..."}}',
     "Оба промпта должны быть только comma-separated English tags.",
+    "detailPrompts.* также только comma-separated English tags.",
     "Каждый тег короткий (1-2 слова), конкретный и визуальный.",
     "Сохраняй консистентность идентичности между avatarPrompt и fullBodyPrompt.",
     "Оба prompt должны описывать только одного человека: solo, single subject, без других людей в кадре.",
@@ -777,6 +811,12 @@ export async function generatePersonaLookPrompts(
     "Для fullBodyPrompt всегда указывай clean/plain background (solid studio backdrop, no environment).",
     "Для fullBodyPrompt задавай спокойную нейтральную позу (neutral standing pose, relaxed posture, arms relaxed).",
     "Для avatarPrompt обязательно указывай внятный фон/окружение (например street, home interior, room, cafe, park), не оставляй пустой фон.",
+    "detailPrompts.face описывает микродетали лица/кожи/пор/симметрии.",
+    "detailPrompts.eyes описывает микродетали глаз/ресниц/взгляда.",
+    "detailPrompts.nose описывает переносицу/кончик/крылья носа аккуратно и натурально.",
+    "detailPrompts.lips описывает контур/текстуру губ натурально.",
+    "detailPrompts.hands описывает аккуратные пальцы/ногти/анатомию кистей без лишних пальцев.",
+    "В detailPrompts не добавляй сексуализированных тегов и NSFW.",
     "Без противоречащих тегов и без описаний предложениями.",
   ].join("\n");
 

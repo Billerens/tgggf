@@ -4,6 +4,7 @@ import type { Persona } from "../types";
 export type PersonaDraft = Omit<Persona, "id" | "createdAt" | "updatedAt">;
 export type SidebarTab = "chats" | "personas" | "generation";
 export type PersonaModalTab = "editor" | "generator";
+export type LookDetailLevel = "off" | "soft" | "medium" | "strong";
 export interface PersonaLookPack {
   status: "pending" | "ready";
   avatarUrl: string;
@@ -19,6 +20,7 @@ export function createEmptyPersonaDraft(): PersonaDraft {
     stylePrompt: "",
     appearance: {
       faceDescription: "",
+      height: "",
       eyes: "",
       lips: "",
       hair: "",

@@ -49,7 +49,14 @@ export interface ComfyGenerationItem {
   forceHiResFix?: boolean;
   enableUpscaler?: boolean;
   upscaleFactor?: number;
+  detailing?: {
+    enabled?: boolean;
+    level?: "soft" | "medium" | "strong";
+    prompts?: Partial<Record<"face" | "eyes" | "nose" | "lips" | "hands", string>>;
+  };
 }
+
+type DetailLevel = "soft" | "medium" | "strong";
 
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 const POSITIVE_PROMPT_NODE_ID = "1050";
@@ -115,9 +122,84 @@ function buildAuthHeaders(auth?: EndpointAuthConfig) {
   return headers;
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
+async function interruptComfyExecution(baseUrl: string, auth?: EndpointAuthConfig) {
+  try {
+    await fetch(`${baseUrl}/interrupt`, {
+      method: "POST",
+      headers: buildAuthHeaders(auth),
+    });
+  } catch {
+    // Best-effort interrupt.
+  }
+}
+
+async function clearComfyQueue(baseUrl: string, auth?: EndpointAuthConfig) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...buildAuthHeaders(auth),
+  };
+
+  try {
+    await fetch(`${baseUrl}/queue`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ clear: true }),
+    });
+    return;
+  } catch {
+    // continue fallback
+  }
+
+  // Fallback payload used by some custom wrappers.
+  try {
+    await fetch(`${baseUrl}/queue`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ delete: "all" }),
+    });
+  } catch {
+    // Best-effort queue clear.
+  }
+}
+
+async function stopComfyExecution(baseUrl: string, auth?: EndpointAuthConfig) {
+  await interruptComfyExecution(baseUrl, auth);
+  await clearComfyQueue(baseUrl, auth);
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException("Generation aborted", "AbortError");
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal) {
+  if (!signal) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      cleanup();
+      reject(new DOMException("Generation aborted", "AbortError"));
+    };
+
+    const cleanup = () => {
+      signal.removeEventListener("abort", onAbort);
+    };
+
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) {
+      onAbort();
+    }
   });
 }
 
@@ -209,6 +291,87 @@ function setUpscaleFactorByTitle(workflow: ComfyWorkflow, value?: number) {
       node.inputs.Xf = next;
     }
   }
+}
+
+function setBooleanByExactTitle(workflow: ComfyWorkflow, title: string, value?: boolean) {
+  if (typeof value !== "boolean") return;
+  const target = title.toLowerCase();
+  for (const node of Object.values(workflow)) {
+    if (!node.inputs) continue;
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle !== target) continue;
+    if (typeof node.inputs.value === "boolean") {
+      node.inputs.value = value;
+    }
+  }
+}
+
+function setSliderByExactTitle(workflow: ComfyWorkflow, title: string, value?: number) {
+  if (!Number.isFinite(value)) return;
+  const target = title.toLowerCase();
+  for (const node of Object.values(workflow)) {
+    if (!node.inputs) continue;
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle !== target) continue;
+    if (typeof node.inputs.Xi === "number") node.inputs.Xi = value;
+    if (typeof node.inputs.Xf === "number") node.inputs.Xf = value;
+    if (typeof node.inputs.value === "number") node.inputs.value = value;
+  }
+}
+
+function setClipTextByExactTitle(
+  workflow: ComfyWorkflow,
+  title: string,
+  value?: string,
+) {
+  if (!value?.trim()) return;
+  const target = title.toLowerCase();
+  for (const node of Object.values(workflow)) {
+    if (node.class_type !== "CLIPTextEncode" || !node.inputs) continue;
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle !== target) continue;
+    if (typeof node.inputs.text === "string") {
+      node.inputs.text = value.trim();
+    }
+  }
+}
+
+function applyDetailing(
+  workflow: ComfyWorkflow,
+  detailing?: ComfyGenerationItem["detailing"],
+) {
+  if (!detailing?.enabled || !detailing.level) {
+    setBooleanByExactTitle(workflow, "Inpaint?", false);
+    return;
+  }
+
+  const levelMap: Record<
+    DetailLevel,
+    { face: number; eyes: number; nose: number; lips: number; hands: number }
+  > = {
+    soft: { face: 0.1, eyes: 0.1, nose: 0.12, lips: 0.13, hands: 0.16 },
+    medium: { face: 0.14, eyes: 0.14, nose: 0.18, lips: 0.2, hands: 0.22 },
+    strong: { face: 0.18, eyes: 0.18, nose: 0.22, lips: 0.24, hands: 0.28 },
+  };
+  const denoise = levelMap[detailing.level as DetailLevel];
+
+  setBooleanByExactTitle(workflow, "Inpaint?", true);
+  setSliderByExactTitle(workflow, "Denoise Face", denoise.face);
+  setSliderByExactTitle(workflow, "Denoise Eyes", denoise.eyes);
+  setSliderByExactTitle(workflow, "Denoise Nose", denoise.nose);
+  setSliderByExactTitle(workflow, "Denoise Lips", denoise.lips);
+  setSliderByExactTitle(workflow, "Denoise Hands", denoise.hands);
+
+  // Explicitly disable erotic detail passes in persona generation flow.
+  setSliderByExactTitle(workflow, "Denoise Nipples", 0);
+  setSliderByExactTitle(workflow, "Denoise Vagina", 0);
+  setSliderByExactTitle(workflow, "Denoise Penis", 0);
+
+  setClipTextByExactTitle(workflow, "Face", detailing.prompts?.face);
+  setClipTextByExactTitle(workflow, "Eyes", detailing.prompts?.eyes);
+  setClipTextByExactTitle(workflow, "Nose", detailing.prompts?.nose);
+  setClipTextByExactTitle(workflow, "Lips", detailing.prompts?.lips);
+  setClipTextByExactTitle(workflow, "Hands", detailing.prompts?.hands);
 }
 
 function setStyleImageFilename(workflow: ComfyWorkflow, filename?: string) {
@@ -325,7 +488,9 @@ async function uploadReferenceImage(
   baseUrl: string,
   source: string,
   auth?: EndpointAuthConfig,
+  signal?: AbortSignal,
 ) {
+  throwIfAborted(signal);
   const blob = await sourceToBlob(source);
   const ext = extensionFromBlob(blob);
   const filename = `tg_gf_ref_${Date.now()}_${Math.floor(Math.random() * 100000)}.${ext}`;
@@ -339,6 +504,7 @@ async function uploadReferenceImage(
     method: "POST",
     headers: buildAuthHeaders(auth),
     body: form,
+    signal,
   });
 
   if (!response.ok) {
@@ -354,12 +520,15 @@ async function queuePrompt(
   baseUrl: string,
   workflow: ComfyWorkflow,
   auth?: EndpointAuthConfig,
+  signal?: AbortSignal,
 ) {
+  throwIfAborted(signal);
   const uiWorkflow = buildUiWorkflowForExtraPngInfo(workflow);
 
   const response = await fetch(`${baseUrl}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...buildAuthHeaders(auth) },
+    signal,
     body: JSON.stringify({
       client_id: crypto.randomUUID(),
       prompt: workflow,
@@ -390,14 +559,17 @@ async function waitForHistory(
   baseUrl: string,
   promptId: string,
   auth?: EndpointAuthConfig,
+  signal?: AbortSignal,
 ) {
   const startedAt = Date.now();
   while (Date.now() - startedAt <= HISTORY_TIMEOUT_MS) {
+    throwIfAborted(signal);
     const response = await fetch(
       `${baseUrl}/history/${encodeURIComponent(promptId)}`,
       {
         cache: "no-store",
         headers: buildAuthHeaders(auth),
+        signal,
       },
     );
 
@@ -415,7 +587,7 @@ async function waitForHistory(
       }
     }
 
-    await sleep(HISTORY_POLL_INTERVAL_MS);
+    await sleep(HISTORY_POLL_INTERVAL_MS, signal);
   }
 
   throw new Error("ComfyUI: таймаут ожидания результата генерации.");
@@ -464,7 +636,9 @@ export async function generateComfyImages(
   baseUrlOverride?: string,
   auth?: EndpointAuthConfig,
   onPromptResult?: (imageUrls: string[], index: number, total: number) => void | Promise<void>,
+  signal?: AbortSignal,
 ) {
+  throwIfAborted(signal);
   const normalizedItems = itemsOrPrompts
     .map((item) =>
       typeof item === "string"
@@ -481,6 +655,7 @@ export async function generateComfyImages(
             forceHiResFix: item.forceHiResFix,
             enableUpscaler: item.enableUpscaler,
             upscaleFactor: item.upscaleFactor,
+            detailing: item.detailing,
           },
     )
     .filter((item) => Boolean(item.prompt));
@@ -491,33 +666,45 @@ export async function generateComfyImages(
   const template = await loadWorkflowTemplate();
   const resultUrls: string[] = [];
 
-  for (const [index, item] of normalizedItems.entries()) {
-    const workflow = createWorkflowInstance(template);
-    setPositivePrompt(workflow, item.prompt);
-    setSize(workflow, item.width, item.height);
-    setSeed(workflow, item.seed);
-    setCheckpointName(workflow, item.checkpointName);
-    setSliderValue(workflow, STYLE_STRENGTH_NODE_ID, item.styleStrength);
-    setSliderValue(workflow, COMPOSITION_STRENGTH_NODE_ID, item.compositionStrength);
-    setBooleanValue(workflow, HIRES_FIX_NODE_ID, item.forceHiResFix);
-    setBooleanByTitle(workflow, ["enable upscaler", "use hi-res fix"], item.enableUpscaler);
-    setUpscaleFactorByTitle(workflow, item.upscaleFactor);
-    if (item.styleReferenceImage) {
-      const uploadedFilename = await uploadReferenceImage(
-        baseUrl,
-        item.styleReferenceImage,
-        auth,
-      );
-      setStyleImageFilename(workflow, uploadedFilename);
+  try {
+    for (const [index, item] of normalizedItems.entries()) {
+      throwIfAborted(signal);
+      const workflow = createWorkflowInstance(template);
+      setPositivePrompt(workflow, item.prompt);
+      setSize(workflow, item.width, item.height);
+      setSeed(workflow, item.seed);
+      setCheckpointName(workflow, item.checkpointName);
+      setSliderValue(workflow, STYLE_STRENGTH_NODE_ID, item.styleStrength);
+      setSliderValue(workflow, COMPOSITION_STRENGTH_NODE_ID, item.compositionStrength);
+      setBooleanValue(workflow, HIRES_FIX_NODE_ID, item.forceHiResFix);
+      setBooleanByTitle(workflow, ["enable upscaler", "use hi-res fix"], item.enableUpscaler);
+      setUpscaleFactorByTitle(workflow, item.upscaleFactor);
+      applyDetailing(workflow, item.detailing);
+      if (item.styleReferenceImage) {
+        const uploadedFilename = await uploadReferenceImage(
+          baseUrl,
+          item.styleReferenceImage,
+          auth,
+          signal,
+        );
+        setStyleImageFilename(workflow, uploadedFilename);
+      }
+      sanitizeWorkflowForApi(workflow);
+      const promptId = await queuePrompt(baseUrl, workflow, auth, signal);
+      const historyEntry = await waitForHistory(baseUrl, promptId, auth, signal);
+      const imageUrls = collectImageUrls(baseUrl, workflow, historyEntry);
+      if (onPromptResult) {
+        await onPromptResult(imageUrls, index, normalizedItems.length);
+      }
+      resultUrls.push(...imageUrls);
     }
-    sanitizeWorkflowForApi(workflow);
-    const promptId = await queuePrompt(baseUrl, workflow, auth);
-    const historyEntry = await waitForHistory(baseUrl, promptId, auth);
-    const imageUrls = collectImageUrls(baseUrl, workflow, historyEntry);
-    if (onPromptResult) {
-      await onPromptResult(imageUrls, index, normalizedItems.length);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      await stopComfyExecution(baseUrl, auth);
+    } else {
+      await stopComfyExecution(baseUrl, auth);
     }
-    resultUrls.push(...imageUrls);
+    throw error;
   }
 
   return Array.from(new Set(resultUrls));

@@ -1,4 +1,15 @@
-import { ImagePlus, MessageCircle, Plus, Settings, Users, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  Check,
+  ChevronDown,
+  ImagePlus,
+  MessageCircle,
+  Plus,
+  Settings,
+  Trash2,
+  Users,
+  X,
+} from "lucide-react";
 import { Logo } from "./Logo";
 import type { ChatSession, GeneratorSession, Persona } from "../types";
 import type { SidebarTab } from "../ui/types";
@@ -18,6 +29,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
   onCreateChat: () => void;
   onCreateGenerationSession: () => void;
+  onDeleteGenerationSession: (sessionId: string) => void;
   onSelectChat: (chatId: string) => void;
   onSelectGenerationSession: (sessionId: string) => void;
   onSelectPersona: (personaId: string) => void;
@@ -26,6 +38,87 @@ interface SidebarProps {
   isMobileOpen: boolean;
   onCloseMobile: () => void;
   onToggleMobileTab: (tab: SidebarTab) => void;
+}
+
+interface PersonaPickerProps {
+  label: string;
+  personas: Persona[];
+  selectedPersonaId: string | null;
+  onSelect: (personaId: string) => void;
+}
+
+function PersonaPicker({ label, personas, selectedPersonaId, onSelect }: PersonaPickerProps) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selectedPersona =
+    personas.find((persona) => persona.id === selectedPersonaId) ?? null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (rootRef.current && target && !rootRef.current.contains(target)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  return (
+    <div className="sidebar-persona-picker" ref={rootRef}>
+      <span>{label}</span>
+      <button
+        type="button"
+        className="sidebar-persona-trigger"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <div className="sidebar-item-main">
+          <div className="sidebar-avatar" aria-hidden="true">
+            {selectedPersona?.avatarUrl ? (
+              <img src={selectedPersona.avatarUrl} alt="" loading="lazy" />
+            ) : (
+              <span>{(selectedPersona?.name || "?").trim().charAt(0).toUpperCase()}</span>
+            )}
+          </div>
+          <div className="sidebar-item-text">
+            <strong>{selectedPersona?.name || "Выберите персону"}</strong>
+          </div>
+        </div>
+        <ChevronDown size={14} className={`sidebar-picker-chevron ${open ? "open" : ""}`} />
+      </button>
+      {open ? (
+        <div className="sidebar-persona-menu">
+          {personas.map((persona) => (
+            <button
+              key={persona.id}
+              type="button"
+              className={`sidebar-persona-option ${
+                persona.id === selectedPersonaId ? "active" : ""
+              }`}
+              onClick={() => {
+                onSelect(persona.id);
+                setOpen(false);
+              }}
+            >
+              <div className="sidebar-avatar" aria-hidden="true">
+                {persona.avatarUrl ? (
+                  <img src={persona.avatarUrl} alt="" loading="lazy" />
+                ) : (
+                  <span>{persona.name.trim().charAt(0).toUpperCase()}</span>
+                )}
+              </div>
+              <div className="sidebar-item-text">
+                <strong>{persona.name}</strong>
+                <span>{persona.advanced.core.archetype || "Персона"}</span>
+              </div>
+              {persona.id === selectedPersonaId ? <Check size={14} /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function Sidebar({
@@ -42,6 +135,7 @@ export function Sidebar({
   onOpenSettings,
   onCreateChat,
   onCreateGenerationSession,
+  onDeleteGenerationSession,
   onSelectChat,
   onSelectGenerationSession,
   onSelectPersona,
@@ -110,24 +204,12 @@ export function Sidebar({
 
         {sidebarTab === "chats" ? (
           <div className="sidebar-list">
-            <label className="sidebar-persona-picker">
-              <span>Текущая персона</span>
-              <div className="select-container">
-                <select
-                  value={activePersonaId ?? ""}
-                  onChange={(event) => onSelectPersona(event.target.value)}
-                >
-                  <option value="" disabled>
-                    Выберите персону
-                  </option>
-                  {personas.map((persona) => (
-                    <option key={persona.id} value={persona.id}>
-                      {persona.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </label>
+            <PersonaPicker
+              label="Текущая персона"
+              personas={personas}
+              selectedPersonaId={activePersonaId}
+              onSelect={onSelectPersona}
+            />
             <div className="list-actions">
               <button type="button" className="primary" onClick={onCreateChat} disabled={!activePersonaId}>
                 <Plus size={16} /> Новый чат
@@ -203,24 +285,12 @@ export function Sidebar({
           </div>
         ) : (
           <div className="sidebar-list">
-            <label className="sidebar-persona-picker">
-              <span>Персона генератора</span>
-              <div className="select-container">
-                <select
-                  value={generationPersonaId}
-                  onChange={(event) => onSelectGenerationPersona(event.target.value)}
-                >
-                  <option value="" disabled>
-                    Выберите персону
-                  </option>
-                  {personas.map((persona) => (
-                    <option key={persona.id} value={persona.id}>
-                      {persona.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </label>
+            <PersonaPicker
+              label="Персона генератора"
+              personas={personas}
+              selectedPersonaId={generationPersonaId || null}
+              onSelect={onSelectGenerationPersona}
+            />
             <div className="list-actions">
               <button type="button" className="primary" onClick={onCreateGenerationSession}>
                 <Plus size={16} /> Новая сессия
@@ -232,32 +302,44 @@ export function Sidebar({
               const title = session.topic.trim() || "Без темы";
               const avatarLetter = (sessionPersona?.name || "?").trim().charAt(0).toUpperCase();
               return (
-                <button
+                <div
                   key={session.id}
-                  type="button"
                   className={`chat-item ${session.id === activeGenerationSessionId ? "active" : ""}`}
-                  onClick={() => {
-                    onSelectGenerationSession(session.id);
-                    onCloseMobile();
-                  }}
                 >
-                  <div className="sidebar-item-main">
-                    <div className="sidebar-avatar" aria-hidden="true">
-                      {sessionPersona?.avatarUrl ? (
-                        <img src={sessionPersona.avatarUrl} alt="" loading="lazy" />
-                      ) : (
-                        <span>{avatarLetter}</span>
-                      )}
+                  <button
+                    type="button"
+                    className="grow"
+                    onClick={() => {
+                      onSelectGenerationSession(session.id);
+                      onCloseMobile();
+                    }}
+                  >
+                    <div className="sidebar-item-main">
+                      <div className="sidebar-avatar" aria-hidden="true">
+                        {sessionPersona?.avatarUrl ? (
+                          <img src={sessionPersona.avatarUrl} alt="" loading="lazy" />
+                        ) : (
+                          <span>{avatarLetter}</span>
+                        )}
+                      </div>
+                      <div className="sidebar-item-text">
+                        <strong>{title}</strong>
+                        <span>
+                          {sessionPersona?.name || "Персона"} • {formatDate(session.updatedAt)} •{" "}
+                          {session.completedCount}
+                        </span>
+                      </div>
                     </div>
-                    <div className="sidebar-item-text">
-                      <strong>{title}</strong>
-                      <span>
-                        {sessionPersona?.name || "Персона"} • {formatDate(session.updatedAt)} •{" "}
-                        {session.completedCount}
-                      </span>
-                    </div>
-                  </div>
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn danger mini"
+                    onClick={() => onDeleteGenerationSession(session.id)}
+                    title="Удалить сессию"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               );
             })}
             {generationSessions.length === 0 ? (

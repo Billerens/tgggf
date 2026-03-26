@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
-import { ChevronDown, RefreshCw, X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import type { AppSettings, AuthMode, EndpointAuthConfig } from "../types";
+import { Dropdown } from "./Dropdown";
 
 interface SettingsModalProps {
   open: boolean;
@@ -24,6 +25,13 @@ const AUTH_MODE_LABELS: Array<{ value: AuthMode; label: string }> = [
   { value: "custom", label: "Custom header" },
 ];
 
+const USER_GENDER_OPTIONS: Array<{ value: AppSettings["userGender"]; label: string }> = [
+  { value: "unspecified", label: "Не указан" },
+  { value: "male", label: "Мужской" },
+  { value: "female", label: "Женский" },
+  { value: "nonbinary", label: "Небинарный / другой" },
+];
+
 function AuthSettingsSection({
   title,
   auth,
@@ -38,19 +46,11 @@ function AuthSettingsSection({
       <h5>{title}</h5>
       <label>
         Режим auth
-        <div className="select-container">
-          <select
-            value={auth.mode}
-            onChange={(e) => onChange({ ...auth, mode: e.target.value as AuthMode })}
-          >
-            {AUTH_MODE_LABELS.map((mode) => (
-              <option key={mode.value} value={mode.value}>
-                {mode.label}
-              </option>
-            ))}
-          </select>
-          <ChevronDown size={14} className="select-icon" />
-        </div>
+        <Dropdown
+          value={auth.mode}
+          options={AUTH_MODE_LABELS}
+          onChange={(nextMode) => onChange({ ...auth, mode: nextMode as AuthMode })}
+        />
       </label>
 
       {auth.mode === "basic" ? (
@@ -194,24 +194,15 @@ export function SettingsModal({
               <label>
                 Модель
                 <div className="inline-row">
-                  <div className="select-container">
-                    <select
-                      value={settingsDraft.model}
-                      onChange={(e) => setSettingsDraft((v) => ({ ...v, model: e.target.value }))}
-                    >
-                      {availableModels.length === 0 ? (
-                        <option value={settingsDraft.model}>
-                          {settingsDraft.model || "Модель не найдена"}
-                        </option>
-                      ) : null}
-                      {availableModels.map((modelName) => (
-                        <option key={modelName} value={modelName}>
-                          {modelName}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown size={14} className="select-icon" />
-                  </div>
+                  <Dropdown
+                    value={settingsDraft.model}
+                    onChange={(nextModel) => setSettingsDraft((v) => ({ ...v, model: nextModel }))}
+                    options={
+                      availableModels.length > 0
+                        ? availableModels.map((modelName) => ({ value: modelName, label: modelName }))
+                        : [{ value: settingsDraft.model, label: settingsDraft.model || "Модель не найдена" }]
+                    }
+                  />
                   <button type="button" onClick={onRefreshModels} disabled={modelsLoading}>
                     <RefreshCw size={14} className={modelsLoading ? "spin" : ""} /> Обновить
                   </button>
@@ -258,20 +249,13 @@ export function SettingsModal({
             <>
               <label>
                 Пол пользователя
-                <div className="select-container">
-                  <select
-                    value={settingsDraft.userGender}
-                    onChange={(e) =>
-                      setSettingsDraft((v) => ({ ...v, userGender: e.target.value as AppSettings["userGender"] }))
-                    }
-                  >
-                    <option value="unspecified">Не указан</option>
-                    <option value="male">Мужской</option>
-                    <option value="female">Женский</option>
-                    <option value="nonbinary">Небинарный / другой</option>
-                  </select>
-                  <ChevronDown size={14} className="select-icon" />
-                </div>
+                <Dropdown
+                  value={settingsDraft.userGender}
+                  options={USER_GENDER_OPTIONS}
+                  onChange={(nextGender) =>
+                    setSettingsDraft((v) => ({ ...v, userGender: nextGender as AppSettings["userGender"] }))
+                  }
+                />
               </label>
             </>
           ) : null}

@@ -2,7 +2,13 @@ import { useState, type FormEvent } from "react";
 import { Sparkles, Trash2, UserRound, X } from "lucide-react";
 import type { GeneratedPersonaDraft } from "../lmstudio";
 import type { Persona } from "../types";
-import type { PersonaDraft, PersonaLookPack, PersonaModalTab } from "../ui/types";
+import type {
+  LookDetailLevel,
+  PersonaDraft,
+  PersonaLookPack,
+  PersonaModalTab,
+} from "../ui/types";
+import { Dropdown } from "./Dropdown";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface PersonaModalProps {
@@ -29,10 +35,21 @@ interface PersonaModalProps {
   onMoveGeneratedToEditor: (draft: GeneratedPersonaDraft) => void;
   lookGenerationLoading: boolean;
   onGeneratePersonaLook: () => void;
+  onStopPersonaLookGeneration: () => void;
   lookPackageCount: number;
   setLookPackageCount: (value: number) => void;
+  lookDetailLevel: LookDetailLevel;
+  setLookDetailLevel: (value: LookDetailLevel) => void;
+  enhancingLookImageKey: string | null;
+  onEnhanceLookImage: (
+    packIndex: number,
+    kind: "avatar" | "fullbody" | "side" | "back",
+    imageUrl: string,
+  ) => void;
   generatedLookPacks: PersonaLookPack[];
   onApplyLookPack: (pack: PersonaLookPack) => void;
+  lookFastMode: boolean;
+  setLookFastMode: (value: boolean) => void;
   generateSideView: boolean;
   setGenerateSideView: (value: boolean) => void;
   generateBackView: boolean;
@@ -83,10 +100,17 @@ export function PersonaModal({
   onMoveGeneratedToEditor,
   lookGenerationLoading,
   onGeneratePersonaLook,
+  onStopPersonaLookGeneration,
   lookPackageCount,
   setLookPackageCount,
+  lookDetailLevel,
+  setLookDetailLevel,
+  enhancingLookImageKey,
+  onEnhanceLookImage,
   generatedLookPacks,
   onApplyLookPack,
+  lookFastMode,
+  setLookFastMode,
   generateSideView,
   setGenerateSideView,
   generateBackView,
@@ -100,6 +124,7 @@ export function PersonaModal({
   const describeGeneratedAppearance = (draft: GeneratedPersonaDraft) =>
     [
       draft.appearance.faceDescription,
+      draft.appearance.height,
       draft.appearance.eyes,
       draft.appearance.lips,
       draft.appearance.hair,
@@ -191,6 +216,16 @@ export function PersonaModal({
                     setPersonaDraft((prev) => ({
                       ...prev,
                       appearance: { ...prev.appearance, faceDescription: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Рост"
+                  value={personaDraft.appearance.height}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, height: event.target.value },
                     }))
                   }
                 />
@@ -292,19 +327,16 @@ export function PersonaModal({
                 <label>
                   Checkpoint для генерации изображений
                   <div className="inline-row">
-                    <select
+                    <Dropdown
                       value={personaDraft.imageCheckpoint}
-                      onChange={(event) =>
-                        setPersonaDraft((prev) => ({ ...prev, imageCheckpoint: event.target.value }))
+                      onChange={(nextCheckpoint) =>
+                        setPersonaDraft((prev) => ({ ...prev, imageCheckpoint: nextCheckpoint }))
                       }
-                    >
-                      <option value="">По умолчанию из workflow</option>
-                      {comfyCheckpoints.map((checkpoint) => (
-                        <option key={checkpoint} value={checkpoint}>
-                          {checkpoint}
-                        </option>
-                      ))}
-                    </select>
+                      options={[
+                        { value: "", label: "По умолчанию из workflow" },
+                        ...comfyCheckpoints.map((checkpoint) => ({ value: checkpoint, label: checkpoint })),
+                      ]}
+                    />
                     <button
                       type="button"
                       onClick={onRefreshCheckpoints}
@@ -356,24 +388,57 @@ export function PersonaModal({
                 </label>
                 <label>
                   Количество пакетов для выбора
-                  <select
-                    value={lookPackageCount}
-                    onChange={(event) => setLookPackageCount(Number(event.target.value))}
-                  >
-                    <option value={1}>1</option>
-                    <option value={2}>2</option>
-                    <option value={3}>3</option>
-                    <option value={4}>4</option>
-                  </select>
+                  <Dropdown
+                    value={String(lookPackageCount)}
+                    onChange={(nextCount) => setLookPackageCount(Number(nextCount))}
+                    options={[
+                      { value: "1", label: "1" },
+                      { value: "2", label: "2" },
+                      { value: "3", label: "3" },
+                      { value: "4", label: "4" },
+                    ]}
+                  />
                 </label>
-                <button
-                  type="button"
-                  onClick={onGeneratePersonaLook}
-                  disabled={lookGenerationLoading || !hasAppearance}
-                >
-                  <Sparkles size={14} />{" "}
-                  {lookGenerationLoading ? "Генерирую внешний вид..." : "Сгенерировать внешность"}
-                </button>
+                <label>
+                  Детализация частей изображения
+                  <Dropdown
+                    value={lookDetailLevel}
+                    onChange={(nextLevel) => setLookDetailLevel(nextLevel as LookDetailLevel)}
+                    options={[
+                      { value: "off", label: "Выкл" },
+                      { value: "soft", label: "Мягкая" },
+                      { value: "medium", label: "Средняя" },
+                      { value: "strong", label: "Сильная" },
+                    ]}
+                  />
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={lookFastMode}
+                    onChange={(event) => setLookFastMode(event.target.checked)}
+                  />
+                  <span>Быстрый режим (оптимизировано для 8GB VRAM)</span>
+                </label>
+                <div className="inline-row">
+                  <button
+                    type="button"
+                    onClick={onGeneratePersonaLook}
+                    disabled={lookGenerationLoading || !hasAppearance}
+                  >
+                    <Sparkles size={14} />{" "}
+                    {lookGenerationLoading ? "Генерирую внешний вид..." : "Сгенерировать внешность"}
+                  </button>
+                  {lookGenerationLoading ? (
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={onStopPersonaLookGeneration}
+                    >
+                      Остановить
+                    </button>
+                  ) : null}
+                </div>
                 {personaDraft.avatarUrl ||
                 personaDraft.fullBodyUrl ||
                 personaDraft.fullBodySideUrl ||
@@ -440,13 +505,25 @@ export function PersonaModal({
                           <article className="persona-look-card avatar">
                             <span>Avatar</span>
                             {pack.avatarUrl ? (
-                              <button
-                                type="button"
-                                className="persona-look-preview-btn"
-                                onClick={() => setPreviewSrc(pack.avatarUrl)}
-                              >
-                                <img src={pack.avatarUrl} alt={`look-pack-${index + 1}-avatar`} loading="lazy" />
-                              </button>
+                              <div className="persona-look-image-wrap">
+                                <button
+                                  type="button"
+                                  className="persona-look-preview-btn"
+                                  onClick={() => setPreviewSrc(pack.avatarUrl)}
+                                >
+                                  <img src={pack.avatarUrl} alt={`look-pack-${index + 1}-avatar`} loading="lazy" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="persona-look-enhance-btn"
+                                  onClick={() => onEnhanceLookImage(index, "avatar", pack.avatarUrl)}
+                                  disabled={enhancingLookImageKey === `${index}:avatar`}
+                                  title="Улучшить детали"
+                                >
+                                  <Sparkles size={12} />
+                                  {enhancingLookImageKey === `${index}:avatar` ? "..." : "Улучшить"}
+                                </button>
+                              </div>
                             ) : (
                               <div className="image-skeleton-card image-skeleton-fill" />
                             )}
@@ -454,13 +531,25 @@ export function PersonaModal({
                           <article className="persona-look-card fullbody">
                             <span>Fullbody</span>
                             {pack.fullBodyUrl ? (
-                              <button
-                                type="button"
-                                className="persona-look-preview-btn"
-                                onClick={() => setPreviewSrc(pack.fullBodyUrl)}
-                              >
-                                <img src={pack.fullBodyUrl} alt={`look-pack-${index + 1}-fullbody`} loading="lazy" />
-                              </button>
+                              <div className="persona-look-image-wrap">
+                                <button
+                                  type="button"
+                                  className="persona-look-preview-btn"
+                                  onClick={() => setPreviewSrc(pack.fullBodyUrl)}
+                                >
+                                  <img src={pack.fullBodyUrl} alt={`look-pack-${index + 1}-fullbody`} loading="lazy" />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="persona-look-enhance-btn"
+                                  onClick={() => onEnhanceLookImage(index, "fullbody", pack.fullBodyUrl)}
+                                  disabled={enhancingLookImageKey === `${index}:fullbody`}
+                                  title="Улучшить детали"
+                                >
+                                  <Sparkles size={12} />
+                                  {enhancingLookImageKey === `${index}:fullbody` ? "..." : "Улучшить"}
+                                </button>
+                              </div>
                             ) : (
                               <div className="image-skeleton-card image-skeleton-fill" />
                             )}
@@ -469,17 +558,29 @@ export function PersonaModal({
                             <article className="persona-look-card fullbody">
                               <span>Side</span>
                               {pack.fullBodySideUrl ? (
-                                <button
-                                  type="button"
-                                  className="persona-look-preview-btn"
-                                  onClick={() => setPreviewSrc(pack.fullBodySideUrl)}
-                                >
-                                  <img
-                                    src={pack.fullBodySideUrl}
-                                    alt={`look-pack-${index + 1}-side`}
-                                    loading="lazy"
-                                  />
-                                </button>
+                                <div className="persona-look-image-wrap">
+                                  <button
+                                    type="button"
+                                    className="persona-look-preview-btn"
+                                    onClick={() => setPreviewSrc(pack.fullBodySideUrl)}
+                                  >
+                                    <img
+                                      src={pack.fullBodySideUrl}
+                                      alt={`look-pack-${index + 1}-side`}
+                                      loading="lazy"
+                                    />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="persona-look-enhance-btn"
+                                    onClick={() => onEnhanceLookImage(index, "side", pack.fullBodySideUrl)}
+                                    disabled={enhancingLookImageKey === `${index}:side`}
+                                    title="Улучшить детали"
+                                  >
+                                    <Sparkles size={12} />
+                                    {enhancingLookImageKey === `${index}:side` ? "..." : "Улучшить"}
+                                  </button>
+                                </div>
                               ) : (
                                 <div className="image-skeleton-card image-skeleton-fill" />
                               )}
@@ -489,17 +590,29 @@ export function PersonaModal({
                             <article className="persona-look-card fullbody">
                               <span>Back</span>
                               {pack.fullBodyBackUrl ? (
-                                <button
-                                  type="button"
-                                  className="persona-look-preview-btn"
-                                  onClick={() => setPreviewSrc(pack.fullBodyBackUrl)}
-                                >
-                                  <img
-                                    src={pack.fullBodyBackUrl}
-                                    alt={`look-pack-${index + 1}-back`}
-                                    loading="lazy"
-                                  />
-                                </button>
+                                <div className="persona-look-image-wrap">
+                                  <button
+                                    type="button"
+                                    className="persona-look-preview-btn"
+                                    onClick={() => setPreviewSrc(pack.fullBodyBackUrl)}
+                                  >
+                                    <img
+                                      src={pack.fullBodyBackUrl}
+                                      alt={`look-pack-${index + 1}-back`}
+                                      loading="lazy"
+                                    />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="persona-look-enhance-btn"
+                                    onClick={() => onEnhanceLookImage(index, "back", pack.fullBodyBackUrl)}
+                                    disabled={enhancingLookImageKey === `${index}:back`}
+                                    title="Улучшить детали"
+                                  >
+                                    <Sparkles size={12} />
+                                    {enhancingLookImageKey === `${index}:back` ? "..." : "Улучшить"}
+                                  </button>
+                                </div>
                               ) : (
                                 <div className="image-skeleton-card image-skeleton-fill" />
                               )}
@@ -523,26 +636,27 @@ export function PersonaModal({
                 <h5>Core</h5>
                 <label>
                   Грамматический род персоны
-                  <select
+                  <Dropdown
                     value={personaDraft.advanced.core.selfGender}
-                    onChange={(event) =>
+                    onChange={(nextGender) =>
                       setPersonaDraft((prev) => ({
                         ...prev,
                         advanced: {
                           ...prev.advanced,
                           core: {
                             ...prev.advanced.core,
-                            selfGender: event.target.value as typeof prev.advanced.core.selfGender,
+                            selfGender: nextGender as typeof prev.advanced.core.selfGender,
                           },
                         },
                       }))
                     }
-                  >
-                    <option value="auto">Авто (по имени)</option>
-                    <option value="female">Женский</option>
-                    <option value="male">Мужской</option>
-                    <option value="neutral">Нейтральный (безличные формулировки)</option>
-                  </select>
+                    options={[
+                      { value: "auto", label: "Авто (по имени)" },
+                      { value: "female", label: "Женский" },
+                      { value: "male", label: "Мужской" },
+                      { value: "neutral", label: "Нейтральный (безличные формулировки)" },
+                    ]}
+                  />
                 </label>
                 <input
                   placeholder="Архетип"
@@ -654,25 +768,27 @@ export function PersonaModal({
                 />
                 <label>
                   Длина фраз
-                  <select
+                  <Dropdown
                     value={personaDraft.advanced.voice.sentenceLength}
-                    onChange={(event) =>
+                    onChange={(nextSentenceLength) =>
                       setPersonaDraft((prev) => ({
                         ...prev,
                         advanced: {
                           ...prev.advanced,
                           voice: {
                             ...prev.advanced.voice,
-                            sentenceLength: event.target.value as typeof prev.advanced.voice.sentenceLength,
+                            sentenceLength:
+                              nextSentenceLength as typeof prev.advanced.voice.sentenceLength,
                           },
                         },
                       }))
                     }
-                  >
-                    <option value="short">Короткие</option>
-                    <option value="balanced">Сбалансированные</option>
-                    <option value="long">Длинные</option>
-                  </select>
+                    options={[
+                      { value: "short", label: "Короткие" },
+                      { value: "balanced", label: "Сбалансированные" },
+                      { value: "long", label: "Длинные" },
+                    ]}
+                  />
                 </label>
                 <SliderField
                   label="Формальность"
@@ -801,31 +917,32 @@ export function PersonaModal({
                 <h5>Emotion</h5>
                 <label>
                   Базовое настроение
-                  <select
+                  <Dropdown
                     value={personaDraft.advanced.emotion.baselineMood}
-                    onChange={(event) =>
+                    onChange={(nextMood) =>
                       setPersonaDraft((prev) => ({
                         ...prev,
                         advanced: {
                           ...prev.advanced,
                           emotion: {
                             ...prev.advanced.emotion,
-                            baselineMood: event.target.value as typeof prev.advanced.emotion.baselineMood,
+                            baselineMood: nextMood as typeof prev.advanced.emotion.baselineMood,
                           },
                         },
                       }))
                     }
-                  >
-                    <option value="calm">Спокойное</option>
-                    <option value="warm">Теплое</option>
-                    <option value="playful">Игривое</option>
-                    <option value="focused">Сфокусированное</option>
-                    <option value="analytical">Аналитичное</option>
-                    <option value="inspired">Вдохновленное</option>
-                    <option value="annoyed">Раздраженное</option>
-                    <option value="upset">Расстроенное</option>
-                    <option value="angry">Злое</option>
-                  </select>
+                    options={[
+                      { value: "calm", label: "Спокойное" },
+                      { value: "warm", label: "Теплое" },
+                      { value: "playful", label: "Игривое" },
+                      { value: "focused", label: "Сфокусированное" },
+                      { value: "analytical", label: "Аналитичное" },
+                      { value: "inspired", label: "Вдохновленное" },
+                      { value: "annoyed", label: "Раздраженное" },
+                      { value: "upset", label: "Расстроенное" },
+                      { value: "angry", label: "Злое" },
+                    ]}
+                  />
                 </label>
                 <SliderField
                   label="Теплота"

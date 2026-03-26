@@ -164,6 +164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           stylePrompt: "Говорит понятно, спокойно и по делу, без лишней воды.",
           appearance: {
             faceDescription: "мягкие черты лица, спокойный взгляд",
+            height: "средний рост",
             eyes: "светлые глаза, аккуратная форма",
             lips: "естественные, средней полноты",
             hair: "короткие серебристые волосы",
@@ -257,6 +258,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         stylePrompt: input.stylePrompt.trim(),
         appearance: {
           faceDescription: input.appearance.faceDescription.trim(),
+          height: input.appearance.height.trim(),
           eyes: input.appearance.eyes.trim(),
           lips: input.appearance.lips.trim(),
           hair: input.appearance.hair.trim(),

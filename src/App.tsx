@@ -21,6 +21,7 @@ import { Sidebar } from "./components/Sidebar";
 import type { GeneratorSession, Persona } from "./types";
 import {
   createEmptyPersonaDraft,
+  type LookDetailLevel,
   type PersonaLookPack,
   type PersonaModalTab,
   type SidebarTab,
@@ -44,6 +45,7 @@ function waitMs(ms: number) {
 function stringifyAppearance(appearance: Persona["appearance"]) {
   return [
     appearance.faceDescription,
+    appearance.height,
     appearance.eyes,
     appearance.lips,
     appearance.hair,
@@ -57,6 +59,19 @@ function stringifyAppearance(appearance: Persona["appearance"]) {
     .map((value) => value.trim())
     .filter(Boolean)
     .join(", ");
+}
+
+async function getImageDimensions(url: string) {
+  return new Promise<{ width: number; height: number }>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const width = Math.max(256, Math.min(2048, img.naturalWidth || 1024));
+      const height = Math.max(256, Math.min(2048, img.naturalHeight || 1024));
+      resolve({ width, height });
+    };
+    img.onerror = () => resolve({ width: 1024, height: 1024 });
+    img.src = url;
+  });
 }
 
 export default function App() {
@@ -109,6 +124,9 @@ export default function App() {
   const [generateSideView, setGenerateSideView] = useState(false);
   const [generateBackView, setGenerateBackView] = useState(false);
   const [lookPackageCount, setLookPackageCount] = useState(1);
+  const [lookDetailLevel, setLookDetailLevel] = useState<LookDetailLevel>("medium");
+  const [lookFastMode, setLookFastMode] = useState(false);
+  const [enhancingLookImageKey, setEnhancingLookImageKey] = useState<string | null>(null);
   const [generatedLookPacks, setGeneratedLookPacks] = useState<PersonaLookPack[]>([]);
   const [generationPersonaId, setGenerationPersonaId] = useState("");
   const [generationTopic, setGenerationTopic] = useState("");
@@ -121,6 +139,8 @@ export default function App() {
   const [generationSessions, setGenerationSessions] = useState<GeneratorSession[]>([]);
   const [generationSessionId, setGenerationSessionId] = useState("");
   const generationRunRef = useRef(0);
+  const lookGenerationRunRef = useRef(0);
+  const lookGenerationAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     void initialize();
@@ -288,6 +308,17 @@ export default function App() {
     setSidebarTab("generation");
   };
 
+  const deleteGenerationSession = async (sessionId: string) => {
+    await dbApi.deleteGeneratorSession(sessionId);
+    let nextSessionId = "";
+    setGenerationSessions((prev) => {
+      const filtered = prev.filter((session) => session.id !== sessionId);
+      nextSessionId = filtered[0]?.id ?? "";
+      return filtered;
+    });
+    setGenerationSessionId((prev) => (prev === sessionId ? nextSessionId : prev));
+  };
+
   const startEditPersona = (persona: Persona) => {
     setEditingPersonaId(persona.id);
     setGeneratedLookPacks([]);
@@ -365,9 +396,21 @@ export default function App() {
       return;
     }
 
+    const runId = lookGenerationRunRef.current + 1;
+    lookGenerationRunRef.current = runId;
+    lookGenerationAbortRef.current?.abort();
+    const abortController = new AbortController();
+    lookGenerationAbortRef.current = abortController;
+    const ensureActive = () => {
+      if (lookGenerationRunRef.current !== runId || abortController.signal.aborted) {
+        throw new DOMException("Generation aborted", "AbortError");
+      }
+    };
+
     setLookGenerationLoading(true);
     setGeneratedLookPacks([]);
     try {
+      ensureActive();
       const promptBundle = await generatePersonaLookPrompts(settings, {
         name: personaDraft.name,
         personalityPrompt: personaDraft.personalityPrompt,
@@ -375,6 +418,23 @@ export default function App() {
         stylePrompt: personaDraft.stylePrompt,
         advanced: personaDraft.advanced,
       });
+      ensureActive();
+      const detailPrompts = promptBundle.detailPrompts;
+      const fullBodyWidth = lookFastMode ? 704 : 832;
+      const fullBodyHeight = lookFastMode ? 1024 : 1216;
+      const avatarSize = lookFastMode ? 768 : 1024;
+      const useHiResFix = !lookFastMode;
+      const useUpscaler = !lookFastMode;
+      const useDetailing = !lookFastMode;
+      const resolveDetailLevel = (
+        view: "front" | "side" | "back",
+      ): "soft" | "medium" | "strong" | null => {
+        if (!useDetailing) return null;
+        if (lookDetailLevel === "off") return null;
+        if (view === "front") return lookDetailLevel;
+        if (lookDetailLevel === "strong") return "medium";
+        return "soft";
+      };
       const sharedSeed = stableSeedFromText(
         [
           personaDraft.name,
@@ -397,8 +457,10 @@ export default function App() {
       );
 
       for (let packIndex = 0; packIndex < packageCount; packIndex += 1) {
+        ensureActive();
         const packSeed = sharedSeed + packIndex * 997;
         const patchPack = (patch: Partial<PersonaLookPack>) => {
+          if (lookGenerationRunRef.current !== runId) return;
           setGeneratedLookPacks((prev) =>
             prev.map((pack, idx) => (idx === packIndex ? { ...pack, ...patch } : pack)),
           );
@@ -407,21 +469,32 @@ export default function App() {
           [
             {
               prompt: `${promptBundle.fullBodyPrompt}, full body, neutral standing pose, calm pose, relaxed posture, hands at sides, arms relaxed, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`,
-              width: 832,
-              height: 1216,
+              width: fullBodyWidth,
+              height: fullBodyHeight,
               seed: packSeed,
               checkpointName: personaDraft.imageCheckpoint || undefined,
               styleStrength: 0,
               compositionStrength: 0,
-              forceHiResFix: true,
-              enableUpscaler: true,
+              forceHiResFix: useHiResFix,
+              enableUpscaler: useUpscaler,
               upscaleFactor: 1.5,
+              detailing: resolveDetailLevel("front")
+                ? {
+                    enabled: true,
+                    level: resolveDetailLevel("front") ?? undefined,
+                    prompts: detailPrompts,
+                  }
+                : undefined,
             },
           ],
           settings.comfyBaseUrl,
           settings.comfyAuth,
+          undefined,
+          abortController.signal,
         );
+        ensureActive();
         const localizedFullBody = await localizeImageUrls(fullBodyUrls);
+        ensureActive();
         const fullBodyRef = localizedFullBody[0];
         if (!fullBodyRef) {
           throw new Error(`Не удалось сгенерировать fullbody reference для пакета #${packIndex + 1}.`);
@@ -434,22 +507,33 @@ export default function App() {
             [
               {
                 prompt: `${promptBundle.fullBodyPrompt}, full body, side view, profile view, neutral standing pose, calm pose, relaxed posture, hands at sides, arms relaxed, same person as reference, same hairstyle, same hair color, same outfit as reference image, same clothing details, same accessories, no outfit change, no hairstyle change, same body type, consistent character identity, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`,
-                width: 832,
-                height: 1216,
+                width: fullBodyWidth,
+                height: fullBodyHeight,
                 seed: packSeed,
                 checkpointName: personaDraft.imageCheckpoint || undefined,
                 styleReferenceImage: fullBodyRef,
                 styleStrength: 1,
                 compositionStrength: 0,
-                forceHiResFix: true,
-                enableUpscaler: true,
+                forceHiResFix: useHiResFix,
+                enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
+                detailing: resolveDetailLevel("side")
+                  ? {
+                      enabled: true,
+                      level: resolveDetailLevel("side") ?? undefined,
+                      prompts: detailPrompts,
+                    }
+                  : undefined,
               },
             ],
             settings.comfyBaseUrl,
             settings.comfyAuth,
+            undefined,
+            abortController.signal,
           );
+          ensureActive();
           const localizedSide = await localizeImageUrls(sideUrls);
+          ensureActive();
           sideRef = localizedSide[0] ?? "";
           if (sideRef) {
             patchPack({ fullBodySideUrl: sideRef });
@@ -462,22 +546,33 @@ export default function App() {
             [
               {
                 prompt: `${promptBundle.fullBodyPrompt}, full body, back view, from behind, neutral standing pose, calm pose, relaxed posture, hands at sides, arms relaxed, same person as reference, same hairstyle, same hair color, same outfit as reference image, same clothing details, same accessories, no outfit change, no hairstyle change, same body type, consistent character identity, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`,
-                width: 832,
-                height: 1216,
+                width: fullBodyWidth,
+                height: fullBodyHeight,
                 seed: packSeed,
                 checkpointName: personaDraft.imageCheckpoint || undefined,
                 styleReferenceImage: fullBodyRef,
                 styleStrength: 1,
                 compositionStrength: 0,
-                forceHiResFix: true,
-                enableUpscaler: true,
+                forceHiResFix: useHiResFix,
+                enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
+                detailing: resolveDetailLevel("back")
+                  ? {
+                      enabled: true,
+                      level: resolveDetailLevel("back") ?? undefined,
+                      prompts: detailPrompts,
+                    }
+                  : undefined,
               },
             ],
             settings.comfyBaseUrl,
             settings.comfyAuth,
+            undefined,
+            abortController.signal,
           );
+          ensureActive();
           const localizedBack = await localizeImageUrls(backUrls);
+          ensureActive();
           backRef = localizedBack[0] ?? "";
           if (backRef) {
             patchPack({ fullBodyBackUrl: backRef });
@@ -488,19 +583,30 @@ export default function App() {
           [
             {
               prompt: `${promptBundle.avatarPrompt}, close-up, close face, headshot, face focus, looking at viewer, solo, single subject, one person, no other people, no crowd, detailed background, environmental context, realistic location`,
-              width: 1024,
-              height: 1024,
+              width: avatarSize,
+              height: avatarSize,
               seed: packSeed,
               checkpointName: personaDraft.imageCheckpoint || undefined,
               styleReferenceImage: fullBodyRef,
               styleStrength: 1,
               compositionStrength: 0,
+              detailing: resolveDetailLevel("front")
+                ? {
+                    enabled: true,
+                    level: resolveDetailLevel("front") ?? undefined,
+                    prompts: detailPrompts,
+                  }
+                : undefined,
             },
           ],
           settings.comfyBaseUrl,
           settings.comfyAuth,
+          undefined,
+          abortController.signal,
         );
+        ensureActive();
         const localizedAvatar = await localizeImageUrls(avatarUrls);
+        ensureActive();
         const avatarRef = localizedAvatar[0] ?? "";
         if (!avatarRef) {
           throw new Error(`Не удалось сгенерировать avatar для пакета #${packIndex + 1}.`);
@@ -523,9 +629,104 @@ export default function App() {
 
       setGeneratedLookPacks(packs);
     } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        // stopped by user
+      } else {
+        useAppStore.setState({ error: (e as Error).message });
+      }
+    } finally {
+      if (lookGenerationRunRef.current === runId) {
+        setLookGenerationLoading(false);
+        lookGenerationAbortRef.current = null;
+      }
+    }
+  };
+
+  const stopPersonaLookGeneration = () => {
+    lookGenerationRunRef.current += 1;
+    lookGenerationAbortRef.current?.abort();
+    lookGenerationAbortRef.current = null;
+    setLookGenerationLoading(false);
+  };
+
+  const enhanceLookImage = async (
+    packIndex: number,
+    kind: "avatar" | "fullbody" | "side" | "back",
+    imageUrl: string,
+  ) => {
+    if (!imageUrl.trim()) return;
+    const key = `${packIndex}:${kind}`;
+    setEnhancingLookImageKey(key);
+    try {
+      const promptBundle = await generatePersonaLookPrompts(settings, {
+        name: personaDraft.name,
+        personalityPrompt: personaDraft.personalityPrompt,
+        appearance: personaDraft.appearance,
+        stylePrompt: personaDraft.stylePrompt,
+        advanced: personaDraft.advanced,
+      });
+      const dims = await getImageDimensions(imageUrl);
+      const detailLevel = lookDetailLevel === "off" ? "medium" : lookDetailLevel;
+      const basePrompt =
+        kind === "avatar"
+          ? `${promptBundle.avatarPrompt}, close-up, close face, headshot, face focus, looking at viewer`
+          : kind === "side"
+            ? `${promptBundle.fullBodyPrompt}, full body, side view, profile view`
+            : kind === "back"
+              ? `${promptBundle.fullBodyPrompt}, full body, back view, from behind`
+              : `${promptBundle.fullBodyPrompt}, full body, neutral standing pose`;
+      const enhancedUrls = await generateComfyImages(
+        [
+          {
+            prompt: `${basePrompt}, same person, same identity, same outfit, same framing, preserve composition, highly detailed`,
+            width: dims.width,
+            height: dims.height,
+            seed: stableSeedFromText(`${imageUrl}:${kind}:${Date.now()}`),
+            checkpointName: personaDraft.imageCheckpoint || undefined,
+            styleReferenceImage: imageUrl,
+            styleStrength: 1,
+            compositionStrength: 0,
+            forceHiResFix: true,
+            enableUpscaler: true,
+            upscaleFactor: 1.25,
+            detailing: {
+              enabled: true,
+              level: detailLevel,
+              prompts: promptBundle.detailPrompts,
+            },
+          },
+        ],
+        settings.comfyBaseUrl,
+        settings.comfyAuth,
+      );
+      const localized = await localizeImageUrls(enhancedUrls);
+      const improved = localized[0];
+      if (!improved) {
+        throw new Error("Не удалось получить улучшенное изображение.");
+      }
+      setGeneratedLookPacks((prev) =>
+        prev.map((pack, idx) => {
+          if (idx !== packIndex) return pack;
+          if (kind === "avatar") return { ...pack, avatarUrl: improved };
+          if (kind === "side") return { ...pack, fullBodySideUrl: improved };
+          if (kind === "back") return { ...pack, fullBodyBackUrl: improved };
+          return { ...pack, fullBodyUrl: improved };
+        }),
+      );
+      setPersonaDraft((prev) => ({
+        ...prev,
+        avatarUrl: kind === "avatar" && prev.avatarUrl === imageUrl ? improved : prev.avatarUrl,
+        fullBodyUrl:
+          kind === "fullbody" && prev.fullBodyUrl === imageUrl ? improved : prev.fullBodyUrl,
+        fullBodySideUrl:
+          kind === "side" && prev.fullBodySideUrl === imageUrl ? improved : prev.fullBodySideUrl,
+        fullBodyBackUrl:
+          kind === "back" && prev.fullBodyBackUrl === imageUrl ? improved : prev.fullBodyBackUrl,
+      }));
+    } catch (e) {
       useAppStore.setState({ error: (e as Error).message });
     } finally {
-      setLookGenerationLoading(false);
+      setEnhancingLookImageKey((prev) => (prev === key ? null : prev));
     }
   };
 
@@ -744,6 +945,7 @@ export default function App() {
           onOpenSettings={() => setShowSettingsModal(true)}
           onCreateChat={() => void createChat()}
           onCreateGenerationSession={() => void createGenerationSession()}
+          onDeleteGenerationSession={(sessionId) => void deleteGenerationSession(sessionId)}
           onSelectChat={(chatId) => void selectChat(chatId)}
           onSelectGenerationSession={setGenerationSessionId}
           onSelectPersona={(personaId) => void selectPersona(personaId)}
@@ -854,8 +1056,15 @@ export default function App() {
           onMoveGeneratedToEditor={onMoveGeneratedToEditor}
           lookGenerationLoading={lookGenerationLoading}
           onGeneratePersonaLook={onGeneratePersonaLook}
+          onStopPersonaLookGeneration={stopPersonaLookGeneration}
           lookPackageCount={lookPackageCount}
           setLookPackageCount={setLookPackageCount}
+          lookDetailLevel={lookDetailLevel}
+          setLookDetailLevel={setLookDetailLevel}
+          lookFastMode={lookFastMode}
+          setLookFastMode={setLookFastMode}
+          enhancingLookImageKey={enhancingLookImageKey}
+          onEnhanceLookImage={enhanceLookImage}
           generatedLookPacks={generatedLookPacks}
           onApplyLookPack={applyLookPack}
           generateSideView={generateSideView}

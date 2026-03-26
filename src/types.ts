@@ -72,6 +72,7 @@ export interface PersonaAdvancedProfile {
 
 export interface PersonaAppearanceProfile {
   faceDescription: string;
+  height: string;
   eyes: string;
   lips: string;
   hair: string;

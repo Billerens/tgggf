@@ -57,6 +57,7 @@ const DEFAULT_MEMORY: PersonaMemoryPolicy = {
 
 const DEFAULT_APPEARANCE: PersonaAppearanceProfile = {
   faceDescription: "",
+  height: "",
   eyes: "",
   lips: "",
   hair: "",
@@ -99,6 +100,7 @@ function normalizeAppearance(
 ): PersonaAppearanceProfile {
   return {
     faceDescription: cleanText(input?.faceDescription, DEFAULT_APPEARANCE.faceDescription),
+    height: cleanText(input?.height, DEFAULT_APPEARANCE.height),
     eyes: cleanText(input?.eyes, DEFAULT_APPEARANCE.eyes),
     lips: cleanText(input?.lips, DEFAULT_APPEARANCE.lips),
     hair: cleanText(input?.hair, DEFAULT_APPEARANCE.hair),
