@@ -37,6 +37,11 @@ interface ComfyHistoryEntry {
   outputs?: Record<string, ComfyHistoryNodeOutput>;
 }
 
+export interface ComfyImageGenerationMeta {
+  seed?: number;
+  prompt?: string;
+}
+
 export interface ComfyGenerationItem {
   prompt: string;
   width?: number;
@@ -49,20 +54,26 @@ export interface ComfyGenerationItem {
   forceHiResFix?: boolean;
   enableUpscaler?: boolean;
   upscaleFactor?: number;
+  outputNodeTitleIncludes?: string[];
+  strictOutputNodeMatch?: boolean;
+  pickLatestImageOnly?: boolean;
   detailing?: {
     enabled?: boolean;
     level?: "soft" | "medium" | "strong";
+    targets?: Array<"face" | "eyes" | "nose" | "lips" | "hands">;
     prompts?: Partial<Record<"face" | "eyes" | "nose" | "lips" | "hands", string>>;
   };
 }
 
 type DetailLevel = "soft" | "medium" | "strong";
+type DetailTarget = "face" | "eyes" | "nose" | "lips" | "hands";
 
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 const POSITIVE_PROMPT_NODE_ID = "1050";
 const SIZE_NODE_ID = "141";
 const SEED_NODE_ID = "137";
 const STYLE_IMAGE_NODE_ID = "420";
+const COMPOSITION_IMAGE_NODE_ID = "455";
 const STYLE_STRENGTH_NODE_ID = "430";
 const COMPOSITION_STRENGTH_NODE_ID = "431";
 const HIRES_FIX_NODE_ID = "849";
@@ -71,7 +82,7 @@ const OUTPUT_TITLE_PREFERENCES = [
   "Preview after Inpaint",
 ];
 const WEBP_QUALITY = 82;
-const HISTORY_TIMEOUT_MS = 180000;
+const HISTORY_TIMEOUT_MS = 600000;
 const HISTORY_POLL_INTERVAL_MS = 1200;
 
 let workflowTemplateCache: ComfyWorkflow | null = null;
@@ -354,29 +365,40 @@ function applyDetailing(
     strong: { face: 0.18, eyes: 0.18, nose: 0.22, lips: 0.24, hands: 0.28 },
   };
   const denoise = levelMap[detailing.level as DetailLevel];
+  const enabledTargets =
+    detailing.targets && detailing.targets.length > 0
+      ? new Set<DetailTarget>(detailing.targets)
+      : new Set<DetailTarget>(["face", "eyes", "nose", "lips", "hands"]);
 
   setBooleanByExactTitle(workflow, "Inpaint?", true);
-  setSliderByExactTitle(workflow, "Denoise Face", denoise.face);
-  setSliderByExactTitle(workflow, "Denoise Eyes", denoise.eyes);
-  setSliderByExactTitle(workflow, "Denoise Nose", denoise.nose);
-  setSliderByExactTitle(workflow, "Denoise Lips", denoise.lips);
-  setSliderByExactTitle(workflow, "Denoise Hands", denoise.hands);
+  setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : 0);
+  setSliderByExactTitle(workflow, "Denoise Eyes", enabledTargets.has("eyes") ? denoise.eyes : 0);
+  setSliderByExactTitle(workflow, "Denoise Nose", enabledTargets.has("nose") ? denoise.nose : 0);
+  setSliderByExactTitle(workflow, "Denoise Lips", enabledTargets.has("lips") ? denoise.lips : 0);
+  setSliderByExactTitle(workflow, "Denoise Hands", enabledTargets.has("hands") ? denoise.hands : 0);
 
   // Explicitly disable erotic detail passes in persona generation flow.
   setSliderByExactTitle(workflow, "Denoise Nipples", 0);
   setSliderByExactTitle(workflow, "Denoise Vagina", 0);
   setSliderByExactTitle(workflow, "Denoise Penis", 0);
 
-  setClipTextByExactTitle(workflow, "Face", detailing.prompts?.face);
-  setClipTextByExactTitle(workflow, "Eyes", detailing.prompts?.eyes);
-  setClipTextByExactTitle(workflow, "Nose", detailing.prompts?.nose);
-  setClipTextByExactTitle(workflow, "Lips", detailing.prompts?.lips);
-  setClipTextByExactTitle(workflow, "Hands", detailing.prompts?.hands);
+  if (enabledTargets.has("face")) setClipTextByExactTitle(workflow, "Face", detailing.prompts?.face);
+  if (enabledTargets.has("eyes")) setClipTextByExactTitle(workflow, "Eyes", detailing.prompts?.eyes);
+  if (enabledTargets.has("nose")) setClipTextByExactTitle(workflow, "Nose", detailing.prompts?.nose);
+  if (enabledTargets.has("lips")) setClipTextByExactTitle(workflow, "Lips", detailing.prompts?.lips);
+  if (enabledTargets.has("hands")) setClipTextByExactTitle(workflow, "Hands", detailing.prompts?.hands);
 }
 
 function setStyleImageFilename(workflow: ComfyWorkflow, filename?: string) {
   if (!filename) return;
   const node = workflow[STYLE_IMAGE_NODE_ID];
+  if (!node || !node.inputs) return;
+  node.inputs.image = filename;
+}
+
+function setCompositionImageFilename(workflow: ComfyWorkflow, filename?: string) {
+  if (!filename) return;
+  const node = workflow[COMPOSITION_IMAGE_NODE_ID];
   if (!node || !node.inputs) return;
   node.inputs.image = filename;
 }
@@ -437,6 +459,27 @@ function resolveOutputNodeGroups(workflow: ComfyWorkflow) {
     }
   }
   return { saver: saverNodes, preview };
+}
+
+function resolvePreferredOutputNodes(
+  workflow: ComfyWorkflow,
+  titleIncludes?: string[],
+) {
+  if (!titleIncludes || titleIncludes.length === 0) return [];
+  const tokens = titleIncludes
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  if (tokens.length === 0) return [];
+
+  const preferred: string[] = [];
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    const title = node._meta?.title?.toLowerCase() ?? "";
+    if (!title) continue;
+    if (tokens.some((token) => title.includes(token))) {
+      preferred.push(nodeId);
+    }
+  }
+  return preferred;
 }
 
 function buildUiWorkflowForExtraPngInfo(workflow: ComfyWorkflow): ComfyUiWorkflow {
@@ -600,13 +643,155 @@ function buildViewUrl(baseUrl: string, image: ComfyHistoryImage) {
   return `${baseUrl}/view?filename=${filename}&subfolder=${subfolder}&type=${type}`;
 }
 
+function extractComfyViewParams(imageUrl: string) {
+  try {
+    const parsed = new URL(imageUrl, window.location.href);
+    const filename = parsed.searchParams.get("filename")?.trim();
+    if (!filename) return null;
+    const subfolder = parsed.searchParams.get("subfolder")?.trim() ?? "";
+    const type = parsed.searchParams.get("type")?.trim() || "output";
+    return {
+      baseUrl: `${parsed.protocol}//${parsed.host}`,
+      filename,
+      subfolder,
+      type,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function pickSeedFromValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.floor(value));
+  }
+  if (typeof value === "string") {
+    const n = Number(value.trim());
+    if (Number.isFinite(n)) return Math.max(0, Math.floor(n));
+    const match = value.match(/\bSeed\s*:\s*(\d+)\b/i);
+    if (match) {
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+    }
+  }
+  return undefined;
+}
+
+function extractMetaFromPayload(payload: unknown): ComfyImageGenerationMeta {
+  const result: ComfyImageGenerationMeta = {};
+  const root = payload as Record<string, unknown> | undefined;
+
+  // Comfy prompt-style metadata.
+  const promptGraph = root?.prompt as Record<string, unknown> | undefined;
+  const seedNode = promptGraph?.[SEED_NODE_ID] as Record<string, unknown> | undefined;
+  const seedInputs = seedNode?.inputs as Record<string, unknown> | undefined;
+  const seedFromGraph = pickSeedFromValue(seedInputs?.seed);
+  if (seedFromGraph !== undefined) {
+    result.seed = seedFromGraph;
+  }
+
+  const promptNode = promptGraph?.[POSITIVE_PROMPT_NODE_ID] as Record<string, unknown> | undefined;
+  const promptInputs = promptNode?.inputs as Record<string, unknown> | undefined;
+  const promptFromGraph = promptInputs?.text;
+  if (typeof promptFromGraph === "string" && promptFromGraph.trim()) {
+    result.prompt = promptFromGraph.trim();
+  }
+
+  // Generic recursive fallback.
+  const seen = new WeakSet<object>();
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 8) return;
+    if (value === null || value === undefined) return;
+
+    const directSeed = pickSeedFromValue(value);
+    if (result.seed === undefined && directSeed !== undefined) {
+      result.seed = directSeed;
+    }
+    if (typeof value === "string" && !result.prompt) {
+      const trimmed = value.trim();
+      if (trimmed.length > 16 && !/^https?:\/\//i.test(trimmed)) {
+        result.prompt = trimmed;
+      }
+    }
+
+    if (typeof value !== "object") return;
+    const obj = value as Record<string, unknown>;
+    if (seen.has(obj)) return;
+    seen.add(obj);
+
+    for (const [key, child] of Object.entries(obj)) {
+      const normalizedKey = key.toLowerCase();
+      if (result.seed === undefined && normalizedKey.includes("seed")) {
+        const nextSeed = pickSeedFromValue(child);
+        if (nextSeed !== undefined) result.seed = nextSeed;
+      }
+      if (
+        !result.prompt &&
+        (normalizedKey === "prompt" || normalizedKey === "positive" || normalizedKey === "text")
+      ) {
+        if (typeof child === "string" && child.trim()) {
+          result.prompt = child.trim();
+        }
+      }
+      visit(child, depth + 1);
+    }
+  };
+  visit(payload, 0);
+
+  return result;
+}
+
+export async function readComfyImageGenerationMeta(
+  imageUrl: string,
+  baseUrlOverride?: string,
+  auth?: EndpointAuthConfig,
+  signal?: AbortSignal,
+) {
+  const parsed = extractComfyViewParams(imageUrl);
+  if (!parsed) return null;
+
+  const baseUrl = getComfyBaseUrl(baseUrlOverride || parsed.baseUrl);
+  const query = `filename=${encodeURIComponent(parsed.filename)}&subfolder=${encodeURIComponent(parsed.subfolder)}&type=${encodeURIComponent(parsed.type)}`;
+  const candidates = [
+    `${baseUrl}/view_metadata/${encodeURIComponent(parsed.filename)}?subfolder=${encodeURIComponent(parsed.subfolder)}&type=${encodeURIComponent(parsed.type)}`,
+    `${baseUrl}/view_metadata?${query}`,
+  ];
+
+  for (const endpoint of candidates) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        headers: buildAuthHeaders(auth),
+        cache: "no-store",
+        signal,
+      });
+      if (!response.ok) continue;
+      const payload = (await response.json()) as unknown;
+      const meta = extractMetaFromPayload(payload);
+      if (meta.seed !== undefined || meta.prompt) {
+        return meta;
+      }
+    } catch {
+      // continue fallback endpoints
+    }
+  }
+  return null;
+}
+
 function collectImageUrls(
   baseUrl: string,
   workflow: ComfyWorkflow,
   historyEntry: ComfyHistoryEntry,
+  preferredTitleIncludes?: string[],
+  strictPreferredMatch?: boolean,
+  pickLatestImageOnly?: boolean,
 ) {
   const outputs = historyEntry.outputs ?? {};
   const nodeGroups = resolveOutputNodeGroups(workflow);
+  const preferredNodes = resolvePreferredOutputNodes(workflow, preferredTitleIncludes);
+  const preferredImages = preferredNodes.flatMap(
+    (nodeId) => outputs[nodeId]?.images ?? [],
+  );
 
   const saverImages = nodeGroups.saver.flatMap(
     (nodeId) => outputs[nodeId]?.images ?? [],
@@ -619,12 +804,29 @@ function collectImageUrls(
   );
 
   const images =
-    saverImages.length > 0
-      ? saverImages
+    preferredImages.length > 0
+      ? preferredImages
       : previewImages.length > 0
-        ? previewImages
+      ? previewImages
+      : saverImages.length > 0
+        ? saverImages
         : fallbackImages;
-  const urls = images
+
+  if (
+    strictPreferredMatch &&
+    preferredNodes.length > 0 &&
+    preferredImages.length === 0
+  ) {
+    throw new Error(
+      "ComfyUI: не найден результат в целевом узле предпросмотра (Preview after Detailing).",
+    );
+  }
+
+  const normalizedImages = pickLatestImageOnly && images.length > 0
+    ? [images[images.length - 1]]
+    : images;
+
+  const urls = normalizedImages
     .filter((image) => Boolean(image?.filename))
     .map((image) => buildViewUrl(baseUrl, image));
 
@@ -655,6 +857,9 @@ export async function generateComfyImages(
             forceHiResFix: item.forceHiResFix,
             enableUpscaler: item.enableUpscaler,
             upscaleFactor: item.upscaleFactor,
+            outputNodeTitleIncludes: item.outputNodeTitleIncludes,
+            strictOutputNodeMatch: item.strictOutputNodeMatch,
+            pickLatestImageOnly: item.pickLatestImageOnly,
             detailing: item.detailing,
           },
     )
@@ -688,11 +893,19 @@ export async function generateComfyImages(
           signal,
         );
         setStyleImageFilename(workflow, uploadedFilename);
+        setCompositionImageFilename(workflow, uploadedFilename);
       }
       sanitizeWorkflowForApi(workflow);
       const promptId = await queuePrompt(baseUrl, workflow, auth, signal);
       const historyEntry = await waitForHistory(baseUrl, promptId, auth, signal);
-      const imageUrls = collectImageUrls(baseUrl, workflow, historyEntry);
+      const imageUrls = collectImageUrls(
+        baseUrl,
+        workflow,
+        historyEntry,
+        item.outputNodeTitleIncludes,
+        item.strictOutputNodeMatch,
+        item.pickLatestImageOnly,
+      );
       if (onPromptResult) {
         await onPromptResult(imageUrls, index, normalizedItems.length);
       }

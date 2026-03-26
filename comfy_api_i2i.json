@@ -1,0 +1,941 @@
+{
+  "15": {
+    "inputs": {
+      "model_name": "4x_foolhardy_Remacri.pth"
+    },
+    "class_type": "UpscaleModelLoader",
+    "_meta": {
+      "title": "Upscale Model"
+    }
+  },
+  "20": {
+    "inputs": {
+      "model_name": "segm/99coins_anime_girl_face_m_seg.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Face Ultralytics"
+    }
+  },
+  "21": {
+    "inputs": {
+      "model_name": "sam_vit_b_01ec64.pth",
+      "device_mode": "AUTO"
+    },
+    "class_type": "SAMLoader",
+    "_meta": {
+      "title": "SAMLoader (Impact)"
+    }
+  },
+  "29": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview after Detailing"
+    }
+  },
+  "34": {
+    "inputs": {
+      "model_name": "segm/PitEyeDetailer-v2-seg.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Eyes Ultralytics"
+    }
+  },
+  "37": {
+    "inputs": {
+      "model_name": "bbox/adetailer2dMouth_v10.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Lips Ultralytics"
+    }
+  },
+  "40": {
+    "inputs": {
+      "model_name": "segm/Nipple-yoro11x_seg.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Nipples Ultralytics"
+    }
+  },
+  "42": {
+    "inputs": {
+      "model_name": "bbox/adetailerNose_.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Nose Ultalytics"
+    }
+  },
+  "46": {
+    "inputs": {
+      "model_name": "segm/ntd11_anime_nsfw_segm_v4_pussy.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Vagina Ultralytics"
+    }
+  },
+  "50": {
+    "inputs": {
+      "anything": ["635", 0],
+      "anything2": ["459", 0],
+      "anything3": ["437", 0]
+    },
+    "class_type": "Anything Everywhere",
+    "_meta": {
+      "title": "Checkpoint Everywhere"
+    }
+  },
+  "51": {
+    "inputs": {
+      "+ve": ["523", 0],
+      "-ve": ["261", 0]
+    },
+    "class_type": "Prompts Everywhere",
+    "_meta": {
+      "title": "Anything Everywhere Prompts"
+    }
+  },
+  "68": {
+    "inputs": {
+      "model_name": "bbox/hand_yolov8s.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Hands Ultralytics"
+    }
+  },
+  "76": {
+    "inputs": {
+      "model_name": "segm/ntd11_anime_nsfw_segm_v4_penis.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "Penis Ultralytics"
+    }
+  },
+  "81": {
+    "inputs": {
+      "sampling": "v_prediction",
+      "zsnr": true,
+      "model": ["635", 0]
+    },
+    "class_type": "ModelSamplingDiscrete",
+    "_meta": {
+      "title": "V-Pred Model"
+    }
+  },
+  "158": {
+    "inputs": {
+      "boolean": ["438", 0],
+      "on_true": ["81", 0],
+      "on_false": ["161", 0]
+    },
+    "class_type": "Switch any [Crystools]",
+    "_meta": {
+      "title": "V-Pred Switch"
+    }
+  },
+  "161": {
+    "inputs": {
+      "sampling": "eps",
+      "zsnr": false,
+      "model": ["635", 0]
+    },
+    "class_type": "ModelSamplingDiscrete",
+    "_meta": {
+      "title": "EPS Model"
+    }
+  },
+  "184": {
+    "inputs": {
+      "text": ["471", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Face Clip transform"
+    }
+  },
+  "192": {
+    "inputs": {
+      "text": ["478", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Lips Clip transform"
+    }
+  },
+  "193": {
+    "inputs": {
+      "text": ["475", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Nose Clip transform"
+    }
+  },
+  "194": {
+    "inputs": {
+      "text": ["481", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Hands Clip transform"
+    }
+  },
+  "195": {
+    "inputs": {
+      "text": ["482", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Nipples Clip transform"
+    }
+  },
+  "196": {
+    "inputs": {
+      "text": ["483", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Vagina Clip transform"
+    }
+  },
+  "197": {
+    "inputs": {
+      "text": ["484", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Penis Clip transform"
+    }
+  },
+  "224": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Face"
+    }
+  },
+  "225": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Nose"
+    }
+  },
+  "226": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Lips"
+    }
+  },
+  "227": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Hands"
+    }
+  },
+  "228": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Nipples"
+    }
+  },
+  "229": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Vagina"
+    }
+  },
+  "230": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Penis"
+    }
+  },
+  "231": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Eyes"
+    }
+  },
+  "261": {
+    "inputs": {
+      "text": ["262", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Prompt negative convert"
+    }
+  },
+  "262": {
+    "inputs": {
+      "string": "lowres, (worst quality, low quality, bad anatomy, bad hands:1.3), abstract, signature, censored, bar censor, mosaic censoring, animal ears, "
+    },
+    "class_type": "Primitive string multiline [Crystools]",
+    "_meta": {
+      "title": "Negative prompt"
+    }
+  },
+  "274": {
+    "inputs": {
+      "images": ["669", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview after Upscale/HiRes Fix"
+    }
+  },
+  "282": {
+    "inputs": {
+      "id": 0,
+      "widget_name": "ckpt_name",
+      "return_all": true,
+      "node_title": "",
+      "allowed_float_decimals": 2,
+      "any_input": ["436", 0]
+    },
+    "class_type": "WidgetToString",
+    "_meta": {
+      "title": "Modelname for save"
+    }
+  },
+  "430": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.45,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "IPAdapter Style Strength"
+    }
+  },
+  "436": {
+    "inputs": {
+      "ckpt_name": "realismIllustriousBy_v50FP16.safetensors",
+      "prompt": "[none]",
+      "example": "[none]"
+    },
+    "class_type": "CheckpointLoader|pysssss",
+    "_meta": {
+      "title": "Checkpoint Loader 🐍"
+    }
+  },
+  "437": {
+    "inputs": {
+      "vae_name": "sdxl_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "438": {
+    "inputs": {
+      "boolean": false
+    },
+    "class_type": "Primitive boolean [Crystools]",
+    "_meta": {
+      "title": "Is V-Pred Model"
+    }
+  },
+  "454": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "457": {
+    "inputs": {
+      "filename": "IMG2IMG_ADetailer_%time",
+      "path": "",
+      "extension": "png",
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "modelname": ["282", 0],
+      "sampler_name": ["507", 1],
+      "scheduler_name": ["618", 1],
+      "positive": "",
+      "negative": ["262", 0],
+      "seed_value": ["522", 0],
+      "width": 512,
+      "height": 512,
+      "lossless_webp": true,
+      "quality_jpeg_or_webp": 100,
+      "optimize_png": false,
+      "counter": 0,
+      "denoise": ["558", 0],
+      "clip_skip": ["461", 0],
+      "time_format": "%Y-%m-%d-%H%M%S",
+      "save_workflow_as_json": false,
+      "embed_workflow": true,
+      "additional_hashes": "",
+      "download_civitai_data": false,
+      "easy_remix": false,
+      "show_preview": true,
+      "custom": "",
+      "images": ["669", 0]
+    },
+    "class_type": "Image Saver",
+    "_meta": {
+      "title": "Image Saver"
+    }
+  },
+  "459": {
+    "inputs": {
+      "stop_at_clip_layer": ["460", 0],
+      "clip": ["436", 1]
+    },
+    "class_type": "CLIPSetLastLayer",
+    "_meta": {
+      "title": "Set CLIP Skip"
+    }
+  },
+  "460": {
+    "inputs": {
+      "expression": "a * (-1)\n",
+      "a": ["461", 0]
+    },
+    "class_type": "MathExpression|pysssss",
+    "_meta": {
+      "title": "Clip Skip Calculation"
+    }
+  },
+  "461": {
+    "inputs": {
+      "Xi": 2,
+      "Xf": 2,
+      "isfloatX": 0
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "CLIP Skip"
+    }
+  },
+  "464": {
+    "inputs": {
+      "text": ["465", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Eyes Clip transform"
+    }
+  },
+  "465": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Eyes Prompt Concat"
+    }
+  },
+  "471": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Face Prompt concat"
+    }
+  },
+  "475": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Nose Prompt Concat"
+    }
+  },
+  "478": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Lips Prompt Concat"
+    }
+  },
+  "481": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Hands Prompt Concat"
+    }
+  },
+  "482": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Nipples Prompt Concat"
+    }
+  },
+  "483": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Vagina Prompt Concat"
+    }
+  },
+  "484": {
+    "inputs": {
+      "separator": ""
+    },
+    "class_type": "CR Text Concatenate",
+    "_meta": {
+      "title": "Penis Prompt Concat"
+    }
+  },
+  "489": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.35,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Eyes"
+    }
+  },
+  "491": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.25,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Face"
+    }
+  },
+  "492": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.25,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Nose"
+    }
+  },
+  "493": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.3,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Lips"
+    }
+  },
+  "494": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.36,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Hands"
+    }
+  },
+  "495": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.35,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Nipples"
+    }
+  },
+  "496": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.35,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Vagina"
+    }
+  },
+  "497": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.35,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise Penis"
+    }
+  },
+  "498": {
+    "inputs": {
+      "text": ["465", 0]
+    },
+    "class_type": "ShowText|pysssss",
+    "_meta": {
+      "title": "Show example eye prompt"
+    }
+  },
+  "507": {
+    "inputs": {
+      "sampler_name": "euler_ancestral"
+    },
+    "class_type": "Sampler Selector (Image Saver)",
+    "_meta": {
+      "title": "Sampler Selector"
+    }
+  },
+  "508": {
+    "inputs": {
+      "Xi": 6,
+      "Xf": 6,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "CFG / Guidance"
+    }
+  },
+  "509": {
+    "inputs": {
+      "Xi": 30,
+      "Xf": 30,
+      "isfloatX": 0
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Steps"
+    }
+  },
+  "514": {
+    "inputs": {
+      "scheduler": ["618", 0],
+      "extra_scheduler": "None"
+    },
+    "class_type": "ImpactSchedulerAdapter",
+    "_meta": {
+      "title": "Scheduler converter"
+    }
+  },
+  "522": {
+    "inputs": {
+      "seed": 769744077051402
+    },
+    "class_type": "easy seed",
+    "_meta": {
+      "title": "Seed"
+    }
+  },
+  "523": {
+    "inputs": {
+      "text": ""
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Prompt positive convert"
+    }
+  },
+  "535": {
+    "inputs": {
+      "string": "masterpiece, best quality, absurdres, amazing quality, vslinxbleachtybw, inoue orihime, large breasts, brown eyes, long hair, straight hair, "
+    },
+    "class_type": "Primitive string multiline [Crystools]",
+    "_meta": {
+      "title": "IMG2IMG prompt"
+    }
+  },
+  "551": {
+    "inputs": {
+      "text_0": "masterpiece, best quality, absurdres, amazing quality, vslinxbleachtybw, inoue orihime, large breasts, brown eyes, long hair, straight hair, 1girl, solo, breasts, looking at viewer, blush, smile, cowboy shot, sleeveless, pants, sweater, hand on hip, v, turtleneck, denim, jeans",
+      "text": ["535", 0]
+    },
+    "class_type": "ShowText|pysssss",
+    "_meta": {
+      "title": "Show full IMG2IMG Transfer prompt"
+    }
+  },
+  "553": {
+    "inputs": {
+      "string": ""
+    },
+    "class_type": "Primitive string multiline [Crystools]",
+    "_meta": {
+      "title": "Exclude tags from interrogation"
+    }
+  },
+  "558": {
+    "inputs": {
+      "Xi": 1,
+      "Xf": 1,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Denoise"
+    }
+  },
+  "574": {
+    "inputs": {
+      "image": "example.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Alternative style image"
+    }
+  },
+  "581": {
+    "inputs": {
+      "images": ["454", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "ControlNet Preview"
+    }
+  },
+  "582": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.55,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Accuracy"
+    }
+  },
+  "618": {
+    "inputs": {
+      "scheduler": "sgm_uniform"
+    },
+    "class_type": "Scheduler Selector (Image Saver)",
+    "_meta": {
+      "title": "Scheduler Selector"
+    }
+  },
+  "635": {
+    "inputs": {
+      "sage_attention": "disabled",
+      "allow_compile": false,
+      "model": ["436", 0]
+    },
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention"
+    }
+  },
+  "647": {
+    "inputs": {
+      "upscale_method": "nearest-exact",
+      "factor": ["649", 0],
+      "upscale_model": ["15", 0],
+      "image": ["454", 0]
+    },
+    "class_type": "Upscale by Factor with Model (WLSH)",
+    "_meta": {
+      "title": "Upscaling"
+    }
+  },
+  "649": {
+    "inputs": {
+      "Xi": 2,
+      "Xf": 2,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Upscale Factor"
+    }
+  },
+  "650": {
+    "inputs": {
+      "pixels": ["647", 0]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "651": {
+    "inputs": {
+      "seed": ["522", 0],
+      "steps": ["665", 0],
+      "cfg": ["666", 1],
+      "sampler_name": ["507", 0],
+      "scheduler": ["618", 0],
+      "denoise": ["670", 0],
+      "negative": ["261", 0],
+      "latent_image": ["650", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "653": {
+    "inputs": {
+      "samples": ["651", 0]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "658": {
+    "inputs": {
+      "method": "hm-mvgd-hm",
+      "strength": 0.75,
+      "multithread": true,
+      "image_ref": ["647", 0],
+      "image_target": ["668", 0]
+    },
+    "class_type": "ColorMatch",
+    "_meta": {
+      "title": "Color Match"
+    }
+  },
+  "665": {
+    "inputs": {
+      "expression": "max(18, a - 10)\n",
+      "a": ["509", 0]
+    },
+    "class_type": "MathExpression|pysssss",
+    "_meta": {
+      "title": "calc steps"
+    }
+  },
+  "666": {
+    "inputs": {
+      "expression": "a + 0.5",
+      "a": ["508", 0]
+    },
+    "class_type": "MathExpression|pysssss",
+    "_meta": {
+      "title": "calc cfg"
+    }
+  },
+  "667": {
+    "inputs": {
+      "images": ["647", 0]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Pre-HiRes Fix"
+    }
+  },
+  "668": {
+    "inputs": {
+      "Input": 2,
+      "image1": ["647", 0],
+      "image2": ["653", 0]
+    },
+    "class_type": "CR Image Input Switch",
+    "_meta": {
+      "title": "hires img switch"
+    }
+  },
+  "669": {
+    "inputs": {
+      "Input": 2,
+      "image1": ["668", 0],
+      "image2": ["658", 0]
+    },
+    "class_type": "CR Image Input Switch",
+    "_meta": {
+      "title": "color fix img switch"
+    }
+  },
+  "670": {
+    "inputs": {
+      "Xi": 0,
+      "Xf": 0.3,
+      "isfloatX": 1
+    },
+    "class_type": "mxSlider",
+    "_meta": {
+      "title": "Hi-Res Fix Denoise"
+    }
+  },
+  "440:0": {
+    "inputs": {
+      "ipadapter_file": "noobIPAMARK1_mark1.safetensors"
+    },
+    "class_type": "IPAdapterModelLoader",
+    "_meta": {
+      "title": "IPAdapter - Model Loader"
+    }
+  },
+  "440:1": {
+    "inputs": {
+      "clip_name": "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors"
+    },
+    "class_type": "CLIPVisionLoader",
+    "_meta": {
+      "title": "IPAdapter - Clip Vision Model"
+    }
+  },
+  "519:0": {
+    "inputs": {
+      "cnet": "noobAI\\noobaiXLControlnet_openposeModel.safetensors"
+    },
+    "class_type": "ACN_ControlNetLoaderAdvanced",
+    "_meta": {
+      "title": "ControlNet Model"
+    }
+  },
+  "519:1": {
+    "inputs": {
+      "preprocessor": "OpenposePreprocessor"
+    },
+    "class_type": "ControlNetPreprocessorSelector",
+    "_meta": {
+      "title": "ControlNet - Preprocessor Selector"
+    }
+  }
+}

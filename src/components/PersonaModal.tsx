@@ -4,6 +4,7 @@ import type { GeneratedPersonaDraft } from "../lmstudio";
 import type { Persona } from "../types";
 import type {
   LookDetailLevel,
+  LookEnhanceTarget,
   PersonaDraft,
   PersonaLookPack,
   PersonaModalTab,
@@ -40,11 +41,14 @@ interface PersonaModalProps {
   setLookPackageCount: (value: number) => void;
   lookDetailLevel: LookDetailLevel;
   setLookDetailLevel: (value: LookDetailLevel) => void;
+  lookEnhanceTarget: LookEnhanceTarget;
+  setLookEnhanceTarget: (value: LookEnhanceTarget) => void;
   enhancingLookImageKey: string | null;
   onEnhanceLookImage: (
-    packIndex: number,
+    packIndex: number | null,
     kind: "avatar" | "fullbody" | "side" | "back",
     imageUrl: string,
+    targetOverride?: LookEnhanceTarget,
   ) => void;
   generatedLookPacks: PersonaLookPack[];
   onApplyLookPack: (pack: PersonaLookPack) => void;
@@ -63,6 +67,57 @@ interface SliderFieldProps {
   label: string;
   value: number;
   onChange: (value: number) => void;
+}
+
+const ENHANCE_TARGET_OPTIONS: Array<{ value: LookEnhanceTarget; label: string }> = [
+  { value: "all", label: "Все части" },
+  { value: "face", label: "Лицо" },
+  { value: "eyes", label: "Глаза" },
+  { value: "nose", label: "Нос" },
+  { value: "lips", label: "Губы" },
+  { value: "hands", label: "Руки" },
+];
+
+interface EnhanceOverlayButtonProps {
+  busy: boolean;
+  onEnhance: (targetOverride?: LookEnhanceTarget) => void;
+}
+
+function EnhanceOverlayButton({ busy, onEnhance }: EnhanceOverlayButtonProps) {
+  return (
+    <div className={`persona-look-enhance-control ${busy ? "busy" : ""}`}>
+      <button
+        type="button"
+        className="persona-look-enhance-btn"
+        onClick={(event) => {
+          event.stopPropagation();
+          onEnhance();
+        }}
+        disabled={busy}
+        title="Улучшить детали"
+      >
+        <Sparkles size={12} />
+        {busy ? "..." : "Улучшить"}
+      </button>
+      {!busy ? (
+        <div className="persona-look-enhance-popover" role="menu" aria-label="Выбор улучшения">
+          {ENHANCE_TARGET_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className="persona-look-enhance-option"
+              onClick={(event) => {
+                event.stopPropagation();
+                onEnhance(option.value);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function SliderField({ label, value, onChange }: SliderFieldProps) {
@@ -105,6 +160,8 @@ export function PersonaModal({
   setLookPackageCount,
   lookDetailLevel,
   setLookDetailLevel,
+  lookEnhanceTarget,
+  setLookEnhanceTarget,
   enhancingLookImageKey,
   onEnhanceLookImage,
   generatedLookPacks,
@@ -412,6 +469,21 @@ export function PersonaModal({
                     ]}
                   />
                 </label>
+                <label>
+                  Что улучшать при кнопке "Улучшить"
+                  <Dropdown
+                    value={lookEnhanceTarget}
+                    onChange={(nextTarget) => setLookEnhanceTarget(nextTarget as LookEnhanceTarget)}
+                    options={[
+                      { value: "all", label: "Все части" },
+                      { value: "face", label: "Только лицо" },
+                      { value: "eyes", label: "Только глаза" },
+                      { value: "nose", label: "Только нос" },
+                      { value: "lips", label: "Только губы" },
+                      { value: "hands", label: "Только руки" },
+                    ]}
+                  />
+                </label>
                 <label className="checkbox-row">
                   <input
                     type="checkbox"
@@ -447,49 +519,81 @@ export function PersonaModal({
                     {personaDraft.avatarUrl ? (
                       <article className="persona-look-card avatar">
                         <span>Avatar</span>
-                        <button
-                          type="button"
-                          className="persona-look-preview-btn"
-                          onClick={() => setPreviewSrc(personaDraft.avatarUrl)}
-                        >
-                          <img src={personaDraft.avatarUrl} alt="persona-avatar" loading="lazy" />
-                        </button>
+                        <div className="persona-look-image-wrap">
+                          <button
+                            type="button"
+                            className="persona-look-preview-btn"
+                            onClick={() => setPreviewSrc(personaDraft.avatarUrl)}
+                          >
+                            <img src={personaDraft.avatarUrl} alt="persona-avatar" loading="lazy" />
+                          </button>
+                          <EnhanceOverlayButton
+                            busy={enhancingLookImageKey === "draft:avatar"}
+                            onEnhance={(targetOverride) =>
+                              onEnhanceLookImage(null, "avatar", personaDraft.avatarUrl, targetOverride)
+                            }
+                          />
+                        </div>
                       </article>
                     ) : null}
                     {personaDraft.fullBodyUrl ? (
                       <article className="persona-look-card fullbody">
                         <span>Fullbody</span>
-                        <button
-                          type="button"
-                          className="persona-look-preview-btn"
-                          onClick={() => setPreviewSrc(personaDraft.fullBodyUrl)}
-                        >
-                          <img src={personaDraft.fullBodyUrl} alt="persona-fullbody" loading="lazy" />
-                        </button>
+                        <div className="persona-look-image-wrap">
+                          <button
+                            type="button"
+                            className="persona-look-preview-btn"
+                            onClick={() => setPreviewSrc(personaDraft.fullBodyUrl)}
+                          >
+                            <img src={personaDraft.fullBodyUrl} alt="persona-fullbody" loading="lazy" />
+                          </button>
+                          <EnhanceOverlayButton
+                            busy={enhancingLookImageKey === "draft:fullbody"}
+                            onEnhance={(targetOverride) =>
+                              onEnhanceLookImage(null, "fullbody", personaDraft.fullBodyUrl, targetOverride)
+                            }
+                          />
+                        </div>
                       </article>
                     ) : null}
                     {personaDraft.fullBodySideUrl ? (
                       <article className="persona-look-card fullbody">
                         <span>Fullbody Side</span>
-                        <button
-                          type="button"
-                          className="persona-look-preview-btn"
-                          onClick={() => setPreviewSrc(personaDraft.fullBodySideUrl)}
-                        >
-                          <img src={personaDraft.fullBodySideUrl} alt="persona-fullbody-side" loading="lazy" />
-                        </button>
+                        <div className="persona-look-image-wrap">
+                          <button
+                            type="button"
+                            className="persona-look-preview-btn"
+                            onClick={() => setPreviewSrc(personaDraft.fullBodySideUrl)}
+                          >
+                            <img src={personaDraft.fullBodySideUrl} alt="persona-fullbody-side" loading="lazy" />
+                          </button>
+                          <EnhanceOverlayButton
+                            busy={enhancingLookImageKey === "draft:side"}
+                            onEnhance={(targetOverride) =>
+                              onEnhanceLookImage(null, "side", personaDraft.fullBodySideUrl, targetOverride)
+                            }
+                          />
+                        </div>
                       </article>
                     ) : null}
                     {personaDraft.fullBodyBackUrl ? (
                       <article className="persona-look-card fullbody">
                         <span>Fullbody Back</span>
-                        <button
-                          type="button"
-                          className="persona-look-preview-btn"
-                          onClick={() => setPreviewSrc(personaDraft.fullBodyBackUrl)}
-                        >
-                          <img src={personaDraft.fullBodyBackUrl} alt="persona-fullbody-back" loading="lazy" />
-                        </button>
+                        <div className="persona-look-image-wrap">
+                          <button
+                            type="button"
+                            className="persona-look-preview-btn"
+                            onClick={() => setPreviewSrc(personaDraft.fullBodyBackUrl)}
+                          >
+                            <img src={personaDraft.fullBodyBackUrl} alt="persona-fullbody-back" loading="lazy" />
+                          </button>
+                          <EnhanceOverlayButton
+                            busy={enhancingLookImageKey === "draft:back"}
+                            onEnhance={(targetOverride) =>
+                              onEnhanceLookImage(null, "back", personaDraft.fullBodyBackUrl, targetOverride)
+                            }
+                          />
+                        </div>
                       </article>
                     ) : null}
                   </div>
@@ -513,16 +617,12 @@ export function PersonaModal({
                                 >
                                   <img src={pack.avatarUrl} alt={`look-pack-${index + 1}-avatar`} loading="lazy" />
                                 </button>
-                                <button
-                                  type="button"
-                                  className="persona-look-enhance-btn"
-                                  onClick={() => onEnhanceLookImage(index, "avatar", pack.avatarUrl)}
-                                  disabled={enhancingLookImageKey === `${index}:avatar`}
-                                  title="Улучшить детали"
-                                >
-                                  <Sparkles size={12} />
-                                  {enhancingLookImageKey === `${index}:avatar` ? "..." : "Улучшить"}
-                                </button>
+                                <EnhanceOverlayButton
+                                  busy={enhancingLookImageKey === `${index}:avatar`}
+                                  onEnhance={(targetOverride) =>
+                                    onEnhanceLookImage(index, "avatar", pack.avatarUrl, targetOverride)
+                                  }
+                                />
                               </div>
                             ) : (
                               <div className="image-skeleton-card image-skeleton-fill" />
@@ -539,16 +639,12 @@ export function PersonaModal({
                                 >
                                   <img src={pack.fullBodyUrl} alt={`look-pack-${index + 1}-fullbody`} loading="lazy" />
                                 </button>
-                                <button
-                                  type="button"
-                                  className="persona-look-enhance-btn"
-                                  onClick={() => onEnhanceLookImage(index, "fullbody", pack.fullBodyUrl)}
-                                  disabled={enhancingLookImageKey === `${index}:fullbody`}
-                                  title="Улучшить детали"
-                                >
-                                  <Sparkles size={12} />
-                                  {enhancingLookImageKey === `${index}:fullbody` ? "..." : "Улучшить"}
-                                </button>
+                                <EnhanceOverlayButton
+                                  busy={enhancingLookImageKey === `${index}:fullbody`}
+                                  onEnhance={(targetOverride) =>
+                                    onEnhanceLookImage(index, "fullbody", pack.fullBodyUrl, targetOverride)
+                                  }
+                                />
                               </div>
                             ) : (
                               <div className="image-skeleton-card image-skeleton-fill" />
@@ -570,16 +666,12 @@ export function PersonaModal({
                                       loading="lazy"
                                     />
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="persona-look-enhance-btn"
-                                    onClick={() => onEnhanceLookImage(index, "side", pack.fullBodySideUrl)}
-                                    disabled={enhancingLookImageKey === `${index}:side`}
-                                    title="Улучшить детали"
-                                  >
-                                    <Sparkles size={12} />
-                                    {enhancingLookImageKey === `${index}:side` ? "..." : "Улучшить"}
-                                  </button>
+                                  <EnhanceOverlayButton
+                                    busy={enhancingLookImageKey === `${index}:side`}
+                                    onEnhance={(targetOverride) =>
+                                      onEnhanceLookImage(index, "side", pack.fullBodySideUrl, targetOverride)
+                                    }
+                                  />
                                 </div>
                               ) : (
                                 <div className="image-skeleton-card image-skeleton-fill" />
@@ -602,16 +694,12 @@ export function PersonaModal({
                                       loading="lazy"
                                     />
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="persona-look-enhance-btn"
-                                    onClick={() => onEnhanceLookImage(index, "back", pack.fullBodyBackUrl)}
-                                    disabled={enhancingLookImageKey === `${index}:back`}
-                                    title="Улучшить детали"
-                                  >
-                                    <Sparkles size={12} />
-                                    {enhancingLookImageKey === `${index}:back` ? "..." : "Улучшить"}
-                                  </button>
+                                  <EnhanceOverlayButton
+                                    busy={enhancingLookImageKey === `${index}:back`}
+                                    onEnhance={(targetOverride) =>
+                                      onEnhanceLookImage(index, "back", pack.fullBodyBackUrl, targetOverride)
+                                    }
+                                  />
                                 </div>
                               ) : (
                                 <div className="image-skeleton-card image-skeleton-fill" />

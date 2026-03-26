@@ -926,7 +926,7 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   border: 1px solid var(--border-light);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.02);
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
 }
@@ -953,6 +953,8 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   border: 0;
   background: transparent;
   cursor: zoom-in;
+  overflow: hidden;
+  border-radius: 0 0 10px 10px;
 }
 .persona-look-image-wrap {
   position: relative;
@@ -961,11 +963,16 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   flex: 1;
   min-height: 0;
 }
-.persona-look-enhance-btn {
+.persona-look-enhance-control {
   position: absolute;
   top: 8px;
   left: 8px;
   z-index: 2;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.persona-look-enhance-btn {
   padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid var(--border-light);
@@ -973,15 +980,39 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   font-size: 11px;
-  opacity: 0;
-  transform: translateY(-4px);
-  transition: opacity 0.15s ease, transform 0.15s ease;
 }
-.persona-look-image-wrap:hover .persona-look-enhance-btn,
-.persona-look-image-wrap:focus-within .persona-look-enhance-btn,
-.persona-look-enhance-btn:disabled {
+.persona-look-enhance-popover {
+  display: none;
+  margin-top: 6px;
+  min-width: 132px;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: rgba(13, 16, 23, 0.92);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.persona-look-enhance-option {
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  background: transparent;
+  font-size: 11px;
+}
+.persona-look-enhance-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.persona-look-image-wrap:hover .persona-look-enhance-control,
+.persona-look-image-wrap:focus-within .persona-look-enhance-control,
+.persona-look-enhance-control.busy {
   opacity: 1;
   transform: translateY(0);
+}
+.persona-look-enhance-control:hover .persona-look-enhance-popover,
+.persona-look-enhance-control:focus-within .persona-look-enhance-popover {
+  display: block;
 }
 
 .error-toast {
@@ -1093,6 +1124,80 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   right: 10px;
   z-index: 1;
 }
+.enhance-compare-dialog {
+  position: relative;
+  width: min(96vw, 980px);
+  max-height: 92vh;
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface-solid);
+  padding: 18px 18px 16px;
+}
+.enhance-compare-dialog h3 {
+  margin: 0 0 12px;
+}
+.enhance-compare-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.02);
+}
+.enhance-before-img,
+.enhance-after-overlay {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  background: rgba(0, 0, 0, 0.35);
+}
+.enhance-after-overlay {
+  position: absolute;
+  inset: 0;
+}
+.enhance-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.65);
+  transform: translateX(-1px);
+}
+.enhance-label {
+  position: absolute;
+  top: 8px;
+  z-index: 2;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: rgba(13, 16, 23, 0.82);
+}
+.enhance-label.before {
+  left: 8px;
+}
+.enhance-label.after {
+  right: 8px;
+}
+.enhance-compare-slider {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 10px;
+  z-index: 2;
+}
+.enhance-compare-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.enhance-compare-actions button {
+  flex: 1;
+}
 
 /* Responsive / Mobile (Dock & Bottom Sheet) */
 @media (max-width: 768px) {
@@ -1185,6 +1290,29 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   .overlay { padding: 0; }
   .split { grid-template-columns: 1fr; gap:0;}
   .persona-list { border-right: none; border-bottom: 1px solid var(--border-light); max-height: 200px;}
+  .enhance-compare-dialog {
+    width: 100vw;
+    max-height: 100svh;
+    min-height: 100svh;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+    padding: 14px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+  }
+  .enhance-compare-stage {
+    aspect-ratio: auto;
+    height: calc(100svh - 220px);
+    min-height: 320px;
+  }
+  .enhance-compare-actions {
+    margin-top: 10px;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .enhance-compare-actions button {
+    width: 100%;
+  }
 }
 
 @media (min-width: 768px) {
