@@ -41,6 +41,24 @@ function waitMs(ms: number) {
   });
 }
 
+function stringifyAppearance(appearance: Persona["appearance"]) {
+  return [
+    appearance.faceDescription,
+    appearance.eyes,
+    appearance.lips,
+    appearance.hair,
+    appearance.skin,
+    appearance.ageType,
+    appearance.bodyType,
+    appearance.markers,
+    appearance.accessories,
+    appearance.clothingStyle,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
 export default function App() {
   const {
     personas,
@@ -276,8 +294,8 @@ export default function App() {
     setPersonaDraft({
       name: persona.name,
       personalityPrompt: persona.personalityPrompt,
-      appearancePrompt: persona.appearancePrompt,
       stylePrompt: persona.stylePrompt,
+      appearance: persona.appearance,
       imageCheckpoint: persona.imageCheckpoint,
       advanced: persona.advanced,
       avatarUrl: persona.avatarUrl,
@@ -341,8 +359,9 @@ export default function App() {
   };
 
   const onGeneratePersonaLook = async () => {
-    if (!personaDraft.appearancePrompt.trim()) {
-      useAppStore.setState({ error: "Сначала заполни поле внешности (appearance prompt)." });
+    const appearanceText = stringifyAppearance(personaDraft.appearance);
+    if (!appearanceText) {
+      useAppStore.setState({ error: "Сначала заполни поля внешности." });
       return;
     }
 
@@ -352,14 +371,14 @@ export default function App() {
       const promptBundle = await generatePersonaLookPrompts(settings, {
         name: personaDraft.name,
         personalityPrompt: personaDraft.personalityPrompt,
-        appearancePrompt: personaDraft.appearancePrompt,
+        appearance: personaDraft.appearance,
         stylePrompt: personaDraft.stylePrompt,
         advanced: personaDraft.advanced,
       });
       const sharedSeed = stableSeedFromText(
         [
           personaDraft.name,
-          personaDraft.appearancePrompt,
+          appearanceText,
           personaDraft.stylePrompt,
           promptBundle.avatarPrompt,
           promptBundle.fullBodyPrompt,
@@ -514,8 +533,8 @@ export default function App() {
     await savePersona({
       name: draft.name,
       personalityPrompt: draft.personalityPrompt,
-      appearancePrompt: draft.appearancePrompt,
       stylePrompt: draft.stylePrompt,
+      appearance: draft.appearance,
       imageCheckpoint: "",
       advanced: draft.advanced,
       avatarUrl: draft.avatarUrl || "",
@@ -529,8 +548,8 @@ export default function App() {
     setPersonaDraft({
       name: draft.name,
       personalityPrompt: draft.personalityPrompt,
-      appearancePrompt: draft.appearancePrompt,
       stylePrompt: draft.stylePrompt,
+      appearance: draft.appearance,
       imageCheckpoint: "",
       advanced: draft.advanced,
       avatarUrl: draft.avatarUrl || "",
@@ -718,6 +737,7 @@ export default function App() {
           personas={personas}
           activeChatId={activeChatId}
           activePersonaId={activePersonaId}
+          generationPersonaId={generationPersonaId}
           generationSessions={generationSessions}
           activeGenerationSessionId={generationSessionId || null}
           onOpenPersonas={() => setShowPersonaModal(true)}
@@ -727,6 +747,7 @@ export default function App() {
           onSelectChat={(chatId) => void selectChat(chatId)}
           onSelectGenerationSession={setGenerationSessionId}
           onSelectPersona={(personaId) => void selectPersona(personaId)}
+          onSelectGenerationPersona={setGenerationPersonaId}
           onEditPersona={startEditPersona}
           isMobileOpen={mobileSidebarOpen}
           onCloseMobile={() => setMobileSidebarOpen(false)}
@@ -735,9 +756,6 @@ export default function App() {
 
         {sidebarTab === "generation" ? (
           <GenerationPane
-            personas={personas}
-            selectedPersonaId={generationPersonaId}
-            onSelectPersona={setGenerationPersonaId}
             topic={generationTopic}
             onTopicChange={setGenerationTopic}
             isInfinite={generationInfinite}

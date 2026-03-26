@@ -2,6 +2,7 @@ import type {
   MoodId,
   Persona,
   PersonaAdvancedProfile,
+  PersonaAppearanceProfile,
   PersonaBehaviorProfile,
   PersonaCoreProfile,
   PersonaEmotionProfile,
@@ -54,6 +55,19 @@ const DEFAULT_MEMORY: PersonaMemoryPolicy = {
   decayDays: 30,
 };
 
+const DEFAULT_APPEARANCE: PersonaAppearanceProfile = {
+  faceDescription: "",
+  eyes: "",
+  lips: "",
+  hair: "",
+  ageType: "",
+  bodyType: "",
+  markers: "",
+  accessories: "",
+  clothingStyle: "",
+  skin: "",
+};
+
 const MOOD_LABELS: Record<MoodId, string> = {
   calm: "спокойное",
   warm: "теплое",
@@ -78,6 +92,23 @@ function clampPositiveInt(value: number, fallback: number, min: number, max: num
 
 function cleanText(value: unknown, fallback = "") {
   return typeof value === "string" ? value.trim() : fallback;
+}
+
+function normalizeAppearance(
+  input: Partial<PersonaAppearanceProfile> | undefined,
+): PersonaAppearanceProfile {
+  return {
+    faceDescription: cleanText(input?.faceDescription, DEFAULT_APPEARANCE.faceDescription),
+    eyes: cleanText(input?.eyes, DEFAULT_APPEARANCE.eyes),
+    lips: cleanText(input?.lips, DEFAULT_APPEARANCE.lips),
+    hair: cleanText(input?.hair, DEFAULT_APPEARANCE.hair),
+    ageType: cleanText(input?.ageType, DEFAULT_APPEARANCE.ageType),
+    bodyType: cleanText(input?.bodyType, DEFAULT_APPEARANCE.bodyType),
+    markers: cleanText(input?.markers, DEFAULT_APPEARANCE.markers),
+    accessories: cleanText(input?.accessories, DEFAULT_APPEARANCE.accessories),
+    clothingStyle: cleanText(input?.clothingStyle, DEFAULT_APPEARANCE.clothingStyle),
+    skin: cleanText(input?.skin, DEFAULT_APPEARANCE.skin),
+  };
 }
 
 function normalizeCore(input: Partial<PersonaCoreProfile> | undefined): PersonaCoreProfile {
@@ -208,9 +239,15 @@ export function buildAdvancedProfileFromLegacy(persona: Pick<Persona, "personali
 
 type LegacyPersonaRecord = Omit<
   Persona,
-  "advanced" | "fullBodyUrl" | "fullBodySideUrl" | "fullBodyBackUrl" | "imageCheckpoint"
+  | "advanced"
+  | "appearance"
+  | "fullBodyUrl"
+  | "fullBodySideUrl"
+  | "fullBodyBackUrl"
+  | "imageCheckpoint"
 > & {
   advanced?: Partial<PersonaAdvancedProfile>;
+  appearance?: Partial<PersonaAppearanceProfile>;
   fullBodyUrl?: string;
   fullBodySideUrl?: string;
   fullBodyBackUrl?: string;
@@ -220,6 +257,7 @@ type LegacyPersonaRecord = Omit<
 export function normalizePersonaRecord(persona: LegacyPersonaRecord): Persona {
   return {
     ...persona,
+    appearance: normalizeAppearance(persona.appearance),
     imageCheckpoint: cleanText(persona.imageCheckpoint),
     fullBodyUrl: cleanText(persona.fullBodyUrl),
     fullBodySideUrl: cleanText(persona.fullBodySideUrl),

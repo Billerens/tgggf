@@ -11,6 +11,7 @@ interface SidebarProps {
   personas: Persona[];
   activeChatId: string | null;
   activePersonaId: string | null;
+  generationPersonaId: string;
   generationSessions: GeneratorSession[];
   activeGenerationSessionId: string | null;
   onOpenPersonas: () => void;
@@ -20,6 +21,7 @@ interface SidebarProps {
   onSelectChat: (chatId: string) => void;
   onSelectGenerationSession: (sessionId: string) => void;
   onSelectPersona: (personaId: string) => void;
+  onSelectGenerationPersona: (personaId: string) => void;
   onEditPersona: (persona: Persona) => void;
   isMobileOpen: boolean;
   onCloseMobile: () => void;
@@ -33,6 +35,7 @@ export function Sidebar({
   personas,
   activeChatId,
   activePersonaId,
+  generationPersonaId,
   generationSessions,
   activeGenerationSessionId,
   onOpenPersonas,
@@ -42,6 +45,7 @@ export function Sidebar({
   onSelectChat,
   onSelectGenerationSession,
   onSelectPersona,
+  onSelectGenerationPersona,
   onEditPersona,
   isMobileOpen,
   onCloseMobile,
@@ -106,6 +110,24 @@ export function Sidebar({
 
         {sidebarTab === "chats" ? (
           <div className="sidebar-list">
+            <label className="sidebar-persona-picker">
+              <span>Текущая персона</span>
+              <div className="select-container">
+                <select
+                  value={activePersonaId ?? ""}
+                  onChange={(event) => onSelectPersona(event.target.value)}
+                >
+                  <option value="" disabled>
+                    Выберите персону
+                  </option>
+                  {personas.map((persona) => (
+                    <option key={persona.id} value={persona.id}>
+                      {persona.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
             <div className="list-actions">
               <button type="button" className="primary" onClick={onCreateChat} disabled={!activePersonaId}>
                 <Plus size={16} /> Новый чат
@@ -181,6 +203,24 @@ export function Sidebar({
           </div>
         ) : (
           <div className="sidebar-list">
+            <label className="sidebar-persona-picker">
+              <span>Персона генератора</span>
+              <div className="select-container">
+                <select
+                  value={generationPersonaId}
+                  onChange={(event) => onSelectGenerationPersona(event.target.value)}
+                >
+                  <option value="" disabled>
+                    Выберите персону
+                  </option>
+                  {personas.map((persona) => (
+                    <option key={persona.id} value={persona.id}>
+                      {persona.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
             <div className="list-actions">
               <button type="button" className="primary" onClick={onCreateGenerationSession}>
                 <Plus size={16} /> Новая сессия

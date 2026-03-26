@@ -1,12 +1,8 @@
 import { useState } from "react";
 import { Image, Infinity, Play, Square } from "lucide-react";
-import type { Persona } from "../types";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface GenerationPaneProps {
-  personas: Persona[];
-  selectedPersonaId: string;
-  onSelectPersona: (personaId: string) => void;
   topic: string;
   onTopicChange: (value: string) => void;
   isInfinite: boolean;
@@ -24,9 +20,6 @@ interface GenerationPaneProps {
 }
 
 export function GenerationPane({
-  personas,
-  selectedPersonaId,
-  onSelectPersona,
   topic,
   onTopicChange,
   isInfinite,
@@ -69,24 +62,6 @@ export function GenerationPane({
 
         <section className="generation-content">
         <div className="generation-form">
-          <label>
-            Персона
-            <div className="select-container">
-              <select
-                value={selectedPersonaId}
-                onChange={(event) => onSelectPersona(event.target.value)}
-                disabled={isRunning}
-              >
-                <option value="">Выберите персону</option>
-                {personas.map((persona) => (
-                  <option key={persona.id} value={persona.id}>
-                    {persona.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </label>
-
           <label>
             Тематика генерации
             <textarea

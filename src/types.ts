@@ -70,12 +70,25 @@ export interface PersonaAdvancedProfile {
   memory: PersonaMemoryPolicy;
 }
 
+export interface PersonaAppearanceProfile {
+  faceDescription: string;
+  eyes: string;
+  lips: string;
+  hair: string;
+  ageType: string;
+  bodyType: string;
+  markers: string;
+  accessories: string;
+  clothingStyle: string;
+  skin: string;
+}
+
 export interface Persona {
   id: string;
   name: string;
   personalityPrompt: string;
-  appearancePrompt: string;
   stylePrompt: string;
+  appearance: PersonaAppearanceProfile;
   imageCheckpoint: string;
   advanced: PersonaAdvancedProfile;
   avatarUrl: string;

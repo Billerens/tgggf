@@ -4,6 +4,7 @@ import type {
   NativeChatResponse,
   Persona,
   PersonaAdvancedProfile,
+  PersonaAppearanceProfile,
   PersonaRuntimeState,
 } from "./types";
 import type {
@@ -120,6 +121,27 @@ function formatRecentMessages(
   return lines.join("\n");
 }
 
+function formatAppearanceProfile(
+  appearance: PersonaAppearanceProfile | undefined,
+) {
+  if (!appearance) return "Не указано.";
+  const parts = [
+    appearance.faceDescription,
+    appearance.eyes,
+    appearance.lips,
+    appearance.hair,
+    appearance.skin,
+    appearance.ageType,
+    appearance.bodyType,
+    appearance.markers,
+    appearance.accessories,
+    appearance.clothingStyle,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return parts.length > 0 ? parts.join(", ") : "Не указано.";
+}
+
 export function buildSystemPrompt(
   persona: Persona,
   settings: Pick<AppSettings, "userGender">,
@@ -162,6 +184,7 @@ export function buildSystemPrompt(
     "Если изображения нужны, добавь по одному блоку <comfyui_prompt>...</comfyui_prompt> для каждого изображения (если их несколько) или один (если изображение нужно одно):",
     "<comfyui_prompt>",
     'ultra detailed comma-separated tags in English (1-2 words per tag), e.g. "1girl, blonde hair, long hair, blue eyes, white dress, soft lighting, looking at viewer, close-up"',
+    "describe as much of details (clothes, no clothes, expressions, poses, background, lighting, camera angle, etc.) as possible",
     "</comfyui_prompt>",
     "",
     "Формат ComfyUI prompt: только теги через запятую, без предложений и без пояснений.",
@@ -201,7 +224,7 @@ export function buildSystemPrompt(
     `Имя: ${persona.name}`,
     `Архетип: ${advanced.core.archetype}`,
     `Характер: ${persona.personalityPrompt || "Не указан."}`,
-    `Внешность: ${persona.appearancePrompt || "Не указано."}`,
+    `Внешность: ${formatAppearanceProfile(persona.appearance)}`,
     `Предыстория: ${advanced.core.backstory || "Не задана."}`,
     `Цели: ${advanced.core.goals}`,
     getValuesImplementation(
@@ -342,8 +365,8 @@ export async function requestChatCompletion(
 export interface GeneratedPersonaDraft {
   name: string;
   personalityPrompt: string;
-  appearancePrompt: string;
   stylePrompt: string;
+  appearance: PersonaAppearanceProfile;
   advanced: PersonaAdvancedProfile;
   avatarUrl: string;
 }
@@ -351,7 +374,7 @@ export interface GeneratedPersonaDraft {
 export interface PersonaLookPromptRequest {
   name: string;
   personalityPrompt: string;
-  appearancePrompt: string;
+  appearance: PersonaAppearanceProfile;
   stylePrompt: string;
   advanced: PersonaAdvancedProfile;
 }
@@ -363,7 +386,10 @@ export interface PersonaLookPromptResponse {
 
 export async function generateThemedComfyPrompt(
   settings: AppSettings,
-  persona: Pick<Persona, "name" | "appearancePrompt" | "stylePrompt" | "personalityPrompt">,
+  persona: Pick<
+    Persona,
+    "name" | "appearance" | "stylePrompt" | "personalityPrompt"
+  >,
   topic: string,
   iteration: number,
 ): Promise<string> {
@@ -387,7 +413,7 @@ export async function generateThemedComfyPrompt(
 
   const input = [
     `Character name: ${persona.name || "Unknown"}`,
-    `Appearance: ${persona.appearancePrompt || "-"}`,
+    `Appearance: ${formatAppearanceProfile(persona.appearance)}`,
     `Style: ${persona.stylePrompt || "-"}`,
     `Personality: ${persona.personalityPrompt || "-"}`,
     `Theme: ${topic}`,
@@ -410,7 +436,9 @@ export async function generateThemedComfyPrompt(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`Ошибка генерации comfy prompt (${response.status}): ${body}`);
+    throw new Error(
+      `Ошибка генерации comfy prompt (${response.status}): ${body}`,
+    );
   }
 
   const data = (await response.json()) as NativeChatResponse;
@@ -578,6 +606,26 @@ function normalizeGeneratedPersonas(data: unknown): GeneratedPersonaDraft[] {
         typeof rec.stylePrompt === "string" ? rec.stylePrompt.trim() : "";
       const avatarUrl =
         typeof rec.avatarUrl === "string" ? rec.avatarUrl.trim() : "";
+      const appearanceRaw =
+        rec.appearance && typeof rec.appearance === "object"
+          ? (rec.appearance as Partial<PersonaAppearanceProfile>)
+          : undefined;
+      const appearance: PersonaAppearanceProfile = {
+        faceDescription: (
+          appearanceRaw?.faceDescription ??
+          appearancePrompt ??
+          ""
+        ).trim(),
+        eyes: (appearanceRaw?.eyes ?? "").trim(),
+        lips: (appearanceRaw?.lips ?? "").trim(),
+        hair: (appearanceRaw?.hair ?? "").trim(),
+        ageType: (appearanceRaw?.ageType ?? "").trim(),
+        bodyType: (appearanceRaw?.bodyType ?? "").trim(),
+        markers: (appearanceRaw?.markers ?? "").trim(),
+        accessories: (appearanceRaw?.accessories ?? "").trim(),
+        clothingStyle: (appearanceRaw?.clothingStyle ?? "").trim(),
+        skin: (appearanceRaw?.skin ?? "").trim(),
+      };
       const advancedRaw =
         rec.advanced && typeof rec.advanced === "object"
           ? (rec.advanced as Partial<PersonaAdvancedProfile>)
@@ -594,8 +642,8 @@ function normalizeGeneratedPersonas(data: unknown): GeneratedPersonaDraft[] {
       return {
         name,
         personalityPrompt,
-        appearancePrompt,
         stylePrompt,
+        appearance,
         advanced,
         avatarUrl,
       };
@@ -620,10 +668,10 @@ export async function generatePersonaDrafts(
     "Ты генератор карточек персонажей для ролевого AI-чата.",
     "Верни ТОЛЬКО JSON-массив без markdown и пояснений.",
     "Формат каждого элемента:",
-    '{"name":"...","personalityPrompt":"...","appearancePrompt":"...","stylePrompt":"...","avatarUrl":"","advanced":{"core":{"archetype":"...","backstory":"...","goals":"...","values":"...","boundaries":"...","expertise":"...","selfGender":"auto|female|male|neutral"},"voice":{"tone":"...","lexicalStyle":"...","sentenceLength":"short|balanced|long","formality":0,"expressiveness":0,"emoji":0},"behavior":{"initiative":0,"empathy":0,"directness":0,"curiosity":0,"challenge":0,"creativity":0},"emotion":{"baselineMood":"calm|warm|playful|focused|analytical|inspired|annoyed|upset|angry","warmth":0,"stability":0,"positiveTriggers":"...","negativeTriggers":"..."},"memory":{"rememberFacts":true,"rememberPreferences":true,"rememberGoals":true,"rememberEvents":true,"maxMemories":24,"decayDays":30}}}',
+    '{"name":"...","personalityPrompt":"...","stylePrompt":"...","avatarUrl":"","appearance":{"faceDescription":"...","eyes":"...","lips":"...","hair":"...","ageType":"...","bodyType":"...","markers":"...","accessories":"...","clothingStyle":"...","skin":"..."},"advanced":{"core":{"archetype":"...","backstory":"...","goals":"...","values":"...","boundaries":"...","expertise":"...","selfGender":"auto|female|male|neutral"},"voice":{"tone":"...","lexicalStyle":"...","sentenceLength":"short|balanced|long","formality":0,"expressiveness":0,"emoji":0},"behavior":{"initiative":0,"empathy":0,"directness":0,"curiosity":0,"challenge":0,"creativity":0},"emotion":{"baselineMood":"calm|warm|playful|focused|analytical|inspired|annoyed|upset|angry","warmth":0,"stability":0,"positiveTriggers":"...","negativeTriggers":"..."},"memory":{"rememberFacts":true,"rememberPreferences":true,"rememberGoals":true,"rememberEvents":true,"maxMemories":24,"decayDays":30}}}',
     "Все числовые поля в диапазоне 0..100 (кроме maxMemories и decayDays).",
     "maxMemories: 4..120, decayDays: 1..365.",
-    "Даже если ты заполнила advanced, legacy-поля personalityPrompt/appearancePrompt/stylePrompt тоже заполняй осмысленно.",
+    "Поля appearance обязательны и должны быть осмысленно заполнены.",
     "Пиши на русском языке.",
   ].join("\n");
 
@@ -686,7 +734,9 @@ function parseLookPromptJson(text: string): PersonaLookPromptResponse {
   const fullBodyPrompt = (parsed.fullBodyPrompt ?? "").trim();
 
   if (!avatarPrompt || !fullBodyPrompt) {
-    throw new Error("Модель не вернула корректные prompts для avatar/fullbody.");
+    throw new Error(
+      "Модель не вернула корректные prompts для avatar/fullbody.",
+    );
   }
 
   return {
@@ -733,7 +783,7 @@ export async function generatePersonaLookPrompts(
   const input = [
     `Name: ${payload.name || "Unknown"}`,
     `Personality: ${payload.personalityPrompt || "-"}`,
-    `Appearance: ${payload.appearancePrompt || "-"}`,
+    `Appearance: ${formatAppearanceProfile(payload.appearance)}`,
     `Style: ${payload.stylePrompt || "-"}`,
     `Archetype: ${payload.advanced.core.archetype || "-"}`,
     `Voice tone: ${payload.advanced.voice.tone || "-"}`,

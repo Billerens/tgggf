@@ -96,6 +96,23 @@ export function PersonaModal({
   onRefreshCheckpoints,
 }: PersonaModalProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const hasAppearance = Object.values(personaDraft.appearance).some((value) => value.trim());
+  const describeGeneratedAppearance = (draft: GeneratedPersonaDraft) =>
+    [
+      draft.appearance.faceDescription,
+      draft.appearance.eyes,
+      draft.appearance.lips,
+      draft.appearance.hair,
+      draft.appearance.skin,
+      draft.appearance.ageType,
+      draft.appearance.bodyType,
+      draft.appearance.markers,
+      draft.appearance.accessories,
+      draft.appearance.clothingStyle,
+    ]
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .join(", ");
 
   if (!open) return null;
 
@@ -167,10 +184,105 @@ export function PersonaModal({
                   value={personaDraft.personalityPrompt}
                   onChange={(event) => setPersonaDraft((prev) => ({ ...prev, personalityPrompt: event.target.value }))}
                 />
-                <textarea
-                  placeholder="Legacy промпт внешности"
-                  value={personaDraft.appearancePrompt}
-                  onChange={(event) => setPersonaDraft((prev) => ({ ...prev, appearancePrompt: event.target.value }))}
+                <input
+                  placeholder="Лицо (общее описание)"
+                  value={personaDraft.appearance.faceDescription}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, faceDescription: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Глаза"
+                  value={personaDraft.appearance.eyes}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, eyes: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Губы"
+                  value={personaDraft.appearance.lips}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, lips: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Волосы"
+                  value={personaDraft.appearance.hair}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, hair: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Кожа"
+                  value={personaDraft.appearance.skin}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, skin: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Возрастной тип"
+                  value={personaDraft.appearance.ageType}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, ageType: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Телосложение"
+                  value={personaDraft.appearance.bodyType}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, bodyType: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Отличительные маркеры"
+                  value={personaDraft.appearance.markers}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, markers: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Аксессуары (опционально)"
+                  value={personaDraft.appearance.accessories}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, accessories: event.target.value },
+                    }))
+                  }
+                />
+                <input
+                  placeholder="Любимый стиль/тип одежды"
+                  value={personaDraft.appearance.clothingStyle}
+                  onChange={(event) =>
+                    setPersonaDraft((prev) => ({
+                      ...prev,
+                      appearance: { ...prev.appearance, clothingStyle: event.target.value },
+                    }))
+                  }
                 />
                 <textarea
                   placeholder="Legacy стиль речи"
@@ -257,7 +369,7 @@ export function PersonaModal({
                 <button
                   type="button"
                   onClick={onGeneratePersonaLook}
-                  disabled={lookGenerationLoading || !personaDraft.appearancePrompt.trim()}
+                  disabled={lookGenerationLoading || !hasAppearance}
                 >
                   <Sparkles size={14} />{" "}
                   {lookGenerationLoading ? "Генерирую внешний вид..." : "Сгенерировать внешность"}
@@ -915,7 +1027,7 @@ export function PersonaModal({
                     <strong>Характер:</strong> {draft.personalityPrompt}
                   </p>
                   <p>
-                    <strong>Внешность:</strong> {draft.appearancePrompt}
+                    <strong>Внешность:</strong> {describeGeneratedAppearance(draft) || "—"}
                   </p>
                   <p>
                     <strong>Стиль:</strong> {draft.stylePrompt}
