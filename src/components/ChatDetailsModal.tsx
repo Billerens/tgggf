@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import type { AppSettings, ChatMessage, ChatSession, Persona, PersonaMemory, PersonaRuntimeState } from "../types";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface ChatDetailsModalProps {
   open: boolean;
@@ -32,6 +33,22 @@ function extractImageAttachments(messages: ChatMessage[]): ImageAttachment[] {
 
   for (const message of messages) {
     const text = message.content ?? "";
+    const explicitImageUrls = message.imageUrls ?? [];
+
+    for (const srcRaw of explicitImageUrls) {
+      const src = (srcRaw ?? "").trim();
+      if (!src) continue;
+      const key = `${message.id}::${src}`;
+      if (known.has(key)) continue;
+      known.add(key);
+      attachments.push({
+        src,
+        alt: "Generated image",
+        messageId: message.id,
+        role: message.role,
+        createdAt: message.createdAt,
+      });
+    }
 
     for (const match of text.matchAll(MARKDOWN_IMAGE_REGEX)) {
       const alt = (match[1] ?? "").trim();
@@ -97,6 +114,7 @@ export function ChatDetailsModal({
   onClose,
 }: ChatDetailsModalProps) {
   const [tab, setTab] = useState<DetailsTab>("attachments");
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const attachments = useMemo(() => extractImageAttachments(messages), [messages]);
   const memoryByLayer = useMemo(() => groupMemories(memories), [memories]);
 
@@ -140,7 +158,13 @@ export function ChatDetailsModal({
               <div className="attachment-grid">
                 {attachments.map((attachment) => (
                   <article key={`${attachment.messageId}-${attachment.src}`} className="attachment-card">
-                    <img src={attachment.src} alt={attachment.alt} loading="lazy" />
+                    <button
+                      type="button"
+                      className="attachment-preview-btn"
+                      onClick={() => setPreviewSrc(attachment.src)}
+                    >
+                      <img src={attachment.src} alt={attachment.alt} loading="lazy" />
+                    </button>
                     <div className="attachment-meta">
                       <span>{attachment.role === "assistant" ? "Ассистент" : "Пользователь"}</span>
                       <span>{formatDateTime(attachment.createdAt)}</span>
@@ -224,7 +248,7 @@ export function ChatDetailsModal({
           </section>
         )}
       </div>
+      <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
     </div>
   );
 }
-

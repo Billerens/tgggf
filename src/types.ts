@@ -97,6 +97,8 @@ export interface ChatMessage {
   content: string;
   comfyPrompt?: string;
   comfyPrompts?: string[];
+  imageUrls?: string[];
+  imageGenerationPending?: boolean;
   personaControlRaw?: string;
   createdAt: string;
 }
@@ -130,6 +132,7 @@ export interface PersonaMemory {
 
 export interface AppSettings {
   lmBaseUrl: string;
+  comfyBaseUrl: string;
   model: string;
   temperature: number;
   maxTokens: number;

@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { DEFAULT_SETTINGS, dbApi } from "./db";
 import { requestChatCompletion } from "./lmstudio";
+import { generateComfyImages } from "./comfy";
+import { localizeImageUrls } from "./imageStorage";
 import {
   applyPersonaControlProposal,
   buildLayeredMemoryContextCard,
@@ -402,19 +404,63 @@ export const useAppStore = create<AppState>((set, get) => ({
         },
       );
 
-      const assistantMessage: ChatMessage = {
+      let assistantMessage: ChatMessage = {
         id: id(),
         chatId: activeChatId,
         role: "assistant",
         content: answer.content,
         comfyPrompt: answer.comfyPrompt,
         comfyPrompts: answer.comfyPrompts,
+        imageGenerationPending: false,
         personaControlRaw: answer.personaControl ? JSON.stringify(answer.personaControl) : undefined,
         createdAt: nowIso(),
       };
 
-      const finalMessages = [...nextMessages, assistantMessage];
+      const promptsForGeneration = assistantMessage.comfyPrompts ?? (assistantMessage.comfyPrompt ? [assistantMessage.comfyPrompt] : []);
+      if (promptsForGeneration.length > 0) {
+        assistantMessage = {
+          ...assistantMessage,
+          imageGenerationPending: true,
+        };
+      }
+
       await dbApi.saveMessage(assistantMessage);
+
+      const finalMessages = [...nextMessages, assistantMessage];
+      set({ messages: finalMessages });
+
+      const patchAssistantMessage = async (patch: Partial<ChatMessage>) => {
+        assistantMessage = {
+          ...assistantMessage,
+          ...patch,
+        };
+        await dbApi.saveMessage(assistantMessage);
+        set((current) => ({
+          messages: current.messages.map((message) =>
+            message.id === assistantMessage.id ? assistantMessage : message,
+          ),
+        }));
+      };
+
+      if (promptsForGeneration.length > 0) {
+        void (async () => {
+          try {
+            const generatedImageUrls = await generateComfyImages(
+              promptsForGeneration,
+              get().settings.comfyBaseUrl,
+            );
+            const localizedImageUrls = await localizeImageUrls(generatedImageUrls);
+            await patchAssistantMessage({
+              imageUrls: localizedImageUrls,
+              imageGenerationPending: false,
+            });
+          } catch {
+            await patchAssistantMessage({
+              imageGenerationPending: false,
+            });
+          }
+        })();
+      }
 
       const fallbackState = evolvePersonaState(runtimeState, activePersona, content.trim(), assistantMessage.content);
       let resolvedState = fallbackState;
@@ -464,7 +510,6 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const chats = await dbApi.getChats(activePersona.id);
       set({
-        messages: finalMessages,
         chats,
         activePersonaState: resolvedState,
         activeMemories: memoryReconciliation.kept,

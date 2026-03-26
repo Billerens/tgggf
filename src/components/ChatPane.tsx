@@ -1,10 +1,11 @@
-import type { FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { SendHorizontal, Trash2, ChevronDown, HeartHandshake, Brain, Database, Zap, Link2 } from "lucide-react";
 import { getMoodLabel } from "../personaProfiles";
 import type { ChatMessage, ChatSession, Persona, PersonaRuntimeState } from "../types";
 import type { PersonaControlPayload } from "../personaDynamics";
 import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface ChatPaneProps {
   activeChat: ChatSession | null;
@@ -123,6 +124,8 @@ export function ChatPane({
   onOpenSidebar,
   onOpenChatDetails,
 }: ChatPaneProps) {
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+
   const relationshipBadge =
     activePersonaState
       ? {
@@ -253,8 +256,21 @@ export function ChatPane({
               ? parsePersonaControlRaw(msg.personaControlRaw) ?? parsed.personaControl
               : undefined;
           const statusDetails = buildStatusDetails(personaControlToRender);
+          const imageUrlsToRender = msg.imageUrls ?? [];
+          const imageSkeletonCount = Math.max(
+            1,
+            comfyPromptsToRender.length || (msg.comfyPrompt ? 1 : 0),
+          );
 
-          if (!textToRender && comfyPromptsToRender.length === 0 && !statusDetails) return null;
+          if (
+            !textToRender &&
+            comfyPromptsToRender.length === 0 &&
+            imageUrlsToRender.length === 0 &&
+            !msg.imageGenerationPending &&
+            !statusDetails
+          ) {
+            return null;
+          }
 
           return (
             <article key={msg.id} className={`bubble ${msg.role}`}>
@@ -267,6 +283,27 @@ export function ChatPane({
                   <pre>{prompt}</pre>
                 </section>
               ))}
+              {imageUrlsToRender.length > 0 ? (
+                <section className="bubble-images" aria-label="Сгенерированные изображения">
+                  {imageUrlsToRender.map((url, index) => (
+                    <button
+                      key={`${msg.id}-img-${index}`}
+                      type="button"
+                      className="bubble-image-btn"
+                      onClick={() => setPreviewSrc(url)}
+                    >
+                      <img src={url} alt={`generated-${index + 1}`} loading="lazy" />
+                    </button>
+                  ))}
+                </section>
+              ) : null}
+              {msg.imageGenerationPending ? (
+                <section className="bubble-images" aria-label="Изображения создаются">
+                  {Array.from({ length: imageSkeletonCount }).map((_, index) => (
+                    <div key={`${msg.id}-skeleton-${index}`} className="image-skeleton-card" />
+                  ))}
+                </section>
+              ) : null}
               {statusDetails ? (
                 <section className="status-change-block" aria-label="Изменения статуса">
                   <div className="comfy-prompt-head">Изменения статуса</div>
@@ -301,6 +338,7 @@ export function ChatPane({
           </button>
         </form>
       </div>
+      <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
     </main>
   );
 }

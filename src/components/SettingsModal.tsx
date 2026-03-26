@@ -79,6 +79,14 @@ export function SettingsModal({
                 />
               </label>
               <label>
+                ComfyUI URL
+                <input
+                  value={settingsDraft.comfyBaseUrl}
+                  onChange={(e) => setSettingsDraft((v) => ({ ...v, comfyBaseUrl: e.target.value }))}
+                  placeholder="http://127.0.0.1:8188"
+                />
+              </label>
+              <label>
                 Модель
                 <div className="inline-row">
                   <div className="select-container">

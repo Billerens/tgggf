@@ -47,6 +47,7 @@ const DB_VERSION = 2;
 const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
+const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 
 function resolveDefaultBaseUrl() {
   const fromEnv = import.meta.env.VITE_LM_BASE_URL?.trim();
@@ -68,6 +69,7 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   }
 
   merged.model = merged.model.trim() || DEFAULT_SETTINGS.model;
+  merged.comfyBaseUrl = merged.comfyBaseUrl.trim() || DEFAULT_SETTINGS.comfyBaseUrl;
   merged.apiKey = merged.apiKey.trim();
   const allowedGenders: UserGender[] = ["unspecified", "male", "female", "nonbinary"];
   if (!allowedGenders.includes(merged.userGender)) {
@@ -80,6 +82,7 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
 
 const DEFAULT_SETTINGS: AppSettings = {
   lmBaseUrl: resolveDefaultBaseUrl(),
+  comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
   model: "local-model",
   temperature: 0.7,
   maxTokens: 600,
