@@ -448,6 +448,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             const generatedImageUrls = await generateComfyImages(
               promptsForGeneration,
               get().settings.comfyBaseUrl,
+              get().settings.comfyAuth,
             );
             const localizedImageUrls = await localizeImageUrls(generatedImageUrls);
             await patchAssistantMessage({

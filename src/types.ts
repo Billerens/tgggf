@@ -15,6 +15,7 @@ export type PersonaMemoryKind = "fact" | "preference" | "goal" | "event";
 export type PersonaMemoryLayer = "short_term" | "episodic" | "long_term";
 export type UserGender = "unspecified" | "male" | "female" | "nonbinary";
 export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
+export type AuthMode = "none" | "bearer" | "token" | "basic" | "custom";
 
 export interface PersonaCoreProfile {
   archetype: string;
@@ -137,9 +138,20 @@ export interface AppSettings {
   temperature: number;
   maxTokens: number;
   apiKey: string;
+  lmAuth: EndpointAuthConfig;
+  comfyAuth: EndpointAuthConfig;
   userGender: UserGender;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
+}
+
+export interface EndpointAuthConfig {
+  mode: AuthMode;
+  token: string;
+  username: string;
+  password: string;
+  headerName: string;
+  headerPrefix: string;
 }
 
 export interface NativeChatResponse {

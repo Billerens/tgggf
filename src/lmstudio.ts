@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  EndpointAuthConfig,
   NativeChatResponse,
   Persona,
   PersonaAdvancedProfile,
@@ -284,10 +285,8 @@ export async function requestChatCompletion(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
   };
-  if (settings.apiKey.trim()) {
-    headers.Authorization = `Bearer ${settings.apiKey.trim()}`;
-  }
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -353,11 +352,51 @@ function normalizeBaseUrl(url: string) {
   return url.replace(/\/+$/, "");
 }
 
-function authHeaders(apiKey: string) {
-  const headers: Record<string, string> = {};
-  if (apiKey.trim()) {
-    headers.Authorization = `Bearer ${apiKey.trim()}`;
+function encodeBase64(value: string) {
+  try {
+    return btoa(value);
+  } catch {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
   }
+}
+
+function buildAuthHeaders(auth: EndpointAuthConfig, legacyApiKey?: string) {
+  const headers: Record<string, string> = {};
+  const fallbackToken = legacyApiKey?.trim() ?? "";
+  const token = auth.token.trim() || fallbackToken;
+
+  if (auth.mode === "none") {
+    if (fallbackToken) {
+      headers.Authorization = `Bearer ${fallbackToken}`;
+    }
+    return headers;
+  }
+
+  if (auth.mode === "basic") {
+    if (auth.username || auth.password) {
+      headers.Authorization = `Basic ${encodeBase64(`${auth.username}:${auth.password}`)}`;
+    }
+    return headers;
+  }
+
+  if (auth.mode === "custom") {
+    if (!token) return headers;
+    const name = auth.headerName.trim() || "Authorization";
+    const prefix = auth.headerPrefix.trim();
+    headers[name] = prefix ? `${prefix} ${token}` : token;
+    return headers;
+  }
+
+  if (!token) return headers;
+  if (auth.mode === "token") {
+    headers.Authorization = `Token ${token}`;
+    return headers;
+  }
+
+  headers.Authorization = `Bearer ${token}`;
   return headers;
 }
 
@@ -392,10 +431,10 @@ function parseModelKeys(data: unknown): string[] {
 }
 
 export async function listModels(
-  settings: Pick<AppSettings, "lmBaseUrl" | "apiKey">,
+  settings: Pick<AppSettings, "lmBaseUrl" | "apiKey" | "lmAuth">,
 ) {
   const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const headers = authHeaders(settings.apiKey);
+  const headers = buildAuthHeaders(settings.lmAuth, settings.apiKey);
 
   const endpoints = [`${baseUrl}/api/v1/models`, `${baseUrl}/v1/models`];
   let lastError = "Unknown error while loading models.";
@@ -487,7 +526,7 @@ export async function generatePersonaDrafts(
   const endpoint = `${baseUrl}/api/v1/chat`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...authHeaders(settings.apiKey),
+    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
   };
 
   const safeCount = Math.max(1, Math.min(6, Math.round(count)));

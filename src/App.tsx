@@ -63,10 +63,14 @@ export default function App() {
     setSettingsDraft(settings);
   }, [settings]);
 
-  const loadModels = async (baseUrl: string, apiKey: string) => {
+  const loadModels = async (
+    baseUrl: string,
+    apiKey: string,
+    lmAuth: typeof settingsDraft.lmAuth,
+  ) => {
     setModelsLoading(true);
     try {
-      const models = await listModels({ lmBaseUrl: baseUrl, apiKey });
+      const models = await listModels({ lmBaseUrl: baseUrl, apiKey, lmAuth });
       setAvailableModels(models);
       if (!models.includes(settingsDraft.model) && models.length > 0) {
         setSettingsDraft((v) => ({ ...v, model: models[0] }));
@@ -81,9 +85,9 @@ export default function App() {
 
   useEffect(() => {
     if (!settingsDraft.lmBaseUrl.trim()) return;
-    void loadModels(settingsDraft.lmBaseUrl, settingsDraft.apiKey);
+    void loadModels(settingsDraft.lmBaseUrl, settingsDraft.apiKey, settingsDraft.lmAuth);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.lmBaseUrl, settings.apiKey]);
+  }, [settings.lmBaseUrl, settings.apiKey, settings.lmAuth]);
 
   const activePersona = useMemo(
     () => personas.find((p) => p.id === activePersonaId) ?? null,
@@ -245,7 +249,13 @@ export default function App() {
           availableModels={availableModels}
           modelsLoading={modelsLoading}
           setSettingsDraft={setSettingsDraft}
-          onRefreshModels={() => void loadModels(settingsDraft.lmBaseUrl, settingsDraft.apiKey)}
+          onRefreshModels={() =>
+            void loadModels(
+              settingsDraft.lmBaseUrl,
+              settingsDraft.apiKey,
+              settingsDraft.lmAuth,
+            )
+          }
           onClose={() => setShowSettingsModal(false)}
           onSubmit={onSettingsSubmit}
         />

@@ -3,8 +3,10 @@ import { normalizeMemoryRecord } from "./personaDynamics";
 import { normalizePersonaRecord } from "./personaProfiles";
 import type {
   AppSettings,
+  AuthMode,
   ChatMessage,
   ChatSession,
+  EndpointAuthConfig,
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
@@ -49,6 +51,24 @@ const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 
+const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
+
+function normalizeAuthConfig(
+  current: Partial<EndpointAuthConfig> | undefined,
+  fallback: EndpointAuthConfig,
+): EndpointAuthConfig {
+  const merged: EndpointAuthConfig = { ...fallback, ...(current ?? {}) };
+
+  merged.mode = AUTH_MODES.includes(merged.mode) ? merged.mode : fallback.mode;
+  merged.token = merged.token.trim();
+  merged.username = merged.username.trim();
+  merged.password = merged.password.trim();
+  merged.headerName = merged.headerName.trim() || fallback.headerName;
+  merged.headerPrefix = merged.headerPrefix.trim();
+
+  return merged;
+}
+
 function resolveDefaultBaseUrl() {
   const fromEnv = import.meta.env.VITE_LM_BASE_URL?.trim();
   if (fromEnv) return fromEnv;
@@ -71,6 +91,20 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   merged.model = merged.model.trim() || DEFAULT_SETTINGS.model;
   merged.comfyBaseUrl = merged.comfyBaseUrl.trim() || DEFAULT_SETTINGS.comfyBaseUrl;
   merged.apiKey = merged.apiKey.trim();
+  merged.lmAuth = normalizeAuthConfig(merged.lmAuth, DEFAULT_SETTINGS.lmAuth);
+  merged.comfyAuth = normalizeAuthConfig(
+    merged.comfyAuth,
+    DEFAULT_SETTINGS.comfyAuth,
+  );
+
+  // Backward compatibility for old single API key setting.
+  if (!merged.lmAuth.token && merged.apiKey) {
+    merged.lmAuth = {
+      ...merged.lmAuth,
+      mode: "bearer",
+      token: merged.apiKey,
+    };
+  }
   const allowedGenders: UserGender[] = ["unspecified", "male", "female", "nonbinary"];
   if (!allowedGenders.includes(merged.userGender)) {
     merged.userGender = DEFAULT_SETTINGS.userGender;
@@ -87,6 +121,22 @@ const DEFAULT_SETTINGS: AppSettings = {
   temperature: 0.7,
   maxTokens: 600,
   apiKey: "",
+  lmAuth: {
+    mode: "none",
+    token: "",
+    username: "",
+    password: "",
+    headerName: "Authorization",
+    headerPrefix: "Bearer",
+  },
+  comfyAuth: {
+    mode: "none",
+    token: "",
+    username: "",
+    password: "",
+    headerName: "Authorization",
+    headerPrefix: "Bearer",
+  },
   userGender: "unspecified",
   showSystemImageBlock: true,
   showStatusChangeDetails: false,

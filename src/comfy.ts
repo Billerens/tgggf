@@ -1,3 +1,5 @@
+import type { EndpointAuthConfig } from "./types";
+
 interface ComfyNode {
   class_type?: string;
   inputs?: Record<string, unknown>;
@@ -54,6 +56,42 @@ function getComfyBaseUrl(overrideBaseUrl?: string) {
   const fromEnv = import.meta.env.VITE_COMFY_BASE_URL?.trim();
   const source = overrideBaseUrl?.trim() || fromEnv || DEFAULT_COMFY_BASE_URL;
   return normalizeBaseUrl(source);
+}
+
+function encodeBase64(value: string) {
+  try {
+    return btoa(value);
+  } catch {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary);
+  }
+}
+
+function buildAuthHeaders(auth?: EndpointAuthConfig) {
+  if (!auth) return {};
+  const headers: Record<string, string> = {};
+  const token = auth.token.trim();
+
+  if (auth.mode === "none") return headers;
+  if (auth.mode === "basic") {
+    if (auth.username || auth.password) {
+      headers.Authorization = `Basic ${encodeBase64(`${auth.username}:${auth.password}`)}`;
+    }
+    return headers;
+  }
+  if (auth.mode === "custom") {
+    if (!token) return headers;
+    const name = auth.headerName.trim() || "Authorization";
+    const prefix = auth.headerPrefix.trim();
+    headers[name] = prefix ? `${prefix} ${token}` : token;
+    return headers;
+  }
+  if (!token) return headers;
+  headers.Authorization =
+    auth.mode === "token" ? `Token ${token}` : `Bearer ${token}`;
+  return headers;
 }
 
 function sleep(ms: number) {
@@ -142,12 +180,16 @@ function buildUiWorkflowForExtraPngInfo(workflow: ComfyWorkflow): ComfyUiWorkflo
   return { nodes };
 }
 
-async function queuePrompt(baseUrl: string, workflow: ComfyWorkflow) {
+async function queuePrompt(
+  baseUrl: string,
+  workflow: ComfyWorkflow,
+  auth?: EndpointAuthConfig,
+) {
   const uiWorkflow = buildUiWorkflowForExtraPngInfo(workflow);
 
   const response = await fetch(`${baseUrl}/prompt`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...buildAuthHeaders(auth) },
     body: JSON.stringify({
       client_id: crypto.randomUUID(),
       prompt: workflow,
@@ -174,13 +216,18 @@ async function queuePrompt(baseUrl: string, workflow: ComfyWorkflow) {
   return data.prompt_id;
 }
 
-async function waitForHistory(baseUrl: string, promptId: string) {
+async function waitForHistory(
+  baseUrl: string,
+  promptId: string,
+  auth?: EndpointAuthConfig,
+) {
   const startedAt = Date.now();
   while (Date.now() - startedAt <= HISTORY_TIMEOUT_MS) {
     const response = await fetch(
       `${baseUrl}/history/${encodeURIComponent(promptId)}`,
       {
         cache: "no-store",
+        headers: buildAuthHeaders(auth),
       },
     );
 
@@ -238,6 +285,7 @@ function collectImageUrls(
 export async function generateComfyImages(
   prompts: string[],
   baseUrlOverride?: string,
+  auth?: EndpointAuthConfig,
 ) {
   const cleanedPrompts = prompts.map((prompt) => prompt.trim()).filter(Boolean);
   if (cleanedPrompts.length === 0) return [];
@@ -250,8 +298,8 @@ export async function generateComfyImages(
     const workflow = createWorkflowInstance(template);
     setPositivePrompt(workflow, prompt);
     sanitizeWorkflowForApi(workflow);
-    const promptId = await queuePrompt(baseUrl, workflow);
-    const historyEntry = await waitForHistory(baseUrl, promptId);
+    const promptId = await queuePrompt(baseUrl, workflow, auth);
+    const historyEntry = await waitForHistory(baseUrl, promptId, auth);
     const imageUrls = collectImageUrls(baseUrl, workflow, historyEntry);
     resultUrls.push(...imageUrls);
   }

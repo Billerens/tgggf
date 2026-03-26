@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { ChevronDown, RefreshCw, X } from "lucide-react";
-import type { AppSettings } from "../types";
+import type { AppSettings, AuthMode, EndpointAuthConfig } from "../types";
 
 interface SettingsModalProps {
   open: boolean;
@@ -15,6 +15,101 @@ interface SettingsModalProps {
 }
 
 type SettingsTab = "system" | "personal" | "chat";
+
+const AUTH_MODE_LABELS: Array<{ value: AuthMode; label: string }> = [
+  { value: "none", label: "Без auth" },
+  { value: "bearer", label: "Bearer token" },
+  { value: "token", label: "Token token" },
+  { value: "basic", label: "Basic (user:pass)" },
+  { value: "custom", label: "Custom header" },
+];
+
+function AuthSettingsSection({
+  title,
+  auth,
+  onChange,
+}: {
+  title: string;
+  auth: EndpointAuthConfig;
+  onChange: (next: EndpointAuthConfig) => void;
+}) {
+  return (
+    <div className="persona-section">
+      <h5>{title}</h5>
+      <label>
+        Режим auth
+        <div className="select-container">
+          <select
+            value={auth.mode}
+            onChange={(e) => onChange({ ...auth, mode: e.target.value as AuthMode })}
+          >
+            {AUTH_MODE_LABELS.map((mode) => (
+              <option key={mode.value} value={mode.value}>
+                {mode.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={14} className="select-icon" />
+        </div>
+      </label>
+
+      {auth.mode === "basic" ? (
+        <>
+          <label>
+            Username
+            <input
+              value={auth.username}
+              onChange={(e) => onChange({ ...auth, username: e.target.value })}
+              autoComplete="off"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              type="password"
+              value={auth.password}
+              onChange={(e) => onChange({ ...auth, password: e.target.value })}
+              autoComplete="new-password"
+            />
+          </label>
+        </>
+      ) : null}
+
+      {auth.mode === "custom" ? (
+        <>
+          <label>
+            Header name
+            <input
+              value={auth.headerName}
+              onChange={(e) => onChange({ ...auth, headerName: e.target.value })}
+              placeholder="Authorization"
+            />
+          </label>
+          <label>
+            Header prefix (опционально)
+            <input
+              value={auth.headerPrefix}
+              onChange={(e) => onChange({ ...auth, headerPrefix: e.target.value })}
+              placeholder="Bearer"
+            />
+          </label>
+        </>
+      ) : null}
+
+      {auth.mode === "bearer" || auth.mode === "token" || auth.mode === "custom" ? (
+        <label>
+          Token / API key
+          <input
+            type="password"
+            value={auth.token}
+            onChange={(e) => onChange({ ...auth, token: e.target.value })}
+            autoComplete="new-password"
+          />
+        </label>
+      ) : null}
+    </div>
+  );
+}
 
 export function SettingsModal({
   open,
@@ -86,6 +181,16 @@ export function SettingsModal({
                   placeholder="http://127.0.0.1:8188"
                 />
               </label>
+              <AuthSettingsSection
+                title="Авторизация LM endpoint"
+                auth={settingsDraft.lmAuth}
+                onChange={(next) => setSettingsDraft((v) => ({ ...v, lmAuth: next }))}
+              />
+              <AuthSettingsSection
+                title="Авторизация Comfy endpoint"
+                auth={settingsDraft.comfyAuth}
+                onChange={(next) => setSettingsDraft((v) => ({ ...v, comfyAuth: next }))}
+              />
               <label>
                 Модель
                 <div className="inline-row">
@@ -139,7 +244,7 @@ export function SettingsModal({
                 />
               </label>
               <label>
-                API key (опционально)
+                Legacy API key (fallback, опционально)
                 <input
                   type="password"
                   value={settingsDraft.apiKey}
