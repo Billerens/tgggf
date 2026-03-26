@@ -145,7 +145,7 @@ export default function App() {
   const [generateSideView, setGenerateSideView] = useState(false);
   const [generateBackView, setGenerateBackView] = useState(false);
   const [lookPackageCount, setLookPackageCount] = useState(1);
-  const [lookDetailLevel, setLookDetailLevel] = useState<LookDetailLevel>("medium");
+  const [lookDetailLevel, setLookDetailLevel] = useState<LookDetailLevel>("off");
   const [lookEnhanceTarget, setLookEnhanceTarget] = useState<LookEnhanceTarget>("all");
   const [lookFastMode, setLookFastMode] = useState(false);
   const [enhancingLookImageKey, setEnhancingLookImageKey] = useState<string | null>(null);
@@ -164,6 +164,8 @@ export default function App() {
   const generationRunRef = useRef(0);
   const lookGenerationRunRef = useRef(0);
   const lookGenerationAbortRef = useRef<AbortController | null>(null);
+  const lookEnhanceRunRef = useRef(0);
+  const lookEnhanceAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     void initialize();
@@ -698,6 +700,13 @@ export default function App() {
     setLookGenerationLoading(false);
   };
 
+  const stopLookEnhancement = () => {
+    lookEnhanceRunRef.current += 1;
+    lookEnhanceAbortRef.current?.abort();
+    lookEnhanceAbortRef.current = null;
+    setEnhancingLookImageKey(null);
+  };
+
   const enhanceLookImage = async (
     packIndex: number | null,
     kind: "avatar" | "fullbody" | "side" | "back",
@@ -706,6 +715,18 @@ export default function App() {
   ) => {
     if (!imageUrl.trim()) return;
     const key = packIndex === null ? `draft:${kind}` : `${packIndex}:${kind}`;
+    if (enhancingLookImageKey && enhancingLookImageKey !== key) {
+      return;
+    }
+    const runId = lookEnhanceRunRef.current + 1;
+    lookEnhanceRunRef.current = runId;
+    const abortController = new AbortController();
+    lookEnhanceAbortRef.current = abortController;
+    const ensureEnhanceActive = () => {
+      if (lookEnhanceRunRef.current !== runId || abortController.signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+      }
+    };
     setEnhancingLookImageKey(key);
     try {
       const promptBundle = await generatePersonaLookPrompts(settings, {
@@ -715,7 +736,9 @@ export default function App() {
         stylePrompt: personaDraft.stylePrompt,
         advanced: personaDraft.advanced,
       });
+      ensureEnhanceActive();
       const dims = await getImageDimensions(imageUrl);
+      ensureEnhanceActive();
       const detailLevel = lookDetailLevel === "off" ? "medium" : lookDetailLevel;
       const basePrompt =
         kind === "avatar"
@@ -732,7 +755,9 @@ export default function App() {
             imageUrl,
             settings.comfyBaseUrl,
             settings.comfyAuth,
+            abortController.signal,
           );
+      ensureEnhanceActive();
       const sourceMeta = metaFromCache ?? metaFromSource ?? null;
       const sourcePrompt = sourceMeta?.prompt?.trim() || basePrompt;
       const sourceSeed =
@@ -771,8 +796,12 @@ export default function App() {
         ],
         settings.comfyBaseUrl,
         settings.comfyAuth,
+        undefined,
+        abortController.signal,
       );
+      ensureEnhanceActive();
       const localized = await localizeImageUrls(enhancedUrls);
+      ensureEnhanceActive();
       const improved = localized[0];
       if (!improved) {
         throw new Error("Не удалось получить улучшенное изображение.");
@@ -789,9 +818,16 @@ export default function App() {
         afterUrl: improved,
       });
     } catch (e) {
-      useAppStore.setState({ error: (e as Error).message });
+      if (e instanceof DOMException && e.name === "AbortError") {
+        // stopped by user
+      } else {
+        useAppStore.setState({ error: (e as Error).message });
+      }
     } finally {
-      setEnhancingLookImageKey((prev) => (prev === key ? null : prev));
+      if (lookEnhanceRunRef.current === runId) {
+        setEnhancingLookImageKey((prev) => (prev === key ? null : prev));
+        lookEnhanceAbortRef.current = null;
+      }
     }
   };
 
@@ -1158,6 +1194,7 @@ export default function App() {
           setLookFastMode={setLookFastMode}
           enhancingLookImageKey={enhancingLookImageKey}
           onEnhanceLookImage={enhanceLookImage}
+          onStopLookEnhancement={stopLookEnhancement}
           generatedLookPacks={generatedLookPacks}
           onApplyLookPack={applyLookPack}
           generateSideView={generateSideView}

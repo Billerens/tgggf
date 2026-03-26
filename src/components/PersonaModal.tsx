@@ -50,6 +50,7 @@ interface PersonaModalProps {
     imageUrl: string,
     targetOverride?: LookEnhanceTarget,
   ) => void;
+  onStopLookEnhancement: () => void;
   generatedLookPacks: PersonaLookPack[];
   onApplyLookPack: (pack: PersonaLookPack) => void;
   lookFastMode: boolean;
@@ -206,6 +207,7 @@ export function PersonaModal({
   setLookEnhanceTarget,
   enhancingLookImageKey,
   onEnhanceLookImage,
+  onStopLookEnhancement,
   generatedLookPacks,
   onApplyLookPack,
   lookFastMode,
@@ -553,6 +555,13 @@ export function PersonaModal({
                     </button>
                   ) : null}
                 </div>
+                {enhancingLookImageKey ? (
+                  <div className="inline-row">
+                    <button type="button" className="danger" onClick={onStopLookEnhancement}>
+                      Остановить улучшение
+                    </button>
+                  </div>
+                ) : null}
                 {personaDraft.avatarUrl ||
                 personaDraft.fullBodyUrl ||
                 personaDraft.fullBodySideUrl ||
