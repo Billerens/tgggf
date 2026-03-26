@@ -55,7 +55,7 @@ export function Dropdown({
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className={selectedOption ? "" : "dropdown-placeholder"}>
+        <span className={selectedOption ? "dropdown-selected-label" : "dropdown-placeholder"}>
           {selectedOption ? selectedOption.label : placeholder}
         </span>
         <ChevronDown size={14} className={`dropdown-chevron ${open ? "open" : ""}`} />

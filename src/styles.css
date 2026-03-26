@@ -635,7 +635,7 @@ button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border
 .modal.large { max-width: 900px; }
 
 .modal-header {
-  padding: 24px; border-bottom: 1px solid var(--border-light);
+  padding: 12px; border-bottom: 1px solid var(--border-light);
   display: flex; justify-content: space-between; align-items: center;
 }
 .modal-header h2 { margin:0; font-size: 20px;}
@@ -829,10 +829,14 @@ input, select, .form textarea {
   position: relative;
   width: 100%;
   flex: 1;
+  min-width: 0;
 }
 
 .dropdown-trigger {
+  display: flex;
+  align-items: center;
   width: 100%;
+  min-width: 0;
   min-height: 46px;
   justify-content: space-between;
   text-align: left;
@@ -850,6 +854,10 @@ input, select, .form textarea {
 .dropdown-trigger span {
   display: block;
   min-width: 0;
+}
+
+.dropdown-selected-label {
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -860,6 +868,8 @@ input, select, .form textarea {
 }
 
 .dropdown-chevron {
+  flex-shrink: 0;
+  margin-left: 8px;
   color: var(--text-secondary);
   transition: transform 0.2s ease;
 }
@@ -905,8 +915,8 @@ input, select, .form textarea {
   min-height: 80px;
 }
 input:focus, select:focus, .form textarea:focus { border-color: var(--accent); background: rgba(255,255,255,0.04); box-shadow: 0 0 0 2px rgba(96,165,250,0.1); }
-.inline-row { display: flex; gap:12px; align-items: center;}
-.inline-row > :first-child { flex: 1; }
+.inline-row { display: flex; gap:12px; align-items: center; min-width: 0; width: 100%; }
+.inline-row > :first-child { flex: 1 1 auto; min-width: 0; }
 .split { display: grid; gap: 20px; min-height: 480px;}
 
 .persona-list {
@@ -1011,7 +1021,8 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   transform: translateY(0);
 }
 .persona-look-enhance-control:hover .persona-look-enhance-popover,
-.persona-look-enhance-control:focus-within .persona-look-enhance-popover {
+.persona-look-enhance-control:focus-within .persona-look-enhance-popover,
+.persona-look-enhance-control.menu-open .persona-look-enhance-popover {
   display: block;
 }
 
@@ -1312,6 +1323,25 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   }
   .enhance-compare-actions button {
     width: 100%;
+  }
+
+  .persona-look-enhance-control {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .persona-look-enhance-btn {
+    padding: 7px 10px;
+    font-size: 12px;
+  }
+
+  .persona-look-enhance-popover {
+    min-width: 150px;
+  }
+
+  .persona-look-enhance-option {
+    padding: 8px 10px;
+    font-size: 12px;
   }
 }
 

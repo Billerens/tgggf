@@ -536,6 +536,7 @@ export default function App() {
           const sideUrls = await generateComfyImages(
             [
               {
+                flow: "i2i",
                 prompt: sidePrompt,
                 width: fullBodyWidth,
                 height: fullBodyHeight,
@@ -581,6 +582,7 @@ export default function App() {
           const backUrls = await generateComfyImages(
             [
               {
+                flow: "i2i",
                 prompt: backPrompt,
                 width: fullBodyWidth,
                 height: fullBodyHeight,
@@ -741,6 +743,7 @@ export default function App() {
       const enhancedUrls = await generateComfyImages(
         [
           {
+            flow: "i2i",
             prompt: enhancePrompt,
             width: dims.width,
             height: dims.height,
@@ -752,7 +755,10 @@ export default function App() {
             forceHiResFix: true,
             enableUpscaler: true,
             upscaleFactor: 1.25,
-            outputNodeTitleIncludes: ["Preview after Detailing"],
+            outputNodeTitleIncludes: [
+              "Preview after Detailing",
+              "Preview after Upscale/HiRes Fix",
+            ],
             strictOutputNodeMatch: true,
             pickLatestImageOnly: true,
             detailing: {

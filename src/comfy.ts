@@ -44,6 +44,7 @@ export interface ComfyImageGenerationMeta {
 
 export interface ComfyGenerationItem {
   prompt: string;
+  flow?: "base" | "i2i";
   width?: number;
   height?: number;
   seed?: number;
@@ -67,8 +68,11 @@ export interface ComfyGenerationItem {
 
 type DetailLevel = "soft" | "medium" | "strong";
 type DetailTarget = "face" | "eyes" | "nose" | "lips" | "hands";
+export type ComfyFlow = "base" | "i2i";
 
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
+const BASE_WORKFLOW_TEMPLATE_PATH = "comfy_api.json";
+const I2I_WORKFLOW_TEMPLATE_PATH = "comfy_api_i2i.json";
 const POSITIVE_PROMPT_NODE_ID = "1050";
 const SIZE_NODE_ID = "141";
 const SEED_NODE_ID = "137";
@@ -77,15 +81,76 @@ const COMPOSITION_IMAGE_NODE_ID = "455";
 const STYLE_STRENGTH_NODE_ID = "430";
 const COMPOSITION_STRENGTH_NODE_ID = "431";
 const HIRES_FIX_NODE_ID = "849";
-const OUTPUT_TITLE_PREFERENCES = [
+const I2I_POSITIVE_PROMPT_NODE_ID = "523";
+const I2I_SEED_NODE_ID = "522";
+const I2I_SOURCE_IMAGE_NODE_ID = "454";
+const I2I_STYLE_STRENGTH_NODE_ID = "430";
+const BASE_OUTPUT_TITLE_PREFERENCES = [
   "Preview after Detailing",
   "Preview after Inpaint",
+];
+const I2I_OUTPUT_TITLE_PREFERENCES = [
+  "Preview after Upscale/HiRes Fix",
+  "Preview after Detailing",
 ];
 const WEBP_QUALITY = 82;
 const HISTORY_TIMEOUT_MS = 600000;
 const HISTORY_POLL_INTERVAL_MS = 1200;
 
-let workflowTemplateCache: ComfyWorkflow | null = null;
+interface ComfyFlowConfig {
+  templatePath: string;
+  positivePromptNodeId: string;
+  sizeNodeId?: string;
+  seedNodeId?: string;
+  styleImageNodeId?: string;
+  compositionImageNodeId?: string;
+  styleStrengthNodeId?: string;
+  compositionStrengthNodeId?: string;
+  hiresFixNodeId?: string;
+  outputTitlePreferences: string[];
+  detailPromptTitles: Record<DetailTarget, string>;
+  requiresReferenceImage?: boolean;
+}
+
+const FLOW_CONFIGS: Record<ComfyFlow, ComfyFlowConfig> = {
+  base: {
+    templatePath: BASE_WORKFLOW_TEMPLATE_PATH,
+    positivePromptNodeId: POSITIVE_PROMPT_NODE_ID,
+    sizeNodeId: SIZE_NODE_ID,
+    seedNodeId: SEED_NODE_ID,
+    styleImageNodeId: STYLE_IMAGE_NODE_ID,
+    compositionImageNodeId: COMPOSITION_IMAGE_NODE_ID,
+    styleStrengthNodeId: STYLE_STRENGTH_NODE_ID,
+    compositionStrengthNodeId: COMPOSITION_STRENGTH_NODE_ID,
+    hiresFixNodeId: HIRES_FIX_NODE_ID,
+    outputTitlePreferences: BASE_OUTPUT_TITLE_PREFERENCES,
+    detailPromptTitles: {
+      face: "Face",
+      eyes: "Eyes",
+      nose: "Nose",
+      lips: "Lips",
+      hands: "Hands",
+    },
+  },
+  i2i: {
+    templatePath: I2I_WORKFLOW_TEMPLATE_PATH,
+    positivePromptNodeId: I2I_POSITIVE_PROMPT_NODE_ID,
+    seedNodeId: I2I_SEED_NODE_ID,
+    styleImageNodeId: I2I_SOURCE_IMAGE_NODE_ID,
+    styleStrengthNodeId: I2I_STYLE_STRENGTH_NODE_ID,
+    outputTitlePreferences: I2I_OUTPUT_TITLE_PREFERENCES,
+    detailPromptTitles: {
+      face: "Face Clip transform",
+      eyes: "Eyes Clip transform",
+      nose: "Nose Clip transform",
+      lips: "Lips Clip transform",
+      hands: "Hands Clip transform",
+    },
+    requiresReferenceImage: true,
+  },
+};
+
+let workflowTemplateCache: Partial<Record<ComfyFlow, ComfyWorkflow>> = {};
 
 function normalizeBaseUrl(url: string) {
   return url.replace(/\/+$/, "");
@@ -95,6 +160,10 @@ function getComfyBaseUrl(overrideBaseUrl?: string) {
   const fromEnv = import.meta.env.VITE_COMFY_BASE_URL?.trim();
   const source = overrideBaseUrl?.trim() || fromEnv || DEFAULT_COMFY_BASE_URL;
   return normalizeBaseUrl(source);
+}
+
+function getFlowConfig(flow: ComfyFlow): ComfyFlowConfig {
+  return FLOW_CONFIGS[flow];
 }
 
 function encodeBase64(value: string) {
@@ -214,18 +283,20 @@ function sleep(ms: number, signal?: AbortSignal) {
   });
 }
 
-async function loadWorkflowTemplate() {
-  if (workflowTemplateCache) {
-    return workflowTemplateCache;
+async function loadWorkflowTemplate(flow: ComfyFlow) {
+  const cached = workflowTemplateCache[flow];
+  if (cached) {
+    return cached;
   }
 
-  const response = await fetch("comfy_api.json", { cache: "no-store" });
+  const { templatePath } = getFlowConfig(flow);
+  const response = await fetch(templatePath, { cache: "no-store" });
   if (!response.ok) {
-    throw new Error(`Не удалось загрузить comfy_api.json (${response.status})`);
+    throw new Error(`Не удалось загрузить ${templatePath} (${response.status})`);
   }
 
   const payload = (await response.json()) as ComfyWorkflow;
-  workflowTemplateCache = payload;
+  workflowTemplateCache[flow] = payload;
   return payload;
 }
 
@@ -233,17 +304,27 @@ function createWorkflowInstance(template: ComfyWorkflow) {
   return structuredClone(template) as ComfyWorkflow;
 }
 
-function setPositivePrompt(workflow: ComfyWorkflow, prompt: string) {
-  const node = workflow[POSITIVE_PROMPT_NODE_ID];
+function setPositivePrompt(
+  workflow: ComfyWorkflow,
+  prompt: string,
+  nodeId: string = POSITIVE_PROMPT_NODE_ID,
+) {
+  const node = workflow[nodeId];
   if (!node || !node.inputs) {
-    throw new Error(`Нода ${POSITIVE_PROMPT_NODE_ID} не найдена в workflow.`);
+    throw new Error(`Нода ${nodeId} не найдена в workflow.`);
   }
   node.inputs.text = prompt;
 }
 
-function setSize(workflow: ComfyWorkflow, width?: number, height?: number) {
+function setSize(
+  workflow: ComfyWorkflow,
+  width?: number,
+  height?: number,
+  nodeId: string = SIZE_NODE_ID,
+) {
+  if (!nodeId) return;
   if (!width || !height) return;
-  const node = workflow[SIZE_NODE_ID];
+  const node = workflow[nodeId];
   if (!node || !node.inputs) return;
   node.inputs.Xi = width;
   node.inputs.Xf = width;
@@ -251,9 +332,14 @@ function setSize(workflow: ComfyWorkflow, width?: number, height?: number) {
   node.inputs.Yf = height;
 }
 
-function setSeed(workflow: ComfyWorkflow, seed?: number) {
+function setSeed(
+  workflow: ComfyWorkflow,
+  seed?: number,
+  nodeId: string = SEED_NODE_ID,
+) {
+  if (!nodeId) return;
   if (!Number.isFinite(seed)) return;
-  const node = workflow[SEED_NODE_ID];
+  const node = workflow[nodeId];
   if (!node || !node.inputs) return;
   node.inputs.seed = Math.max(0, Math.floor(seed as number));
 }
@@ -350,6 +436,7 @@ function setClipTextByExactTitle(
 function applyDetailing(
   workflow: ComfyWorkflow,
   detailing?: ComfyGenerationItem["detailing"],
+  flowConfig: ComfyFlowConfig = FLOW_CONFIGS.base,
 ) {
   if (!detailing?.enabled || !detailing.level) {
     setBooleanByExactTitle(workflow, "Inpaint?", false);
@@ -382,23 +469,43 @@ function applyDetailing(
   setSliderByExactTitle(workflow, "Denoise Vagina", 0);
   setSliderByExactTitle(workflow, "Denoise Penis", 0);
 
-  if (enabledTargets.has("face")) setClipTextByExactTitle(workflow, "Face", detailing.prompts?.face);
-  if (enabledTargets.has("eyes")) setClipTextByExactTitle(workflow, "Eyes", detailing.prompts?.eyes);
-  if (enabledTargets.has("nose")) setClipTextByExactTitle(workflow, "Nose", detailing.prompts?.nose);
-  if (enabledTargets.has("lips")) setClipTextByExactTitle(workflow, "Lips", detailing.prompts?.lips);
-  if (enabledTargets.has("hands")) setClipTextByExactTitle(workflow, "Hands", detailing.prompts?.hands);
+  if (enabledTargets.has("face")) {
+    setClipTextByExactTitle(workflow, flowConfig.detailPromptTitles.face, detailing.prompts?.face);
+  }
+  if (enabledTargets.has("eyes")) {
+    setClipTextByExactTitle(workflow, flowConfig.detailPromptTitles.eyes, detailing.prompts?.eyes);
+  }
+  if (enabledTargets.has("nose")) {
+    setClipTextByExactTitle(workflow, flowConfig.detailPromptTitles.nose, detailing.prompts?.nose);
+  }
+  if (enabledTargets.has("lips")) {
+    setClipTextByExactTitle(workflow, flowConfig.detailPromptTitles.lips, detailing.prompts?.lips);
+  }
+  if (enabledTargets.has("hands")) {
+    setClipTextByExactTitle(workflow, flowConfig.detailPromptTitles.hands, detailing.prompts?.hands);
+  }
 }
 
-function setStyleImageFilename(workflow: ComfyWorkflow, filename?: string) {
+function setStyleImageFilename(
+  workflow: ComfyWorkflow,
+  filename?: string,
+  nodeId: string = STYLE_IMAGE_NODE_ID,
+) {
+  if (!nodeId) return;
   if (!filename) return;
-  const node = workflow[STYLE_IMAGE_NODE_ID];
+  const node = workflow[nodeId];
   if (!node || !node.inputs) return;
   node.inputs.image = filename;
 }
 
-function setCompositionImageFilename(workflow: ComfyWorkflow, filename?: string) {
+function setCompositionImageFilename(
+  workflow: ComfyWorkflow,
+  filename?: string,
+  nodeId: string = COMPOSITION_IMAGE_NODE_ID,
+) {
+  if (!nodeId) return;
   if (!filename) return;
-  const node = workflow[COMPOSITION_IMAGE_NODE_ID];
+  const node = workflow[nodeId];
   if (!node || !node.inputs) return;
   node.inputs.image = filename;
 }
@@ -445,7 +552,10 @@ function sanitizeWorkflowForApi(workflow: ComfyWorkflow) {
   }
 }
 
-function resolveOutputNodeGroups(workflow: ComfyWorkflow) {
+function resolveOutputNodeGroups(
+  workflow: ComfyWorkflow,
+  outputTitlePreferences: string[],
+) {
   const preview: string[] = [];
   const saverNodes: string[] = [];
   for (const [nodeId, node] of Object.entries(workflow)) {
@@ -454,7 +564,7 @@ function resolveOutputNodeGroups(workflow: ComfyWorkflow) {
     }
     const title = node._meta?.title ?? "";
     if (!title) continue;
-    if (OUTPUT_TITLE_PREFERENCES.some((token) => title.includes(token))) {
+    if (outputTitlePreferences.some((token) => title.includes(token))) {
       preview.push(nodeId);
     }
   }
@@ -683,18 +793,26 @@ function extractMetaFromPayload(payload: unknown): ComfyImageGenerationMeta {
 
   // Comfy prompt-style metadata.
   const promptGraph = root?.prompt as Record<string, unknown> | undefined;
-  const seedNode = promptGraph?.[SEED_NODE_ID] as Record<string, unknown> | undefined;
-  const seedInputs = seedNode?.inputs as Record<string, unknown> | undefined;
-  const seedFromGraph = pickSeedFromValue(seedInputs?.seed);
-  if (seedFromGraph !== undefined) {
-    result.seed = seedFromGraph;
+  const seedNodeIds = [SEED_NODE_ID, I2I_SEED_NODE_ID];
+  for (const nodeId of seedNodeIds) {
+    const seedNode = promptGraph?.[nodeId] as Record<string, unknown> | undefined;
+    const seedInputs = seedNode?.inputs as Record<string, unknown> | undefined;
+    const seedFromGraph = pickSeedFromValue(seedInputs?.seed);
+    if (seedFromGraph !== undefined) {
+      result.seed = seedFromGraph;
+      break;
+    }
   }
 
-  const promptNode = promptGraph?.[POSITIVE_PROMPT_NODE_ID] as Record<string, unknown> | undefined;
-  const promptInputs = promptNode?.inputs as Record<string, unknown> | undefined;
-  const promptFromGraph = promptInputs?.text;
-  if (typeof promptFromGraph === "string" && promptFromGraph.trim()) {
-    result.prompt = promptFromGraph.trim();
+  const promptNodeIds = [POSITIVE_PROMPT_NODE_ID, I2I_POSITIVE_PROMPT_NODE_ID];
+  for (const nodeId of promptNodeIds) {
+    const promptNode = promptGraph?.[nodeId] as Record<string, unknown> | undefined;
+    const promptInputs = promptNode?.inputs as Record<string, unknown> | undefined;
+    const promptFromGraph = promptInputs?.text;
+    if (typeof promptFromGraph === "string" && promptFromGraph.trim()) {
+      result.prompt = promptFromGraph.trim();
+      break;
+    }
   }
 
   // Generic recursive fallback.
@@ -782,12 +900,13 @@ function collectImageUrls(
   baseUrl: string,
   workflow: ComfyWorkflow,
   historyEntry: ComfyHistoryEntry,
+  outputTitlePreferences: string[],
   preferredTitleIncludes?: string[],
   strictPreferredMatch?: boolean,
   pickLatestImageOnly?: boolean,
 ) {
   const outputs = historyEntry.outputs ?? {};
-  const nodeGroups = resolveOutputNodeGroups(workflow);
+  const nodeGroups = resolveOutputNodeGroups(workflow, outputTitlePreferences);
   const preferredNodes = resolvePreferredOutputNodes(workflow, preferredTitleIncludes);
   const preferredImages = preferredNodes.flatMap(
     (nodeId) => outputs[nodeId]?.images ?? [],
@@ -802,6 +921,11 @@ function collectImageUrls(
   const fallbackImages = Object.values(outputs).flatMap(
     (nodeOutput) => nodeOutput.images ?? [],
   );
+  const hasAnyImages =
+    preferredImages.length > 0 ||
+    previewImages.length > 0 ||
+    saverImages.length > 0 ||
+    fallbackImages.length > 0;
 
   const images =
     preferredImages.length > 0
@@ -817,8 +941,17 @@ function collectImageUrls(
     preferredNodes.length > 0 &&
     preferredImages.length === 0
   ) {
-    throw new Error(
-      "ComfyUI: не найден результат в целевом узле предпросмотра (Preview after Detailing).",
+    if (!hasAnyImages) {
+      throw new Error(
+        "ComfyUI: не найден результат в целевом узле предпросмотра (Preview after Detailing).",
+      );
+    }
+    console.warn(
+      "ComfyUI: целевой preview-узел не вернул изображение; использован fallback output-узел.",
+      {
+        preferredNodes,
+        availableOutputNodes: Object.keys(outputs),
+      },
     );
   }
 
@@ -844,9 +977,10 @@ export async function generateComfyImages(
   const normalizedItems = itemsOrPrompts
     .map((item) =>
       typeof item === "string"
-        ? { prompt: item.trim() }
+        ? { prompt: item.trim(), flow: "base" as ComfyFlow }
         : {
             prompt: item.prompt.trim(),
+            flow: item.flow ?? "base",
             width: item.width,
             height: item.height,
             seed: item.seed,
@@ -868,23 +1002,41 @@ export async function generateComfyImages(
   if (normalizedItems.length === 0) return [];
 
   const baseUrl = getComfyBaseUrl(baseUrlOverride);
-  const template = await loadWorkflowTemplate();
   const resultUrls: string[] = [];
 
   try {
     for (const [index, item] of normalizedItems.entries()) {
       throwIfAborted(signal);
+      const flowConfig = getFlowConfig(item.flow);
+      if (flowConfig.requiresReferenceImage && !item.styleReferenceImage) {
+        throw new Error("i2i flow требует styleReferenceImage (исходное изображение).");
+      }
+      const template = await loadWorkflowTemplate(item.flow);
       const workflow = createWorkflowInstance(template);
-      setPositivePrompt(workflow, item.prompt);
-      setSize(workflow, item.width, item.height);
-      setSeed(workflow, item.seed);
+      setPositivePrompt(workflow, item.prompt, flowConfig.positivePromptNodeId);
+      if (flowConfig.sizeNodeId) {
+        setSize(workflow, item.width, item.height, flowConfig.sizeNodeId);
+      }
+      if (flowConfig.seedNodeId) {
+        setSeed(workflow, item.seed, flowConfig.seedNodeId);
+      }
       setCheckpointName(workflow, item.checkpointName);
-      setSliderValue(workflow, STYLE_STRENGTH_NODE_ID, item.styleStrength);
-      setSliderValue(workflow, COMPOSITION_STRENGTH_NODE_ID, item.compositionStrength);
-      setBooleanValue(workflow, HIRES_FIX_NODE_ID, item.forceHiResFix);
+      if (flowConfig.styleStrengthNodeId) {
+        setSliderValue(workflow, flowConfig.styleStrengthNodeId, item.styleStrength);
+      }
+      if (flowConfig.compositionStrengthNodeId) {
+        setSliderValue(
+          workflow,
+          flowConfig.compositionStrengthNodeId,
+          item.compositionStrength,
+        );
+      }
+      if (flowConfig.hiresFixNodeId) {
+        setBooleanValue(workflow, flowConfig.hiresFixNodeId, item.forceHiResFix);
+      }
       setBooleanByTitle(workflow, ["enable upscaler", "use hi-res fix"], item.enableUpscaler);
       setUpscaleFactorByTitle(workflow, item.upscaleFactor);
-      applyDetailing(workflow, item.detailing);
+      applyDetailing(workflow, item.detailing, flowConfig);
       if (item.styleReferenceImage) {
         const uploadedFilename = await uploadReferenceImage(
           baseUrl,
@@ -892,8 +1044,16 @@ export async function generateComfyImages(
           auth,
           signal,
         );
-        setStyleImageFilename(workflow, uploadedFilename);
-        setCompositionImageFilename(workflow, uploadedFilename);
+        if (flowConfig.styleImageNodeId) {
+          setStyleImageFilename(workflow, uploadedFilename, flowConfig.styleImageNodeId);
+        }
+        if (flowConfig.compositionImageNodeId) {
+          setCompositionImageFilename(
+            workflow,
+            uploadedFilename,
+            flowConfig.compositionImageNodeId,
+          );
+        }
       }
       sanitizeWorkflowForApi(workflow);
       const promptId = await queuePrompt(baseUrl, workflow, auth, signal);
@@ -902,6 +1062,7 @@ export async function generateComfyImages(
         baseUrl,
         workflow,
         historyEntry,
+        flowConfig.outputTitlePreferences,
         item.outputNodeTitleIncludes,
         item.strictOutputNodeMatch,
         item.pickLatestImageOnly,

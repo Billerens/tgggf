@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Sparkles, Trash2, UserRound, X } from "lucide-react";
 import type { GeneratedPersonaDraft } from "../lmstudio";
 import type { Persona } from "../types";
@@ -84,17 +84,58 @@ interface EnhanceOverlayButtonProps {
 }
 
 function EnhanceOverlayButton({ busy, onEnhance }: EnhanceOverlayButtonProps) {
+  const controlRef = useRef<HTMLDivElement | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [touchMode, setTouchMode] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const media = window.matchMedia("(hover: none), (pointer: coarse)");
+    const update = () => setTouchMode(media.matches);
+    update();
+    if (typeof media.addEventListener === "function") {
+      media.addEventListener("change", update);
+      return () => media.removeEventListener("change", update);
+    }
+    media.addListener(update);
+    return () => media.removeListener(update);
+  }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!controlRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [menuOpen]);
+
+  useEffect(() => {
+    if (busy) setMenuOpen(false);
+  }, [busy]);
+
   return (
-    <div className={`persona-look-enhance-control ${busy ? "busy" : ""}`}>
+    <div
+      ref={controlRef}
+      className={`persona-look-enhance-control ${busy ? "busy" : ""} ${menuOpen ? "menu-open" : ""}`}
+    >
       <button
         type="button"
         className="persona-look-enhance-btn"
         onClick={(event) => {
           event.stopPropagation();
+          if (touchMode) {
+            setMenuOpen((prev) => !prev);
+            return;
+          }
           onEnhance();
         }}
         disabled={busy}
         title="Улучшить детали"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
       >
         <Sparkles size={12} />
         {busy ? "..." : "Улучшить"}
@@ -108,6 +149,7 @@ function EnhanceOverlayButton({ busy, onEnhance }: EnhanceOverlayButtonProps) {
               className="persona-look-enhance-option"
               onClick={(event) => {
                 event.stopPropagation();
+                setMenuOpen(false);
                 onEnhance(option.value);
               }}
             >
