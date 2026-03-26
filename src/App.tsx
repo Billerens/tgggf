@@ -763,7 +763,10 @@ export default function App() {
       const sourceSeed =
         sourceMeta?.seed !== undefined
           ? sourceMeta.seed
-          : stableSeedFromText(`${imageUrl}:${kind}:${Date.now()}`);
+          : stableSeedFromText(`${imageUrl}:${kind}`);
+      const enhanceSeed = stableSeedFromText(
+        `${sourceSeed}:${imageUrl}:${kind}:${targetOverride ?? lookEnhanceTarget}:${Date.now()}`,
+      );
       const enhancePrompt = `${sourcePrompt}, same person, same identity, same outfit, same framing, preserve composition, highly detailed`;
       const enhancedUrls = await generateComfyImages(
         [
@@ -772,7 +775,7 @@ export default function App() {
             prompt: enhancePrompt,
             width: dims.width,
             height: dims.height,
-            seed: sourceSeed,
+            seed: enhanceSeed,
             checkpointName: personaDraft.imageCheckpoint || undefined,
             styleReferenceImage: imageUrl,
             styleStrength: 1,
@@ -808,8 +811,8 @@ export default function App() {
       }
       setLookImageMetaByUrl((prev) => ({
         ...prev,
-        ...(enhancedUrls[0] ? { [enhancedUrls[0]]: { seed: sourceSeed, prompt: sourcePrompt } } : {}),
-        [improved]: { seed: sourceSeed, prompt: sourcePrompt },
+        ...(enhancedUrls[0] ? { [enhancedUrls[0]]: { seed: enhanceSeed, prompt: sourcePrompt } } : {}),
+        [improved]: { seed: enhanceSeed, prompt: sourcePrompt },
       }));
       setEnhanceReview({
         packIndex,

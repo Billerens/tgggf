@@ -403,6 +403,15 @@ function setBooleanByExactTitle(workflow: ComfyWorkflow, title: string, value?: 
   }
 }
 
+function hasNodeByExactTitle(workflow: ComfyWorkflow, title: string) {
+  const target = title.toLowerCase();
+  for (const node of Object.values(workflow)) {
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle === target) return true;
+  }
+  return false;
+}
+
 function setSliderByExactTitle(workflow: ComfyWorkflow, title: string, value?: number) {
   if (!Number.isFinite(value)) return;
   const target = title.toLowerCase();
@@ -438,10 +447,26 @@ function applyDetailing(
   detailing?: ComfyGenerationItem["detailing"],
   flowConfig: ComfyFlowConfig = FLOW_CONFIGS.base,
 ) {
+  const hasInpaintSwitch = hasNodeByExactTitle(workflow, "Inpaint?");
+  const isI2I = Boolean(flowConfig.requiresReferenceImage);
+
   if (!detailing?.enabled || !detailing.level) {
-    setBooleanByExactTitle(workflow, "Inpaint?", false);
+    if (hasInpaintSwitch) {
+      setBooleanByExactTitle(workflow, "Inpaint?", false);
+    }
+    if (isI2I) {
+      // i2i templates may not expose the legacy "Inpaint?" switch; keep a conservative denoise baseline.
+      setSliderByExactTitle(workflow, "Denoise", 0.55);
+      setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", 0.24);
+    }
     return;
   }
+
+  const i2iDenoiseMap: Record<DetailLevel, { base: number; hires: number }> = {
+    soft: { base: 0.62, hires: 0.22 },
+    medium: { base: 0.72, hires: 0.3 },
+    strong: { base: 0.82, hires: 0.38 },
+  };
 
   const levelMap: Record<
     DetailLevel,
@@ -457,7 +482,14 @@ function applyDetailing(
       ? new Set<DetailTarget>(detailing.targets)
       : new Set<DetailTarget>(["face", "eyes", "nose", "lips", "hands"]);
 
-  setBooleanByExactTitle(workflow, "Inpaint?", true);
+  if (hasInpaintSwitch) {
+    setBooleanByExactTitle(workflow, "Inpaint?", true);
+  }
+  if (isI2I) {
+    const i2iDenoise = i2iDenoiseMap[detailing.level as DetailLevel];
+    setSliderByExactTitle(workflow, "Denoise", i2iDenoise.base);
+    setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", i2iDenoise.hires);
+  }
   setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : 0);
   setSliderByExactTitle(workflow, "Denoise Eyes", enabledTargets.has("eyes") ? denoise.eyes : 0);
   setSliderByExactTitle(workflow, "Denoise Nose", enabledTargets.has("nose") ? denoise.nose : 0);
