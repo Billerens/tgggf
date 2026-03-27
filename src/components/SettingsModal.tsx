@@ -4,12 +4,16 @@ import { RefreshCw, X } from "lucide-react";
 import type { AppSettings, AuthMode, EndpointAuthConfig } from "../types";
 import { Dropdown } from "./Dropdown";
 
+type PwaInstallStatus = "installed" | "available" | "unavailable";
+
 interface SettingsModalProps {
   open: boolean;
   settingsDraft: AppSettings;
+  pwaInstallStatus: PwaInstallStatus;
   availableModels: string[];
   modelsLoading: boolean;
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
+  onInstallPwa: () => void;
   onRefreshModels: () => void;
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
@@ -114,9 +118,11 @@ function AuthSettingsSection({
 export function SettingsModal({
   open,
   settingsDraft,
+  pwaInstallStatus,
   availableModels,
   modelsLoading,
   setSettingsDraft,
+  onInstallPwa,
   onRefreshModels,
   onClose,
   onSubmit,
@@ -242,6 +248,29 @@ export function SettingsModal({
                   onChange={(e) => setSettingsDraft((v) => ({ ...v, apiKey: e.target.value }))}
                 />
               </label>
+              <div className="persona-section">
+                <h5>PWA приложение</h5>
+                <small style={{ color: "var(--text-secondary)", display: "block", marginBottom: 8 }}>
+                  Режим установки позволяет держать приложение отдельным окном и снижает риск паузы генерации при сворачивании.
+                </small>
+                <div className="inline-row">
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    Статус:{" "}
+                    {pwaInstallStatus === "installed"
+                      ? "установлено"
+                      : pwaInstallStatus === "available"
+                      ? "доступна установка"
+                      : "установка недоступна в этом контексте"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onInstallPwa}
+                    disabled={pwaInstallStatus !== "available"}
+                  >
+                    Установить PWA
+                  </button>
+                </div>
+              </div>
             </>
           ) : null}
 

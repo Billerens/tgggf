@@ -3,6 +3,14 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Non-fatal: app still works without SW.
+    });
+  });
+}
+
 createRoot(document.getElementById("app")!).render(
   <StrictMode>
     <App />

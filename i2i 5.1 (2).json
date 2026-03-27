@@ -8,6 +8,93 @@
       "title": "Upscale Model"
     }
   },
+  "19": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 887683417058025,
+      "steps": [
+        "509",
+        0
+      ],
+      "cfg": [
+        "508",
+        0
+      ],
+      "sampler_name": [
+        "507",
+        0
+      ],
+      "scheduler": [
+        "684:514",
+        0
+      ],
+      "denoise": [
+        "491",
+        0
+      ],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": [
+        "745",
+        0
+      ],
+      "model": [
+        "827",
+        0
+      ],
+      "clip": [
+        "827",
+        1
+      ],
+      "vae": [
+        "436",
+        2
+      ],
+      "positive": [
+        "673:184",
+        0
+      ],
+      "negative": [
+        "684:261",
+        0
+      ],
+      "bbox_detector": [
+        "20",
+        0
+      ],
+      "sam_model_opt": [
+        "684:21",
+        0
+      ],
+      "segm_detector_opt": [
+        "20",
+        1
+      ]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Face Detailer"
+    }
+  },
   "20": {
     "inputs": {
       "model_name": "bbox/face_yolov8m.pt"
@@ -19,7 +106,10 @@
   },
   "29": {
     "inputs": {
-      "images": ["922:674", 0]
+      "images": [
+        "922:674",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -80,51 +170,6 @@
       "title": "Hands Ultralytics"
     }
   },
-  "70": {
-    "inputs": {
-      "guide_size": 512,
-      "guide_size_for": true,
-      "max_size": 1024,
-      "seed": 483714870706126,
-      "steps": ["509", 0],
-      "cfg": ["508", 0],
-      "sampler_name": ["507", 0],
-      "scheduler": ["684:514", 0],
-      "denoise": ["494", 0],
-      "feather": 5,
-      "noise_mask": true,
-      "force_inpaint": true,
-      "bbox_threshold": 0.5,
-      "bbox_dilation": 10,
-      "bbox_crop_factor": 3,
-      "sam_detection_hint": "center-1",
-      "sam_dilation": 0,
-      "sam_threshold": 0.93,
-      "sam_bbox_expansion": 0,
-      "sam_mask_hint_threshold": 0.7,
-      "sam_mask_hint_use_negative": "False",
-      "drop_size": 10,
-      "wildcard": "",
-      "cycle": 1,
-      "inpaint_model": false,
-      "noise_mask_feather": 20,
-      "tiled_encode": false,
-      "tiled_decode": false,
-      "image": ["745", 0],
-      "model": ["831", 0],
-      "clip": ["831", 1],
-      "vae": ["436", 2],
-      "positive": ["673:194", 0],
-      "negative": ["684:261", 0],
-      "bbox_detector": ["68", 0],
-      "sam_model_opt": ["684:21", 0],
-      "segm_detector_opt": ["68", 1]
-    },
-    "class_type": "FaceDetailer",
-    "_meta": {
-      "title": "Hands Detailer"
-    }
-  },
   "76": {
     "inputs": {
       "model_name": "segm/ntd11_anime_nsfw_segm_v4_penis.pt"
@@ -136,7 +181,10 @@
   },
   "224": {
     "inputs": {
-      "images": ["897", 0]
+      "images": [
+        "897",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -145,7 +193,10 @@
   },
   "225": {
     "inputs": {
-      "images": ["910", 0]
+      "images": [
+        "910",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -154,7 +205,10 @@
   },
   "226": {
     "inputs": {
-      "images": ["908", 0]
+      "images": [
+        "908",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -163,7 +217,10 @@
   },
   "227": {
     "inputs": {
-      "images": ["900", 0]
+      "images": [
+        "900",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -172,7 +229,10 @@
   },
   "228": {
     "inputs": {
-      "images": ["898", 0]
+      "images": [
+        "898",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -181,7 +241,10 @@
   },
   "229": {
     "inputs": {
-      "images": ["899", 0]
+      "images": [
+        "899",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -190,7 +253,10 @@
   },
   "230": {
     "inputs": {
-      "images": ["909", 0]
+      "images": [
+        "909",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -199,7 +265,10 @@
   },
   "231": {
     "inputs": {
-      "images": ["907", 0]
+      "images": [
+        "907",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -208,7 +277,10 @@
   },
   "274": {
     "inputs": {
-      "images": ["918", 0]
+      "images": [
+        "918",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -222,7 +294,10 @@
       "return_all": false,
       "node_title": "",
       "allowed_float_decimals": 2,
-      "any_input": ["436", 0]
+      "any_input": [
+        "436",
+        0
+      ]
     },
     "class_type": "WidgetToString",
     "_meta": {
@@ -253,17 +328,32 @@
   },
   "456": {
     "inputs": {
-      "weight": ["430", 0],
+      "weight": [
+        "430",
+        0
+      ],
       "weight_type": "strong style transfer",
       "combine_embeds": "add",
       "start_at": 0,
       "end_at": 1,
       "sharpening": 0.25000000000000006,
       "embeds_scaling": "K+V",
-      "model": ["681", 0],
-      "ipadapter": ["689:1014", 0],
-      "image": ["745", 0],
-      "clip_vision": ["689:1013", 0]
+      "model": [
+        "681",
+        0
+      ],
+      "ipadapter": [
+        "689:1014",
+        0
+      ],
+      "image": [
+        "745",
+        0
+      ],
+      "clip_vision": [
+        "689:1013",
+        0
+      ]
     },
     "class_type": "IPAdapterTiled",
     "_meta": {
@@ -275,22 +365,58 @@
       "filename": "IMG2IMG_ADetailer_%time",
       "path": "",
       "extension": "png",
-      "steps": ["906:705", 0],
-      "cfg": ["906:706", 0],
-      "modelname": ["282", 0],
-      "sampler_name": ["906:708", 0],
-      "scheduler_name": ["906:709", 0],
-      "positive": ["888", 0],
-      "negative": ["993", 0],
-      "seed_value": ["522", 0],
-      "width": ["989", 0],
-      "height": ["989", 0],
+      "steps": [
+        "906:705",
+        0
+      ],
+      "cfg": [
+        "906:706",
+        0
+      ],
+      "modelname": [
+        "282",
+        0
+      ],
+      "sampler_name": [
+        "906:708",
+        0
+      ],
+      "scheduler_name": [
+        "906:709",
+        0
+      ],
+      "positive": [
+        "888",
+        0
+      ],
+      "negative": [
+        "993",
+        0
+      ],
+      "seed_value": [
+        "522",
+        0
+      ],
+      "width": [
+        "989",
+        0
+      ],
+      "height": [
+        "989",
+        0
+      ],
       "lossless_webp": true,
       "quality_jpeg_or_webp": 100,
       "optimize_png": false,
       "counter": 0,
-      "denoise": ["558", 0],
-      "clip_skip": ["461", 0],
+      "denoise": [
+        "558",
+        0
+      ],
+      "clip_skip": [
+        "461",
+        0
+      ],
       "time_format": "%Y-%m-%d-%H%M%S",
       "save_workflow_as_json": false,
       "embed_workflow": true,
@@ -299,7 +425,10 @@
       "easy_remix": true,
       "show_preview": true,
       "custom": "",
-      "images": ["922:674", 0]
+      "images": [
+        "922:674",
+        0
+      ]
     },
     "class_type": "Image Saver",
     "_meta": {
@@ -407,7 +536,10 @@
   },
   "498": {
     "inputs": {
-      "text": ["673:465", 0]
+      "text": [
+        "673:465",
+        0
+      ]
     },
     "class_type": "ShowText|pysssss",
     "_meta": {
@@ -447,7 +579,7 @@
   },
   "522": {
     "inputs": {
-      "seed": 439352874888668
+      "seed": 301541737388637
     },
     "class_type": "easy seed",
     "_meta": {
@@ -456,7 +588,10 @@
   },
   "551": {
     "inputs": {
-      "text": ["991", 0]
+      "text": [
+        "991",
+        0
+      ]
     },
     "class_type": "ShowText|pysssss",
     "_meta": {
@@ -485,7 +620,10 @@
   },
   "581": {
     "inputs": {
-      "images": ["902", 0]
+      "images": [
+        "902",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -516,7 +654,10 @@
     "inputs": {
       "sage_attention": "disabled",
       "allow_compile": false,
-      "model": ["436", 0]
+      "model": [
+        "436",
+        0
+      ]
     },
     "class_type": "PathchSageAttentionKJ",
     "_meta": {
@@ -536,7 +677,10 @@
   },
   "667": {
     "inputs": {
-      "images": ["901", 0]
+      "images": [
+        "901",
+        0
+      ]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -560,8 +704,14 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": ["684:700", 0],
-      "clip": ["436", 1]
+      "model": [
+        "684:700",
+        0
+      ],
+      "clip": [
+        "436",
+        1
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -591,8 +741,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -610,8 +766,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -629,8 +791,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -648,8 +816,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -667,8 +841,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -686,8 +866,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -705,8 +891,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -724,8 +916,14 @@
         "strength": 1
       },
       "➕ Add Lora": "",
-      "model": ["456", 0],
-      "clip": ["684:459", 0]
+      "model": [
+        "456",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -760,8 +958,14 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": ["841", 0],
-      "clip": ["841", 1]
+      "model": [
+        "841",
+        0
+      ],
+      "clip": [
+        "841",
+        1
+      ]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -779,12 +983,18 @@
   },
   "888": {
     "inputs": {
-      "text": ["992", 0],
+      "text": [
+        "992",
+        0
+      ],
       "id": 0,
       "node_title": "",
       "only_enabled": true,
       "debug": false,
-      "powerloraloader_model": ["681", 0]
+      "powerloraloader_model": [
+        "681",
+        0
+      ]
     },
     "class_type": "vsLinx_AppendLorasFromNodeToString",
     "_meta": {
@@ -804,8 +1014,14 @@
   },
   "897": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["745", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        2
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -814,8 +1030,14 @@
   },
   "898": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["70", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -824,8 +1046,14 @@
   },
   "899": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["70", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -834,8 +1062,14 @@
   },
   "900": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["70", 2]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -844,8 +1078,14 @@
   },
   "901": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["745", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "745",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -854,8 +1094,14 @@
   },
   "902": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["745", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "745",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -864,8 +1110,14 @@
   },
   "903": {
     "inputs": {
-      "boolean_a": ["953", 0],
-      "boolean_b": ["948", 0]
+      "boolean_a": [
+        "953",
+        0
+      ],
+      "boolean_b": [
+        "948",
+        0
+      ]
     },
     "class_type": "vsLinx_BooleanAndOperator",
     "_meta": {
@@ -874,9 +1126,18 @@
   },
   "904": {
     "inputs": {
-      "switch": ["935", 0],
-      "on_false": ["922:669", 1],
-      "on_true": ["923:847", 1]
+      "switch": [
+        "935",
+        0
+      ],
+      "on_false": [
+        "922:669",
+        1
+      ],
+      "on_true": [
+        "923:847",
+        1
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -885,8 +1146,14 @@
   },
   "905": {
     "inputs": {
-      "bypass": ["911", 0],
-      "any": ["920", 0]
+      "bypass": [
+        "911",
+        0
+      ],
+      "any": [
+        "920",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -895,8 +1162,14 @@
   },
   "907": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["745", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -905,8 +1178,14 @@
   },
   "908": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["745", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -915,8 +1194,14 @@
   },
   "909": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["70", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -925,8 +1210,14 @@
   },
   "910": {
     "inputs": {
-      "bypass": ["953", 0],
-      "any": ["745", 0]
+      "bypass": [
+        "953",
+        0
+      ],
+      "any": [
+        "19",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -935,7 +1226,10 @@
   },
   "911": {
     "inputs": {
-      "boolean": ["941", 0]
+      "boolean": [
+        "941",
+        0
+      ]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -944,7 +1238,10 @@
   },
   "912": {
     "inputs": {
-      "boolean": ["919", 0]
+      "boolean": [
+        "919",
+        0
+      ]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -953,8 +1250,14 @@
   },
   "913": {
     "inputs": {
-      "bypass": ["912", 0],
-      "any": ["942", 0]
+      "bypass": [
+        "912",
+        0
+      ],
+      "any": [
+        "942",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -963,7 +1266,10 @@
   },
   "914": {
     "inputs": {
-      "boolean": ["953", 0]
+      "boolean": [
+        "953",
+        0
+      ]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -972,7 +1278,10 @@
   },
   "915": {
     "inputs": {
-      "boolean": ["935", 0]
+      "boolean": [
+        "935",
+        0
+      ]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -981,8 +1290,14 @@
   },
   "916": {
     "inputs": {
-      "boolean_a": ["914", 0],
-      "boolean_b": ["915", 0]
+      "boolean_a": [
+        "914",
+        0
+      ],
+      "boolean_b": [
+        "915",
+        0
+      ]
     },
     "class_type": "vsLinx_BooleanOrOperator",
     "_meta": {
@@ -991,8 +1306,14 @@
   },
   "917": {
     "inputs": {
-      "bypass": ["916", 0],
-      "any": ["923:1037", 0]
+      "bypass": [
+        "916",
+        0
+      ],
+      "any": [
+        "923:1037",
+        0
+      ]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1001,9 +1322,18 @@
   },
   "918": {
     "inputs": {
-      "switch": ["953", 0],
-      "on_false": ["745", 0],
-      "on_true": ["1050", 0]
+      "switch": [
+        "953",
+        0
+      ],
+      "on_false": [
+        "745",
+        0
+      ],
+      "on_true": [
+        "1050",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1012,8 +1342,14 @@
   },
   "919": {
     "inputs": {
-      "boolean_a": ["953", 0],
-      "boolean_b": ["941", 0]
+      "boolean_a": [
+        "953",
+        0
+      ],
+      "boolean_b": [
+        "941",
+        0
+      ]
     },
     "class_type": "vsLinx_BooleanAndOperator",
     "_meta": {
@@ -1022,9 +1358,18 @@
   },
   "920": {
     "inputs": {
-      "switch": ["935", 0],
-      "on_false": ["922:669", 0],
-      "on_true": ["923:847", 0]
+      "switch": [
+        "935",
+        0
+      ],
+      "on_false": [
+        "922:669",
+        0
+      ],
+      "on_true": [
+        "923:847",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1242,7 +1587,7 @@
   },
   "954": {
     "inputs": {
-      "seed": 752434650794025
+      "seed": 330140745139764
     },
     "class_type": "easy seed",
     "_meta": {
@@ -1258,13 +1603,13 @@
       "title": "Negative prompt"
     }
   },
-  "975": {
+  "971": {
     "inputs": {
-      "value": "fingernails, "
+      "value": "high cheekbones, plump lips, smooth skin, symmetrical face"
     },
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
-      "title": "Hands prompt"
+      "title": "Face prompt"
     }
   },
   "981": {
@@ -1333,9 +1678,18 @@
   },
   "992": {
     "inputs": {
-      "switch": ["953", 0],
-      "on_false": ["1051", 0],
-      "on_true": ["924:1047", 0]
+      "switch": [
+        "953",
+        0
+      ],
+      "on_false": [
+        "1051",
+        0
+      ],
+      "on_true": [
+        "924:1047",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1344,9 +1698,18 @@
   },
   "993": {
     "inputs": {
-      "switch": ["953", 0],
-      "on_false": ["684:1012", 0],
-      "on_true": ["924:1048", 0]
+      "switch": [
+        "953",
+        0
+      ],
+      "on_false": [
+        "684:1012",
+        0
+      ],
+      "on_true": [
+        "924:1048",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1355,8 +1718,8 @@
   },
   "1050": {
     "inputs": {
-      "image": "IMG2IMG_ADetailer_2026-03-27-161716.png [output]",
-      "select_image": "IMG2IMG_ADetailer_2026-03-27-161716.png",
+      "image": "IMG2IMG_ADetailer_2026-03-27-163909.png [output]",
+      "select_image": "IMG2IMG_ADetailer_2026-03-27-163909.png",
       "auto_refresh": true,
       "Refresh": null,
       "Choose file to upload": null
@@ -1449,9 +1812,18 @@
   },
   "906:706": {
     "inputs": {
-      "switch": ["903", 0],
-      "on_false": ["508", 0],
-      "on_true": ["931", 0]
+      "switch": [
+        "903",
+        0
+      ],
+      "on_false": [
+        "508",
+        0
+      ],
+      "on_true": [
+        "931",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1460,9 +1832,18 @@
   },
   "906:705": {
     "inputs": {
-      "switch": ["903", 0],
-      "on_false": ["509", 0],
-      "on_true": ["930", 0]
+      "switch": [
+        "903",
+        0
+      ],
+      "on_false": [
+        "509",
+        0
+      ],
+      "on_true": [
+        "930",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1471,9 +1852,18 @@
   },
   "906:703": {
     "inputs": {
-      "switch": ["903", 0],
-      "on_false": ["507", 0],
-      "on_true": ["932", 0]
+      "switch": [
+        "903",
+        0
+      ],
+      "on_false": [
+        "507",
+        0
+      ],
+      "on_true": [
+        "932",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1482,9 +1872,18 @@
   },
   "906:704": {
     "inputs": {
-      "switch": ["903", 0],
-      "on_false": ["618", 0],
-      "on_true": ["929", 0]
+      "switch": [
+        "903",
+        0
+      ],
+      "on_false": [
+        "618",
+        0
+      ],
+      "on_true": [
+        "929",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1493,9 +1892,18 @@
   },
   "906:708": {
     "inputs": {
-      "switch": ["903", 0],
-      "on_false": ["507", 1],
-      "on_true": ["932", 1]
+      "switch": [
+        "903",
+        0
+      ],
+      "on_false": [
+        "507",
+        1
+      ],
+      "on_true": [
+        "932",
+        1
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1504,9 +1912,18 @@
   },
   "906:709": {
     "inputs": {
-      "switch": ["903", 0],
-      "on_false": ["618", 1],
-      "on_true": ["929", 1]
+      "switch": [
+        "903",
+        0
+      ],
+      "on_false": [
+        "618",
+        1
+      ],
+      "on_true": [
+        "929",
+        1
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1515,7 +1932,11 @@
   },
   "673:471": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": [
+        "971",
+        0
+      ]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1533,8 +1954,14 @@
   },
   "673:193": {
     "inputs": {
-      "text": ["673:475", 0],
-      "clip": ["829", 1]
+      "text": [
+        "673:475",
+        0
+      ],
+      "clip": [
+        "829",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1543,8 +1970,14 @@
   },
   "673:464": {
     "inputs": {
-      "text": ["673:465", 0],
-      "clip": ["828", 1]
+      "text": [
+        "673:465",
+        0
+      ],
+      "clip": [
+        "828",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1571,8 +2004,7 @@
   },
   "673:481": {
     "inputs": {
-      "separator": "",
-      "text2": ["975", 0]
+      "separator": ""
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1581,8 +2013,14 @@
   },
   "673:194": {
     "inputs": {
-      "text": ["673:481", 0],
-      "clip": ["831", 1]
+      "text": [
+        "673:481",
+        0
+      ],
+      "clip": [
+        "831",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1600,8 +2038,14 @@
   },
   "673:196": {
     "inputs": {
-      "text": ["673:483", 0],
-      "clip": ["833", 1]
+      "text": [
+        "673:483",
+        0
+      ],
+      "clip": [
+        "833",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1610,8 +2054,14 @@
   },
   "673:195": {
     "inputs": {
-      "text": ["673:482", 0],
-      "clip": ["832", 1]
+      "text": [
+        "673:482",
+        0
+      ],
+      "clip": [
+        "832",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1629,8 +2079,14 @@
   },
   "673:197": {
     "inputs": {
-      "text": ["673:484", 0],
-      "clip": ["834", 1]
+      "text": [
+        "673:484",
+        0
+      ],
+      "clip": [
+        "834",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1648,8 +2104,14 @@
   },
   "673:192": {
     "inputs": {
-      "text": ["673:478", 0],
-      "clip": ["830", 1]
+      "text": [
+        "673:478",
+        0
+      ],
+      "clip": [
+        "830",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1658,8 +2120,14 @@
   },
   "673:184": {
     "inputs": {
-      "text": ["673:471", 0],
-      "clip": ["827", 1]
+      "text": [
+        "673:471",
+        0
+      ],
+      "clip": [
+        "827",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1668,7 +2136,10 @@
   },
   "684:514": {
     "inputs": {
-      "scheduler": ["618", 0],
+      "scheduler": [
+        "618",
+        0
+      ],
       "extra_scheduler": "None"
     },
     "class_type": "ImpactSchedulerAdapter",
@@ -1691,7 +2162,7 @@
       "wildcard_text": "",
       "populated_text": "",
       "mode": "populate",
-      "seed": 860151428026590,
+      "seed": 671106515431215,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -1701,8 +2172,14 @@
   },
   "684:523": {
     "inputs": {
-      "text": ["684:1008", 0],
-      "clip": ["684:459", 0]
+      "text": [
+        "684:1008",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1713,7 +2190,10 @@
     "inputs": {
       "sampling": "v_prediction",
       "zsnr": true,
-      "model": ["842", 0]
+      "model": [
+        "842",
+        0
+      ]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1724,7 +2204,10 @@
     "inputs": {
       "sampling": "eps",
       "zsnr": false,
-      "model": ["842", 0]
+      "model": [
+        "842",
+        0
+      ]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1734,7 +2217,10 @@
   "684:460": {
     "inputs": {
       "expression": "a * (-1)\n",
-      "a": ["461", 0]
+      "a": [
+        "461",
+        0
+      ]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -1743,8 +2229,14 @@
   },
   "684:459": {
     "inputs": {
-      "stop_at_clip_layer": ["684:460", 0],
-      "clip": ["681", 1]
+      "stop_at_clip_layer": [
+        "684:460",
+        0
+      ],
+      "clip": [
+        "681",
+        1
+      ]
     },
     "class_type": "CLIPSetLastLayer",
     "_meta": {
@@ -1753,8 +2245,14 @@
   },
   "684:1011": {
     "inputs": {
-      "stop_at_clip_layer": ["684:460", 0],
-      "clip": ["842", 1]
+      "stop_at_clip_layer": [
+        "684:460",
+        0
+      ],
+      "clip": [
+        "842",
+        1
+      ]
     },
     "class_type": "CLIPSetLastLayer",
     "_meta": {
@@ -1765,7 +2263,10 @@
     "inputs": {
       "sampling": "eps",
       "zsnr": false,
-      "model": ["635", 0]
+      "model": [
+        "635",
+        0
+      ]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1776,7 +2277,10 @@
     "inputs": {
       "sampling": "v_prediction",
       "zsnr": true,
-      "model": ["635", 0]
+      "model": [
+        "635",
+        0
+      ]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -1785,9 +2289,18 @@
   },
   "684:699": {
     "inputs": {
-      "switch": ["987", 0],
-      "on_false": ["684:697", 0],
-      "on_true": ["684:1010", 0]
+      "switch": [
+        "987",
+        0
+      ],
+      "on_false": [
+        "684:697",
+        0
+      ],
+      "on_true": [
+        "684:1010",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1796,9 +2309,18 @@
   },
   "684:700": {
     "inputs": {
-      "switch": ["986", 0],
-      "on_false": ["684:161", 0],
-      "on_true": ["684:81", 0]
+      "switch": [
+        "986",
+        0
+      ],
+      "on_false": [
+        "684:161",
+        0
+      ],
+      "on_true": [
+        "684:81",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1807,8 +2329,14 @@
   },
   "684:261": {
     "inputs": {
-      "text": ["684:1012", 0],
-      "clip": ["684:459", 0]
+      "text": [
+        "684:1012",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1818,9 +2346,12 @@
   "684:1012": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": ["970", 0],
+      "populated_text": [
+        "970",
+        0
+      ],
       "mode": "populate",
-      "seed": 870633316475127,
+      "seed": 352392593547752,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -1830,8 +2361,14 @@
   },
   "922:672": {
     "inputs": {
-      "stitcher": ["922:1028", 0],
-      "inpainted_image": ["922:1027", 0]
+      "stitcher": [
+        "922:1028",
+        0
+      ],
+      "inpainted_image": [
+        "922:1027",
+        0
+      ]
     },
     "class_type": "InpaintStitchImproved",
     "_meta": {
@@ -1840,8 +2377,14 @@
   },
   "922:1027": {
     "inputs": {
-      "samples": ["922:671", 0],
-      "vae": ["436", 2]
+      "samples": [
+        "922:671",
+        0
+      ],
+      "vae": [
+        "436",
+        2
+      ]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -1850,16 +2393,46 @@
   },
   "922:671": {
     "inputs": {
-      "seed": ["954", 0],
-      "steps": ["906:705", 0],
-      "cfg": ["906:706", 0],
-      "sampler_name": ["906:703", 0],
-      "scheduler": ["906:704", 0],
-      "denoise": ["949", 0],
-      "model": ["456", 0],
-      "positive": ["905", 0],
-      "negative": ["904", 0],
-      "latent_image": ["922:669", 2]
+      "seed": [
+        "954",
+        0
+      ],
+      "steps": [
+        "906:705",
+        0
+      ],
+      "cfg": [
+        "906:706",
+        0
+      ],
+      "sampler_name": [
+        "906:703",
+        0
+      ],
+      "scheduler": [
+        "906:704",
+        0
+      ],
+      "denoise": [
+        "949",
+        0
+      ],
+      "model": [
+        "456",
+        0
+      ],
+      "positive": [
+        "905",
+        0
+      ],
+      "negative": [
+        "904",
+        0
+      ],
+      "latent_image": [
+        "922:669",
+        2
+      ]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -1869,11 +2442,26 @@
   "922:669": {
     "inputs": {
       "noise_mask": true,
-      "positive": ["924:1046", 0],
-      "negative": ["924:1045", 0],
-      "vae": ["436", 2],
-      "pixels": ["922:1028", 1],
-      "mask": ["922:1028", 2]
+      "positive": [
+        "924:1046",
+        0
+      ],
+      "negative": [
+        "924:1045",
+        0
+      ],
+      "vae": [
+        "436",
+        2
+      ],
+      "pixels": [
+        "922:1028",
+        1
+      ],
+      "mask": [
+        "922:1028",
+        2
+      ]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -1893,21 +2481,33 @@
       "mask_fill_holes": true,
       "mask_expand_pixels": 0,
       "mask_invert": false,
-      "mask_blend_pixels": ["934", 0],
+      "mask_blend_pixels": [
+        "934",
+        0
+      ],
       "mask_hipass_filter": 0.1,
       "extend_for_outpainting": false,
       "extend_up_factor": 1,
       "extend_down_factor": 1,
       "extend_left_factor": 1,
       "extend_right_factor": 1,
-      "context_from_mask_extend_factor": ["950", 0],
+      "context_from_mask_extend_factor": [
+        "950",
+        0
+      ],
       "output_resize_to_target_size": false,
       "output_target_width": 2048,
       "output_target_height": 2048,
       "output_padding": "32",
       "device_mode": "gpu (much faster)",
-      "image": ["1050", 0],
-      "mask": ["1050", 1]
+      "image": [
+        "1050",
+        0
+      ],
+      "mask": [
+        "1050",
+        1
+      ]
     },
     "class_type": "InpaintCropImproved",
     "_meta": {
@@ -1916,9 +2516,18 @@
   },
   "922:674": {
     "inputs": {
-      "switch": ["953", 0],
-      "on_false": ["70", 0],
-      "on_true": ["923:850", 0]
+      "switch": [
+        "953",
+        0
+      ],
+      "on_false": [
+        "19",
+        0
+      ],
+      "on_true": [
+        "923:850",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1927,9 +2536,18 @@
   },
   "923:1030": {
     "inputs": {
-      "switch": ["936", 0],
-      "on_false": ["649", 0],
-      "on_true": ["933:1049", 0]
+      "switch": [
+        "936",
+        0
+      ],
+      "on_false": [
+        "649",
+        0
+      ],
+      "on_true": [
+        "933:1049",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1938,9 +2556,18 @@
   },
   "923:867": {
     "inputs": {
-      "switch": ["936", 0],
-      "on_false": ["15", 0],
-      "on_true": ["933:836", 0]
+      "switch": [
+        "936",
+        0
+      ],
+      "on_false": [
+        "15",
+        0
+      ],
+      "on_true": [
+        "933:836",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1949,7 +2576,10 @@
   },
   "923:839": {
     "inputs": {
-      "mask": ["923:848", 2]
+      "mask": [
+        "923:848",
+        2
+      ]
     },
     "class_type": "MaskToImage",
     "_meta": {
@@ -1958,9 +2588,18 @@
   },
   "923:1037": {
     "inputs": {
-      "switch": ["935", 0],
-      "on_false": ["1050", 0],
-      "on_true": ["923:846", 0]
+      "switch": [
+        "935",
+        0
+      ],
+      "on_false": [
+        "1050",
+        0
+      ],
+      "on_true": [
+        "923:846",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1970,7 +2609,10 @@
   "923:1038": {
     "inputs": {
       "expression": "a + 0.5",
-      "a": ["906:706", 0]
+      "a": [
+        "906:706",
+        0
+      ]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -1980,7 +2622,10 @@
   "923:1039": {
     "inputs": {
       "expression": "((a < 10) * a + (a >= 10) * max(18, a - 10))",
-      "a": ["906:705", 0]
+      "a": [
+        "906:705",
+        0
+      ]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -1989,8 +2634,14 @@
   },
   "923:846": {
     "inputs": {
-      "samples": ["923:845", 0],
-      "vae": ["436", 2]
+      "samples": [
+        "923:845",
+        0
+      ],
+      "vae": [
+        "436",
+        2
+      ]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -1999,16 +2650,46 @@
   },
   "923:845": {
     "inputs": {
-      "seed": ["954", 0],
-      "steps": ["906:705", 0],
-      "cfg": ["906:706", 0],
-      "sampler_name": ["906:703", 0],
-      "scheduler": ["906:704", 0],
-      "denoise": ["949", 0],
-      "model": ["456", 0],
-      "positive": ["905", 0],
-      "negative": ["904", 0],
-      "latent_image": ["923:847", 2]
+      "seed": [
+        "954",
+        0
+      ],
+      "steps": [
+        "906:705",
+        0
+      ],
+      "cfg": [
+        "906:706",
+        0
+      ],
+      "sampler_name": [
+        "906:703",
+        0
+      ],
+      "scheduler": [
+        "906:704",
+        0
+      ],
+      "denoise": [
+        "949",
+        0
+      ],
+      "model": [
+        "456",
+        0
+      ],
+      "positive": [
+        "905",
+        0
+      ],
+      "negative": [
+        "904",
+        0
+      ],
+      "latent_image": [
+        "923:847",
+        2
+      ]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -2018,11 +2699,26 @@
   "923:847": {
     "inputs": {
       "noise_mask": true,
-      "positive": ["924:1046", 0],
-      "negative": ["924:1045", 0],
-      "vae": ["436", 2],
-      "pixels": ["923:848", 1],
-      "mask": ["923:848", 2]
+      "positive": [
+        "924:1046",
+        0
+      ],
+      "negative": [
+        "924:1045",
+        0
+      ],
+      "vae": [
+        "436",
+        2
+      ],
+      "pixels": [
+        "923:848",
+        1
+      ],
+      "mask": [
+        "923:848",
+        2
+      ]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -2031,8 +2727,14 @@
   },
   "923:1040": {
     "inputs": {
-      "samples": ["923:1041", 0],
-      "vae": ["436", 2]
+      "samples": [
+        "923:1041",
+        0
+      ],
+      "vae": [
+        "436",
+        2
+      ]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -2052,21 +2754,33 @@
       "mask_fill_holes": true,
       "mask_expand_pixels": 0,
       "mask_invert": false,
-      "mask_blend_pixels": ["934", 0],
+      "mask_blend_pixels": [
+        "934",
+        0
+      ],
       "mask_hipass_filter": 0.1,
       "extend_for_outpainting": false,
       "extend_up_factor": 1,
       "extend_down_factor": 1,
       "extend_left_factor": 1,
       "extend_right_factor": 1,
-      "context_from_mask_extend_factor": ["950", 0],
+      "context_from_mask_extend_factor": [
+        "950",
+        0
+      ],
       "output_resize_to_target_size": false,
       "output_target_width": 2048,
       "output_target_height": 2048,
       "output_padding": "32",
       "device_mode": "gpu (much faster)",
-      "image": ["1050", 0],
-      "mask": ["1050", 1]
+      "image": [
+        "1050",
+        0
+      ],
+      "mask": [
+        "1050",
+        1
+      ]
     },
     "class_type": "InpaintCropImproved",
     "_meta": {
@@ -2075,8 +2789,14 @@
   },
   "923:843": {
     "inputs": {
-      "stitcher": ["923:848", 0],
-      "inpainted_image": ["923:1040", 0]
+      "stitcher": [
+        "923:848",
+        0
+      ],
+      "inpainted_image": [
+        "923:1040",
+        0
+      ]
     },
     "class_type": "InpaintStitchImproved",
     "_meta": {
@@ -2085,9 +2805,18 @@
   },
   "923:850": {
     "inputs": {
-      "switch": ["935", 0],
-      "on_false": ["922:672", 0],
-      "on_true": ["923:852", 0]
+      "switch": [
+        "935",
+        0
+      ],
+      "on_false": [
+        "922:672",
+        0
+      ],
+      "on_true": [
+        "923:852",
+        0
+      ]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2097,10 +2826,19 @@
   "923:852": {
     "inputs": {
       "method": "mkl",
-      "strength": ["947", 0],
+      "strength": [
+        "947",
+        0
+      ],
       "multithread": true,
-      "image_ref": ["1050", 0],
-      "image_target": ["923:843", 0]
+      "image_ref": [
+        "1050",
+        0
+      ],
+      "image_target": [
+        "923:843",
+        0
+      ]
     },
     "class_type": "ColorMatch",
     "_meta": {
@@ -2110,11 +2848,26 @@
   "923:837": {
     "inputs": {
       "noise_mask": true,
-      "positive": ["924:1046", 0],
-      "negative": ["924:1045", 0],
-      "vae": ["436", 2],
-      "pixels": ["923:1042", 0],
-      "mask": ["923:1043", 0]
+      "positive": [
+        "924:1046",
+        0
+      ],
+      "negative": [
+        "924:1045",
+        0
+      ],
+      "vae": [
+        "436",
+        2
+      ],
+      "pixels": [
+        "923:1042",
+        0
+      ],
+      "mask": [
+        "923:1043",
+        0
+      ]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -2124,9 +2877,18 @@
   "923:1042": {
     "inputs": {
       "upscale_method": "nearest-exact",
-      "factor": ["923:1030", 0],
-      "upscale_model": ["923:867", 0],
-      "image": ["923:846", 0]
+      "factor": [
+        "923:1030",
+        0
+      ],
+      "upscale_model": [
+        "923:867",
+        0
+      ],
+      "image": [
+        "923:846",
+        0
+      ]
     },
     "class_type": "vsLinx_UpscaleByFactorWithModel",
     "_meta": {
@@ -2136,7 +2898,10 @@
   "923:1043": {
     "inputs": {
       "channel": "red",
-      "image": ["923:1044", 0]
+      "image": [
+        "923:1044",
+        0
+      ]
     },
     "class_type": "ImageToMask",
     "_meta": {
@@ -2146,9 +2911,18 @@
   "923:1044": {
     "inputs": {
       "upscale_method": "nearest-exact",
-      "factor": ["923:1030", 0],
-      "upscale_model": ["923:867", 0],
-      "image": ["923:839", 0]
+      "factor": [
+        "923:1030",
+        0
+      ],
+      "upscale_model": [
+        "923:867",
+        0
+      ],
+      "image": [
+        "923:839",
+        0
+      ]
     },
     "class_type": "vsLinx_UpscaleByFactorWithModel",
     "_meta": {
@@ -2157,16 +2931,46 @@
   },
   "923:1041": {
     "inputs": {
-      "seed": ["954", 0],
-      "steps": ["923:1039", 0],
-      "cfg": ["923:1038", 1],
-      "sampler_name": ["906:703", 0],
-      "scheduler": ["906:704", 0],
-      "denoise": ["946", 0],
-      "model": ["456", 0],
-      "positive": ["923:837", 0],
-      "negative": ["923:837", 1],
-      "latent_image": ["923:837", 2]
+      "seed": [
+        "954",
+        0
+      ],
+      "steps": [
+        "923:1039",
+        0
+      ],
+      "cfg": [
+        "923:1038",
+        1
+      ],
+      "sampler_name": [
+        "906:703",
+        0
+      ],
+      "scheduler": [
+        "906:704",
+        0
+      ],
+      "denoise": [
+        "946",
+        0
+      ],
+      "model": [
+        "456",
+        0
+      ],
+      "positive": [
+        "923:837",
+        0
+      ],
+      "negative": [
+        "923:837",
+        1
+      ],
+      "latent_image": [
+        "923:837",
+        2
+      ]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -2175,8 +2979,14 @@
   },
   "924:1045": {
     "inputs": {
-      "text": ["924:1048", 0],
-      "clip": ["684:459", 0]
+      "text": [
+        "924:1048",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2185,8 +2995,14 @@
   },
   "924:1046": {
     "inputs": {
-      "text": ["924:1047", 0],
-      "clip": ["684:459", 0]
+      "text": [
+        "924:1047",
+        0
+      ],
+      "clip": [
+        "684:459",
+        0
+      ]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2196,9 +3012,12 @@
   "924:1047": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": ["984", 0],
+      "populated_text": [
+        "984",
+        0
+      ],
       "mode": "populate",
-      "seed": 368154881459213,
+      "seed": 368154881459212,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -2209,9 +3028,12 @@
   "924:1048": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": ["985", 0],
+      "populated_text": [
+        "985",
+        0
+      ],
       "mode": "populate",
-      "seed": 41997569973898,
+      "seed": 11469093116463,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",

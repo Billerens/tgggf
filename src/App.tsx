@@ -34,6 +34,14 @@ import {
   type SidebarTab,
 } from "./ui/types";
 
+type PersonaLookPromptBundle = Awaited<ReturnType<typeof generatePersonaLookPrompts>>;
+type PwaInstallStatus = "installed" | "available" | "unavailable";
+
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+}
+
 function stableSeedFromText(value: string) {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -161,11 +169,46 @@ export default function App() {
   const [generationPendingImageCount, setGenerationPendingImageCount] = useState(0);
   const [generationSessions, setGenerationSessions] = useState<GeneratorSession[]>([]);
   const [generationSessionId, setGenerationSessionId] = useState("");
+  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [pwaInstallStatus, setPwaInstallStatus] = useState<PwaInstallStatus>("unavailable");
   const generationRunRef = useRef(0);
   const lookGenerationRunRef = useRef(0);
   const lookGenerationAbortRef = useRef<AbortController | null>(null);
   const lookEnhanceRunRef = useRef(0);
   const lookEnhanceAbortRef = useRef<AbortController | null>(null);
+  const lookPromptBundleCacheRef = useRef<{
+    key: string;
+    bundle: PersonaLookPromptBundle;
+  } | null>(null);
+
+  const getCachedLookPromptBundle = async () => {
+    const cacheKey = JSON.stringify({
+      lmBaseUrl: settings.lmBaseUrl,
+      model: settings.model,
+      temperature: settings.temperature,
+      lmAuth: settings.lmAuth,
+      persona: {
+        name: personaDraft.name,
+        personalityPrompt: personaDraft.personalityPrompt,
+        appearance: personaDraft.appearance,
+        stylePrompt: personaDraft.stylePrompt,
+        advanced: personaDraft.advanced,
+      },
+    });
+    const cached = lookPromptBundleCacheRef.current;
+    if (cached?.key === cacheKey) {
+      return cached.bundle;
+    }
+    const bundle = await generatePersonaLookPrompts(settings, {
+      name: personaDraft.name,
+      personalityPrompt: personaDraft.personalityPrompt,
+      appearance: personaDraft.appearance,
+      stylePrompt: personaDraft.stylePrompt,
+      advanced: personaDraft.advanced,
+    });
+    lookPromptBundleCacheRef.current = { key: cacheKey, bundle };
+    return bundle;
+  };
 
   useEffect(() => {
     void initialize();
@@ -174,6 +217,49 @@ export default function App() {
   useEffect(() => {
     setSettingsDraft(settings);
   }, [settings]);
+
+  useEffect(() => {
+    const isStandalone =
+      window.matchMedia?.("(display-mode: standalone)")?.matches ||
+      ((window.navigator as Navigator & { standalone?: boolean }).standalone === true);
+    if (isStandalone) {
+      setPwaInstallStatus("installed");
+      return;
+    }
+
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      const promptEvent = event as BeforeInstallPromptEvent;
+      setDeferredInstallPrompt(promptEvent);
+      setPwaInstallStatus("available");
+    };
+    const onInstalled = () => {
+      setDeferredInstallPrompt(null);
+      setPwaInstallStatus("installed");
+    };
+
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    window.addEventListener("appinstalled", onInstalled);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+      window.removeEventListener("appinstalled", onInstalled);
+    };
+  }, []);
+
+  const onInstallPwa = async () => {
+    if (!deferredInstallPrompt) return;
+    await deferredInstallPrompt.prompt();
+    try {
+      await deferredInstallPrompt.userChoice;
+    } catch {
+      // ignore
+    }
+    setDeferredInstallPrompt(null);
+    const isStandalone =
+      window.matchMedia?.("(display-mode: standalone)")?.matches ||
+      ((window.navigator as Navigator & { standalone?: boolean }).standalone === true);
+    setPwaInstallStatus(isStandalone ? "installed" : "unavailable");
+  };
 
   const loadModels = async (
     baseUrl: string,
@@ -436,13 +522,7 @@ export default function App() {
     setGeneratedLookPacks([]);
     try {
       ensureActive();
-      const promptBundle = await generatePersonaLookPrompts(settings, {
-        name: personaDraft.name,
-        personalityPrompt: personaDraft.personalityPrompt,
-        appearance: personaDraft.appearance,
-        stylePrompt: personaDraft.stylePrompt,
-        advanced: personaDraft.advanced,
-      });
+      const promptBundle = await getCachedLookPromptBundle();
       ensureActive();
       const detailPrompts = promptBundle.detailPrompts;
       const fullBodyWidth = lookFastMode ? 704 : 832;
@@ -735,13 +815,7 @@ export default function App() {
     };
     setEnhancingLookImageKey(key);
     try {
-      const promptBundle = await generatePersonaLookPrompts(settings, {
-        name: personaDraft.name,
-        personalityPrompt: personaDraft.personalityPrompt,
-        appearance: personaDraft.appearance,
-        stylePrompt: personaDraft.stylePrompt,
-        advanced: personaDraft.advanced,
-      });
+      const promptBundle = await getCachedLookPromptBundle();
       ensureEnhanceActive();
       const dims = await getImageDimensions(imageUrl);
       ensureEnhanceActive();
@@ -791,7 +865,6 @@ export default function App() {
             upscaleFactor: 1.25,
             outputNodeTitleIncludes: [
               "Preview after Detailing",
-              "Preview after Upscale/HiRes Fix",
             ],
             strictOutputNodeMatch: true,
             pickLatestImageOnly: true,
@@ -1154,9 +1227,11 @@ export default function App() {
         <SettingsModal
           open={showSettingsModal}
           settingsDraft={settingsDraft}
+          pwaInstallStatus={pwaInstallStatus}
           availableModels={availableModels}
           modelsLoading={modelsLoading}
           setSettingsDraft={setSettingsDraft}
+          onInstallPwa={() => void onInstallPwa()}
           onRefreshModels={() =>
             void loadModels(
               settingsDraft.lmBaseUrl,

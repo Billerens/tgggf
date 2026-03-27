@@ -37,6 +37,12 @@ interface ComfyHistoryEntry {
   outputs?: Record<string, ComfyHistoryNodeOutput>;
 }
 
+declare global {
+  interface Window {
+    __TG_GF_LAST_COMFY_DEBUG__?: unknown;
+  }
+}
+
 export interface ComfyImageGenerationMeta {
   seed?: number;
   prompt?: string;
@@ -55,6 +61,8 @@ export interface ComfyGenerationItem {
   forceHiResFix?: boolean;
   enableUpscaler?: boolean;
   upscaleFactor?: number;
+  hiresFixDenoise?: number;
+  colorFixStrength?: number;
   outputNodeTitleIncludes?: string[];
   strictOutputNodeMatch?: boolean;
   pickLatestImageOnly?: boolean;
@@ -81,12 +89,11 @@ const COMPOSITION_IMAGE_NODE_ID = "455";
 const STYLE_STRENGTH_NODE_ID = "430";
 const COMPOSITION_STRENGTH_NODE_ID = "431";
 const HIRES_FIX_NODE_ID = "849";
-const I2I_POSITIVE_PROMPT_NODE_ID = "523";
+const I2I_POSITIVE_PROMPT_NODE_ID = "984";
 const I2I_IMG2IMG_PROMPT_NODE_ID = "991";
 const I2I_INPAINT_POSITIVE_NODE_ID = "984";
 const I2I_SEED_NODE_ID = "522";
-const I2I_SOURCE_IMAGE_NODE_ID = "454";
-const I2I_ALTERNATIVE_STYLE_IMAGE_NODE_ID = "574";
+const I2I_LAST_IMAGE_NODE_ID = "1050";
 const I2I_STYLE_STRENGTH_NODE_ID = "430";
 const I2I_MULTI_IMAGE_LIST_NODE_ID = "745";
 const BASE_OUTPUT_TITLE_PREFERENCES = [
@@ -114,6 +121,9 @@ interface ComfyFlowConfig {
   styleImageNodeId?: string;
   styleImageNodeIds?: string[];
   imageListNodeId?: string;
+  sourceImageSwitchTitle?: string;
+  sourceImageSwitchInputName?: string;
+  sourceImageSwitchValue?: number | string | boolean;
   compositionImageNodeId?: string;
   styleStrengthNodeId?: string;
   compositionStrengthNodeId?: string;
@@ -149,19 +159,17 @@ const FLOW_CONFIGS: Record<ComfyFlow, ComfyFlowConfig> = {
     positivePromptNodeIds: [
       I2I_IMG2IMG_PROMPT_NODE_ID,
       I2I_INPAINT_POSITIVE_NODE_ID,
-      I2I_POSITIVE_PROMPT_NODE_ID,
     ],
     promptFallbackNodeId: "1051",
     promptSwitchTitle: "prompt switch",
     promptSwitchInputName: "Input",
-    promptSwitchFallbackValue: 1,
+    promptSwitchFallbackValue: 2,
     seedNodeId: I2I_SEED_NODE_ID,
-    styleImageNodeId: I2I_ALTERNATIVE_STYLE_IMAGE_NODE_ID,
-    styleImageNodeIds: [
-      I2I_ALTERNATIVE_STYLE_IMAGE_NODE_ID,
-      I2I_SOURCE_IMAGE_NODE_ID,
-    ],
+    styleImageNodeIds: [],
     imageListNodeId: I2I_MULTI_IMAGE_LIST_NODE_ID,
+    sourceImageSwitchTitle: "Input Image Switch",
+    sourceImageSwitchInputName: "Input",
+    sourceImageSwitchValue: 1,
     styleStrengthNodeId: I2I_STYLE_STRENGTH_NODE_ID,
     outputTitlePreferences: I2I_OUTPUT_TITLE_PREFERENCES,
     detailPromptTitles: {
@@ -342,16 +350,22 @@ function setPromptOnNode(
     }
     return false;
   }
-  if (typeof node.inputs.text === "string" || typeof node.inputs.text === "undefined") {
-    node.inputs.text = prompt;
-    return true;
-  }
-  if (typeof node.inputs.value === "string" || typeof node.inputs.value === "undefined") {
+  // Prefer the field already present on the node schema.
+  if ("value" in node.inputs) {
     node.inputs.value = prompt;
     return true;
   }
-  if (typeof node.inputs.string === "string" || typeof node.inputs.string === "undefined") {
+  if ("text" in node.inputs) {
+    node.inputs.text = prompt;
+    return true;
+  }
+  if ("string" in node.inputs) {
     node.inputs.string = prompt;
+    return true;
+  }
+  // Fallback for nodes without explicit text field discovered yet.
+  if (typeof node.inputs.text === "undefined") {
+    node.inputs.text = prompt;
     return true;
   }
   if (strict) {
@@ -533,12 +547,21 @@ function applyDetailing(
   detailing?: ComfyGenerationItem["detailing"],
   flowConfig: ComfyFlowConfig = FLOW_CONFIGS.base,
 ) {
+  const setEnableDetailer = (part: string, enabled: boolean) => {
+    setBooleanByExactTitle(workflow, `Enable ${part} Detailer`, enabled);
+    setBooleanByExactTitle(workflow, `Enable ${part} prompt`, enabled);
+  };
+
   const hasInpaintSwitch = hasNodeByExactTitle(workflow, "Inpaint?");
   const isI2I = Boolean(flowConfig.requiresReferenceImage);
 
   if (!detailing?.enabled || !detailing.level) {
     if (hasInpaintSwitch) {
       setBooleanByExactTitle(workflow, "Inpaint?", false);
+    }
+    // Prevent Impact Pack from executing with zero denoise on disabled paths.
+    for (const part of ["Face", "Eyes", "Nose", "Lips", "Hands", "Nipples", "Vagina", "Penis"]) {
+      setEnableDetailer(part, false);
     }
     if (isI2I) {
       // i2i templates may not expose the legacy "Inpaint?" switch; keep a conservative denoise baseline.
@@ -577,6 +600,15 @@ function applyDetailing(
       ? new Set<DetailTarget>(detailing.targets)
       : new Set<DetailTarget>(["face", "eyes", "nose", "lips", "hands"]);
 
+  setEnableDetailer("Face", enabledTargets.has("face"));
+  setEnableDetailer("Eyes", enabledTargets.has("eyes"));
+  setEnableDetailer("Nose", enabledTargets.has("nose"));
+  setEnableDetailer("Lips", enabledTargets.has("lips"));
+  setEnableDetailer("Hands", enabledTargets.has("hands"));
+  setEnableDetailer("Nipples", false);
+  setEnableDetailer("Vagina", false);
+  setEnableDetailer("Penis", false);
+
   if (hasInpaintSwitch) {
     setBooleanByExactTitle(workflow, "Inpaint?", true);
   }
@@ -595,16 +627,17 @@ function applyDetailing(
     setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", true);
     setBooleanInputByExactTitle(workflow, "Penis bypass", "bypass", true);
   }
-  setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : 0);
-  setSliderByExactTitle(workflow, "Denoise Eyes", enabledTargets.has("eyes") ? denoise.eyes : 0);
-  setSliderByExactTitle(workflow, "Denoise Nose", enabledTargets.has("nose") ? denoise.nose : 0);
-  setSliderByExactTitle(workflow, "Denoise Lips", enabledTargets.has("lips") ? denoise.lips : 0);
-  setSliderByExactTitle(workflow, "Denoise Hands", enabledTargets.has("hands") ? denoise.hands : 0);
+  const minDenoise = 0.01;
+  setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Eyes", enabledTargets.has("eyes") ? denoise.eyes : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Nose", enabledTargets.has("nose") ? denoise.nose : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Lips", enabledTargets.has("lips") ? denoise.lips : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Hands", enabledTargets.has("hands") ? denoise.hands : minDenoise);
 
   // Explicitly disable erotic detail passes in persona generation flow.
-  setSliderByExactTitle(workflow, "Denoise Nipples", 0);
-  setSliderByExactTitle(workflow, "Denoise Vagina", 0);
-  setSliderByExactTitle(workflow, "Denoise Penis", 0);
+  setSliderByExactTitle(workflow, "Denoise Nipples", minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Vagina", minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Penis", minDenoise);
 
   if (enabledTargets.has("face")) {
     setClipTextByExactTitle(workflow, flowConfig.detailPromptTitles.face, detailing.prompts?.face);
@@ -655,10 +688,24 @@ function setImageListSelectedPaths(
   if (!nodeId || !filename) return;
   const node = workflow[nodeId];
   if (!node || !node.inputs) return;
-  const variants = [filename, `${filename} [input]`, `input/${filename}`];
-  node.inputs.selected_paths = JSON.stringify(variants);
-  if (typeof node.inputs.fail_if_empty === "boolean") {
-    node.inputs.fail_if_empty = false;
+  node.inputs.selected_paths = JSON.stringify([filename]);
+  if ("Select images" in node.inputs) {
+    node.inputs["Select images"] = filename;
+  }
+}
+
+function setLastGeneratedImageNodeFilename(
+  workflow: ComfyWorkflow,
+  filename?: string,
+  nodeId: string = I2I_LAST_IMAGE_NODE_ID,
+) {
+  if (!nodeId || !filename) return;
+  const node = workflow[nodeId];
+  if (!node || !node.inputs) return;
+  node.inputs.select_image = filename;
+  node.inputs.image = `${filename} [input]`;
+  if (typeof node.inputs.auto_refresh === "boolean") {
+    node.inputs.auto_refresh = false;
   }
 }
 
@@ -755,6 +802,96 @@ function buildUiWorkflowForExtraPngInfo(workflow: ComfyWorkflow): ComfyUiWorkflo
   );
 
   return { nodes };
+}
+
+function createComfyDebugSnapshot(
+  flow: ComfyFlow,
+  baseUrl: string,
+  workflow: ComfyWorkflow,
+  item: ComfyGenerationItem,
+) {
+  const focusNodeIds = [
+    "953",
+    "679:572",
+    "745",
+    "891",
+    "991",
+    "984",
+    "1050",
+    "558",
+    "949",
+    "946",
+    "489",
+    "491",
+    "492",
+    "493",
+    "494",
+    "897",
+    "907",
+    "910",
+    "908",
+    "900",
+    "935",
+    "649",
+    "933:1049",
+    "923:1030",
+    "923:850",
+    "923:852",
+    "947",
+    "670",
+  ];
+  const focusNodes: Record<string, unknown> = {};
+
+  for (const nodeId of focusNodeIds) {
+    const node = workflow[nodeId];
+    if (!node) {
+      focusNodes[nodeId] = null;
+      continue;
+    }
+    focusNodes[nodeId] = {
+      class_type: node.class_type,
+      title: node._meta?.title,
+      inputs: node.inputs,
+    };
+  }
+
+  return {
+    createdAt: new Date().toISOString(),
+    flow,
+    baseUrl,
+    item: {
+      prompt: item.prompt,
+      seed: item.seed,
+      width: item.width,
+      height: item.height,
+      styleReferenceImage: item.styleReferenceImage ? "[provided]" : null,
+      styleStrength: item.styleStrength,
+      compositionStrength: item.compositionStrength,
+      forceHiResFix: item.forceHiResFix,
+      enableUpscaler: item.enableUpscaler,
+      upscaleFactor: item.upscaleFactor,
+      outputNodeTitleIncludes: item.outputNodeTitleIncludes,
+      strictOutputNodeMatch: item.strictOutputNodeMatch,
+      pickLatestImageOnly: item.pickLatestImageOnly,
+      detailing: item.detailing,
+    },
+    focusNodes,
+  };
+}
+
+function publishComfyDebugSnapshot(snapshot: unknown) {
+  try {
+    window.__TG_GF_LAST_COMFY_DEBUG__ = snapshot;
+  } catch {
+    // no-op
+  }
+  try {
+    console.groupCollapsed("[tg-gf][comfy][debug] last workflow snapshot");
+    console.log(snapshot);
+    console.groupEnd();
+  } catch {
+    // no-op
+  }
 }
 
 function dataUrlToBlob(dataUrl: string) {
@@ -1149,6 +1286,8 @@ export async function generateComfyImages(
             forceHiResFix: item.forceHiResFix,
             enableUpscaler: item.enableUpscaler,
             upscaleFactor: item.upscaleFactor,
+            hiresFixDenoise: item.hiresFixDenoise,
+            colorFixStrength: item.colorFixStrength,
             outputNodeTitleIncludes: item.outputNodeTitleIncludes,
             strictOutputNodeMatch: item.strictOutputNodeMatch,
             pickLatestImageOnly: item.pickLatestImageOnly,
@@ -1222,6 +1361,8 @@ export async function generateComfyImages(
       setBooleanByTitle(workflow, ["enable upscaler", "use hi-res fix"], item.enableUpscaler);
       setUpscaleFactorByTitle(workflow, item.upscaleFactor);
       applyDetailing(workflow, item.detailing, flowConfig);
+      setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", item.hiresFixDenoise);
+      setSliderByExactTitle(workflow, "Color Fix Strength", item.colorFixStrength);
       if (item.styleReferenceImage) {
         const uploadedFilename = await uploadReferenceImage(
           baseUrl,
@@ -1237,7 +1378,20 @@ export async function generateComfyImages(
         for (const nodeId of styleNodeIds) {
           setStyleImageFilename(workflow, uploadedFilename, nodeId);
         }
+        setLastGeneratedImageNodeFilename(workflow, uploadedFilename);
         setImageListSelectedPaths(workflow, uploadedFilename, flowConfig.imageListNodeId);
+        if (
+          flowConfig.sourceImageSwitchTitle &&
+          flowConfig.sourceImageSwitchInputName &&
+          flowConfig.sourceImageSwitchValue !== undefined
+        ) {
+          setInputByExactTitle(
+            workflow,
+            flowConfig.sourceImageSwitchTitle,
+            flowConfig.sourceImageSwitchInputName,
+            flowConfig.sourceImageSwitchValue,
+          );
+        }
         if (flowConfig.compositionImageNodeId) {
           setCompositionImageFilename(
             workflow,
@@ -1247,6 +1401,9 @@ export async function generateComfyImages(
         }
       }
       sanitizeWorkflowForApi(workflow);
+      publishComfyDebugSnapshot(
+        createComfyDebugSnapshot(item.flow ?? "base", baseUrl, workflow, item),
+      );
       const promptId = await queuePrompt(baseUrl, workflow, auth, signal);
       const historyEntry = await waitForHistory(baseUrl, promptId, auth, signal);
       const imageUrls = collectImageUrls(

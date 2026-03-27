@@ -1,0 +1,207 @@
+{
+  "createdAt": "2026-03-27T12:46:00.809Z",
+  "flow": "i2i",
+  "baseUrl": "/comfy",
+  "item": {
+    "prompt": "high cheekbones plump lips fair smooth skin, blue deep eyes long eyelashes, young slim high waist wide hips, glamour streetwear casual dress large earrings massive bracelets rings, high-quality full body, platinum blonde hair long wavy side-swept bangs, blue deep eyes, plump lips bright makeup, young slim high cheekbones fair smooth skin, glamour streetwear casual dress, large earrings, massive bracelets rings, standing in a studio, full body, neutral standing pose, same person, same identity, same outfit, same framing, preserve composition, highly detailed",
+    "seed": 1162380549,
+    "width": 832,
+    "height": 1216,
+    "styleReferenceImage": "[provided]",
+    "styleStrength": 1,
+    "compositionStrength": 1,
+    "forceHiResFix": true,
+    "enableUpscaler": true,
+    "upscaleFactor": 1.25,
+    "outputNodeTitleIncludes": ["Preview after Detailing"],
+    "strictOutputNodeMatch": true,
+    "pickLatestImageOnly": true,
+    "detailing": {
+      "enabled": true,
+      "level": "medium",
+      "targets": ["face", "eyes", "nose", "lips"],
+      "prompts": {
+        "face": "high cheekbones, plump lips, smooth skin, symmetrical face",
+        "eyes": "blue deep eyes, long eyelashes, expressive gaze",
+        "nose": "straight nose, narrow nostrils, small tip",
+        "lips": "plump lips, glossy finish, natural contour",
+        "hands": "long fingers, neat nails, delicate wrists"
+      }
+    }
+  },
+  "focusNodes": {
+    "489": {
+      "class_type": "mxSlider",
+      "title": "Denoise Eyes",
+      "inputs": {
+        "Xi": 0.14,
+        "Xf": 0.14,
+        "isfloatX": 1
+      }
+    },
+    "491": {
+      "class_type": "mxSlider",
+      "title": "Denoise Face",
+      "inputs": {
+        "Xi": 0.14,
+        "Xf": 0.14,
+        "isfloatX": 1
+      }
+    },
+    "492": {
+      "class_type": "mxSlider",
+      "title": "Denoise Nose",
+      "inputs": {
+        "Xi": 0.18,
+        "Xf": 0.18,
+        "isfloatX": 1
+      }
+    },
+    "493": {
+      "class_type": "mxSlider",
+      "title": "Denoise Lips",
+      "inputs": {
+        "Xi": 0.2,
+        "Xf": 0.2,
+        "isfloatX": 1
+      }
+    },
+    "494": {
+      "class_type": "mxSlider",
+      "title": "Denoise Hands",
+      "inputs": {
+        "Xi": 0.01,
+        "Xf": 0.01,
+        "isfloatX": 1
+      }
+    },
+    "558": {
+      "class_type": "mxSlider",
+      "title": "Denoise",
+      "inputs": {
+        "Xi": 0.72,
+        "Xf": 0.72,
+        "isfloatX": 1
+      }
+    },
+    "745": {
+      "class_type": "vsLinx_LoadSelectedImagesList",
+      "title": "Load (multiple) Images",
+      "inputs": {
+        "Select images": "tg_gf_ref_1774615557943_20530.webp",
+        "selected_paths": "[\"tg_gf_ref_1774615557943_20530.webp\"]",
+        "fail_if_empty": true,
+        "filename_handling": "full filename"
+      }
+    },
+    "891": {
+      "class_type": "CR Text Input Switch",
+      "title": "prompt switch",
+      "inputs": {
+        "Input": 2,
+        "text1": ["1051", 0],
+        "text2": ["679:1006", 0]
+      }
+    },
+    "897": {
+      "class_type": "vsLinx_BypassOnBool",
+      "title": "Face bypass",
+      "inputs": {
+        "bypass": false,
+        "any": ["679:572", 0]
+      }
+    },
+    "900": {
+      "class_type": "vsLinx_BypassOnBool",
+      "title": "Hands bypass",
+      "inputs": {
+        "bypass": true,
+        "any": ["32", 0]
+      }
+    },
+    "907": {
+      "class_type": "vsLinx_BypassOnBool",
+      "title": "Eyes bypass",
+      "inputs": {
+        "bypass": false,
+        "any": ["32", 2]
+      }
+    },
+    "908": {
+      "class_type": "vsLinx_BypassOnBool",
+      "title": "Lips bypass",
+      "inputs": {
+        "bypass": false,
+        "any": ["32", 0]
+      }
+    },
+    "910": {
+      "class_type": "vsLinx_BypassOnBool",
+      "title": "Nose bypass",
+      "inputs": {
+        "bypass": false,
+        "any": ["32", 0]
+      }
+    },
+    "946": {
+      "class_type": "mxSlider",
+      "title": "Hi-Res Fix Denoise",
+      "inputs": {
+        "Xi": 0.3,
+        "Xf": 0.3,
+        "isfloatX": 1
+      }
+    },
+    "949": {
+      "class_type": "mxSlider",
+      "title": "Denoise",
+      "inputs": {
+        "Xi": 0.72,
+        "Xf": 0.72,
+        "isfloatX": 1
+      }
+    },
+    "953": {
+      "class_type": "PrimitiveBoolean",
+      "title": "Inpaint?",
+      "inputs": {
+        "value": false
+      }
+    },
+    "984": {
+      "class_type": "PrimitiveStringMultiline",
+      "title": "Positive",
+      "inputs": {
+        "value": "high cheekbones plump lips fair smooth skin, blue deep eyes long eyelashes, young slim high waist wide hips, glamour streetwear casual dress large earrings massive bracelets rings, high-quality full body, platinum blonde hair long wavy side-swept bangs, blue deep eyes, plump lips bright makeup, young slim high cheekbones fair smooth skin, glamour streetwear casual dress, large earrings, massive bracelets rings, standing in a studio, full body, neutral standing pose, same person, same identity, same outfit, same framing, preserve composition, highly detailed"
+      }
+    },
+    "991": {
+      "class_type": "vsLinx_ImpactMultilineWildcardText",
+      "title": "IMG2IMG prompt",
+      "inputs": {
+        "text": "high cheekbones plump lips fair smooth skin, blue deep eyes long eyelashes, young slim high waist wide hips, glamour streetwear casual dress large earrings massive bracelets rings, high-quality full body, platinum blonde hair long wavy side-swept bangs, blue deep eyes, plump lips bright makeup, young slim high cheekbones fair smooth skin, glamour streetwear casual dress, large earrings, massive bracelets rings, standing in a studio, full body, neutral standing pose, same person, same identity, same outfit, same framing, preserve composition, highly detailed",
+        "Add wildcard": "Select wildcard"
+      }
+    },
+    "1050": {
+      "class_type": "vsLinx_LoadLastGeneratedImage",
+      "title": "Load Last Generated Image",
+      "inputs": {
+        "image": "IMG2IMG_ADetailer_2026-03-27-133826.png [output]",
+        "select_image": "IMG2IMG_ADetailer_2026-03-27-133826.png",
+        "auto_refresh": true,
+        "Refresh": null,
+        "Choose file to upload": null
+      }
+    },
+    "679:572": {
+      "class_type": "CR Image Input Switch",
+      "title": "Input Image Switch",
+      "inputs": {
+        "Input": 1,
+        "image1": ["745", 0],
+        "image2": ["679:524", 0]
+      }
+    }
+  }
+}

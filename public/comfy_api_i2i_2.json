@@ -10,7 +10,7 @@
   },
   "20": {
     "inputs": {
-      "model_name": "segm/99coins_anime_girl_face_m_seg.pt"
+      "model_name": "bbox/face_yolov8m.pt"
     },
     "class_type": "UltralyticsDetectorProvider",
     "_meta": {
@@ -19,101 +19,11 @@
   },
   "29": {
     "inputs": {
-      "images": [
-        "922:674",
-        0
-      ]
+      "images": ["922:674", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
       "title": "Preview after Detailing | Preview after Inpaint"
-    }
-  },
-  "32": {
-    "inputs": {
-      "guide_size": 512,
-      "guide_size_for": true,
-      "max_size": 1024,
-      "seed": 460539992591960,
-      "steps": [
-        "509",
-        0
-      ],
-      "cfg": [
-        "508",
-        0
-      ],
-      "sampler_name": [
-        "507",
-        0
-      ],
-      "scheduler": [
-        "684:514",
-        0
-      ],
-      "denoise": [
-        "489",
-        0
-      ],
-      "feather": 5,
-      "noise_mask": true,
-      "force_inpaint": true,
-      "bbox_threshold": 0.5000000000000001,
-      "bbox_dilation": 10,
-      "bbox_crop_factor": 3,
-      "sam_detection_hint": "center-1",
-      "sam_dilation": 0,
-      "sam_threshold": 0.9300000000000002,
-      "sam_bbox_expansion": 0,
-      "sam_mask_hint_threshold": 0.7000000000000002,
-      "sam_mask_hint_use_negative": "False",
-      "drop_size": 10,
-      "wildcard": "",
-      "cycle": 1,
-      "inpaint_model": false,
-      "noise_mask_feather": 20,
-      "tiled_encode": false,
-      "tiled_decode": false,
-      "image": [
-        "679:572",
-        0
-      ],
-      "model": [
-        "828",
-        0
-      ],
-      "clip": [
-        "828",
-        1
-      ],
-      "vae": [
-        "436",
-        2
-      ],
-      "positive": [
-        "673:464",
-        0
-      ],
-      "negative": [
-        "684:261",
-        0
-      ],
-      "bbox_detector": [
-        "34",
-        0
-      ],
-      "sam_model_opt": [
-        "684:21",
-        0
-      ],
-      "segm_detector_opt": [
-        "34",
-        1
-      ]
-    },
-    "class_type": "FaceDetailer",
-    "_meta": {
-      "title": "Eyes Detailer"
     }
   },
   "34": {
@@ -170,6 +80,51 @@
       "title": "Hands Ultralytics"
     }
   },
+  "70": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 483714870706126,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["494", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["745", 0],
+      "model": ["831", 0],
+      "clip": ["831", 1],
+      "vae": ["436", 2],
+      "positive": ["673:194", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["68", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["68", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Hands Detailer"
+    }
+  },
   "76": {
     "inputs": {
       "model_name": "segm/ntd11_anime_nsfw_segm_v4_penis.pt"
@@ -181,10 +136,7 @@
   },
   "224": {
     "inputs": {
-      "images": [
-        "897",
-        0
-      ]
+      "images": ["897", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -193,10 +145,7 @@
   },
   "225": {
     "inputs": {
-      "images": [
-        "910",
-        0
-      ]
+      "images": ["910", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -205,10 +154,7 @@
   },
   "226": {
     "inputs": {
-      "images": [
-        "908",
-        0
-      ]
+      "images": ["908", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -217,10 +163,7 @@
   },
   "227": {
     "inputs": {
-      "images": [
-        "900",
-        0
-      ]
+      "images": ["900", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -229,10 +172,7 @@
   },
   "228": {
     "inputs": {
-      "images": [
-        "898",
-        0
-      ]
+      "images": ["898", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -241,10 +181,7 @@
   },
   "229": {
     "inputs": {
-      "images": [
-        "899",
-        0
-      ]
+      "images": ["899", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -253,10 +190,7 @@
   },
   "230": {
     "inputs": {
-      "images": [
-        "909",
-        0
-      ]
+      "images": ["909", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -265,10 +199,7 @@
   },
   "231": {
     "inputs": {
-      "images": [
-        "907",
-        0
-      ]
+      "images": ["907", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -277,10 +208,7 @@
   },
   "274": {
     "inputs": {
-      "images": [
-        "918",
-        0
-      ]
+      "images": ["918", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -294,10 +222,7 @@
       "return_all": false,
       "node_title": "",
       "allowed_float_decimals": 2,
-      "any_input": [
-        "436",
-        0
-      ]
+      "any_input": ["436", 0]
     },
     "class_type": "WidgetToString",
     "_meta": {
@@ -326,63 +251,46 @@
       "title": "Checkpoint"
     }
   },
+  "456": {
+    "inputs": {
+      "weight": ["430", 0],
+      "weight_type": "strong style transfer",
+      "combine_embeds": "add",
+      "start_at": 0,
+      "end_at": 1,
+      "sharpening": 0.25000000000000006,
+      "embeds_scaling": "K+V",
+      "model": ["681", 0],
+      "ipadapter": ["689:1014", 0],
+      "image": ["745", 0],
+      "clip_vision": ["689:1013", 0]
+    },
+    "class_type": "IPAdapterTiled",
+    "_meta": {
+      "title": "IPAdapter Tiled"
+    }
+  },
   "457": {
     "inputs": {
       "filename": "IMG2IMG_ADetailer_%time",
       "path": "",
       "extension": "png",
-      "steps": [
-        "906:705",
-        0
-      ],
-      "cfg": [
-        "906:706",
-        0
-      ],
-      "modelname": [
-        "282",
-        0
-      ],
-      "sampler_name": [
-        "906:708",
-        0
-      ],
-      "scheduler_name": [
-        "906:709",
-        0
-      ],
-      "positive": [
-        "888",
-        0
-      ],
-      "negative": [
-        "993",
-        0
-      ],
-      "seed_value": [
-        "522",
-        0
-      ],
-      "width": [
-        "679:548",
-        0
-      ],
-      "height": [
-        "679:547",
-        0
-      ],
+      "steps": ["906:705", 0],
+      "cfg": ["906:706", 0],
+      "modelname": ["282", 0],
+      "sampler_name": ["906:708", 0],
+      "scheduler_name": ["906:709", 0],
+      "positive": ["888", 0],
+      "negative": ["993", 0],
+      "seed_value": ["522", 0],
+      "width": ["989", 0],
+      "height": ["989", 0],
       "lossless_webp": true,
       "quality_jpeg_or_webp": 100,
       "optimize_png": false,
       "counter": 0,
-      "denoise": [
-        "558",
-        0
-      ],
-      "clip_skip": [
-        "461",
-        0
-      ],
+      "denoise": ["558", 0],
+      "clip_skip": ["461", 0],
       "time_format": "%Y-%m-%d-%H%M%S",
       "save_workflow_as_json": false,
       "embed_workflow": true,
@@ -391,10 +299,7 @@
       "easy_remix": true,
       "show_preview": true,
       "custom": "",
-      "images": [
-        "922:674",
-        0
-      ]
+      "images": ["922:674", 0]
     },
     "class_type": "Image Saver",
     "_meta": {
@@ -502,11 +407,7 @@
   },
   "498": {
     "inputs": {
-      "text_0": "{red:1.3}, glowing eyes",
-      "text": [
-        "673:465",
-        0
-      ]
+      "text": ["673:465", 0]
     },
     "class_type": "ShowText|pysssss",
     "_meta": {
@@ -546,7 +447,7 @@
   },
   "522": {
     "inputs": {
-      "seed": 488503983941946
+      "seed": 439352874888668
     },
     "class_type": "easy seed",
     "_meta": {
@@ -555,11 +456,7 @@
   },
   "551": {
     "inputs": {
-      "text_0": "masterpiece, best quality, absurdres, amazing quality, 1girl, solo, long hair, breasts, looking at viewer, smile, bangs, blonde hair, brown hair, black hair, cleavage, bare shoulders, jewelry, closed mouth, underwear, green eyes, collarbone, upper body, multicolored hair, earrings, hand up, necklace, bra, mole, two-tone hair, makeup, lipstick, hand on own face, eyeshadow, brown background, watch, colored inner hair, red lips, wristwatch",
-      "text": [
-        "679:1006",
-        0
-      ]
+      "text": ["991", 0]
     },
     "class_type": "ShowText|pysssss",
     "_meta": {
@@ -588,10 +485,7 @@
   },
   "581": {
     "inputs": {
-      "images": [
-        "902",
-        0
-      ]
+      "images": ["902", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -622,10 +516,7 @@
     "inputs": {
       "sage_attention": "disabled",
       "allow_compile": false,
-      "model": [
-        "436",
-        0
-      ]
+      "model": ["436", 0]
     },
     "class_type": "PathchSageAttentionKJ",
     "_meta": {
@@ -645,10 +536,7 @@
   },
   "667": {
     "inputs": {
-      "images": [
-        "901",
-        0
-      ]
+      "images": ["901", 0]
     },
     "class_type": "PreviewImage",
     "_meta": {
@@ -672,14 +560,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "684:700",
-        0
-      ],
-      "clip": [
-        "436",
-        1
-      ]
+      "model": ["684:700", 0],
+      "clip": ["436", 1]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -689,7 +571,7 @@
   "745": {
     "inputs": {
       "Select images": null,
-      "selected_paths": "[\"TXT2IMG_ADetailer_2026-03-27-113725.webp\"]",
+      "selected_paths": "[\"IMG2IMG_ADetailer_2026-03-27-151159.webp\"]",
       "fail_if_empty": true,
       "filename_handling": "full filename"
     },
@@ -703,15 +585,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -723,15 +604,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -743,15 +623,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -763,15 +642,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -783,15 +661,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -803,15 +680,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -823,15 +699,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -843,15 +718,14 @@
       "PowerLoraLoaderHeaderWidget": {
         "type": "PowerLoraLoaderHeaderWidget"
       },
+      "lora_1": {
+        "on": true,
+        "lora": "NOOB_EPSv1_1_detailer_by_vlnvk_v1_0.safetensors",
+        "strength": 1
+      },
       "➕ Add Lora": "",
-      "model": [
-        "681",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "model": ["456", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -886,14 +760,8 @@
         "type": "PowerLoraLoaderHeaderWidget"
       },
       "➕ Add Lora": "",
-      "model": [
-        "841",
-        0
-      ],
-      "clip": [
-        "841",
-        1
-      ]
+      "model": ["841", 0],
+      "clip": ["841", 1]
     },
     "class_type": "Power Lora Loader (rgthree)",
     "_meta": {
@@ -911,39 +779,16 @@
   },
   "888": {
     "inputs": {
-      "text": [
-        "992",
-        0
-      ],
+      "text": ["992", 0],
       "id": 0,
       "node_title": "",
       "only_enabled": true,
       "debug": false,
-      "powerloraloader_model": [
-        "681",
-        0
-      ]
+      "powerloraloader_model": ["681", 0]
     },
     "class_type": "vsLinx_AppendLorasFromNodeToString",
     "_meta": {
       "title": "Lora to prompt"
-    }
-  },
-  "891": {
-    "inputs": {
-      "Input": 2,
-      "text1": [
-        "1051",
-        0
-      ],
-      "text2": [
-        "679:1006",
-        0
-      ]
-    },
-    "class_type": "CR Text Input Switch",
-    "_meta": {
-      "title": "prompt switch"
     }
   },
   "896": {
@@ -959,14 +804,8 @@
   },
   "897": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "679:572",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["745", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -975,14 +814,8 @@
   },
   "898": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "32",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["70", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -991,14 +824,8 @@
   },
   "899": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "32",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["70", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1007,14 +834,8 @@
   },
   "900": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "32",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["70", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1023,14 +844,8 @@
   },
   "901": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "679:572",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["745", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1039,14 +854,8 @@
   },
   "902": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "679:527",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["745", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1055,14 +864,8 @@
   },
   "903": {
     "inputs": {
-      "boolean_a": [
-        "953",
-        0
-      ],
-      "boolean_b": [
-        "948",
-        0
-      ]
+      "boolean_a": ["953", 0],
+      "boolean_b": ["948", 0]
     },
     "class_type": "vsLinx_BooleanAndOperator",
     "_meta": {
@@ -1071,18 +874,9 @@
   },
   "904": {
     "inputs": {
-      "switch": [
-        "935",
-        0
-      ],
-      "on_false": [
-        "922:669",
-        1
-      ],
-      "on_true": [
-        "923:847",
-        1
-      ]
+      "switch": ["935", 0],
+      "on_false": ["922:669", 1],
+      "on_true": ["923:847", 1]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1091,14 +885,8 @@
   },
   "905": {
     "inputs": {
-      "bypass": [
-        "911",
-        0
-      ],
-      "any": [
-        "920",
-        0
-      ]
+      "bypass": ["911", 0],
+      "any": ["920", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1107,14 +895,8 @@
   },
   "907": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "32",
-        2
-      ]
+      "bypass": ["953", 0],
+      "any": ["745", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1123,14 +905,8 @@
   },
   "908": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "32",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["745", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1139,14 +915,8 @@
   },
   "909": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "32",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["70", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1155,14 +925,8 @@
   },
   "910": {
     "inputs": {
-      "bypass": [
-        "953",
-        0
-      ],
-      "any": [
-        "32",
-        0
-      ]
+      "bypass": ["953", 0],
+      "any": ["745", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1171,10 +935,7 @@
   },
   "911": {
     "inputs": {
-      "boolean": [
-        "941",
-        0
-      ]
+      "boolean": ["941", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1183,10 +944,7 @@
   },
   "912": {
     "inputs": {
-      "boolean": [
-        "919",
-        0
-      ]
+      "boolean": ["919", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1195,14 +953,8 @@
   },
   "913": {
     "inputs": {
-      "bypass": [
-        "912",
-        0
-      ],
-      "any": [
-        "942",
-        0
-      ]
+      "bypass": ["912", 0],
+      "any": ["942", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1211,10 +963,7 @@
   },
   "914": {
     "inputs": {
-      "boolean": [
-        "953",
-        0
-      ]
+      "boolean": ["953", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1223,10 +972,7 @@
   },
   "915": {
     "inputs": {
-      "boolean": [
-        "935",
-        0
-      ]
+      "boolean": ["935", 0]
     },
     "class_type": "vsLinx_BooleanFlip",
     "_meta": {
@@ -1235,14 +981,8 @@
   },
   "916": {
     "inputs": {
-      "boolean_a": [
-        "914",
-        0
-      ],
-      "boolean_b": [
-        "915",
-        0
-      ]
+      "boolean_a": ["914", 0],
+      "boolean_b": ["915", 0]
     },
     "class_type": "vsLinx_BooleanOrOperator",
     "_meta": {
@@ -1251,14 +991,8 @@
   },
   "917": {
     "inputs": {
-      "bypass": [
-        "916",
-        0
-      ],
-      "any": [
-        "923:1037",
-        0
-      ]
+      "bypass": ["916", 0],
+      "any": ["923:1037", 0]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1267,18 +1001,9 @@
   },
   "918": {
     "inputs": {
-      "switch": [
-        "953",
-        0
-      ],
-      "on_false": [
-        "679:572",
-        0
-      ],
-      "on_true": [
-        "1050",
-        0
-      ]
+      "switch": ["953", 0],
+      "on_false": ["745", 0],
+      "on_true": ["1050", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1287,14 +1012,8 @@
   },
   "919": {
     "inputs": {
-      "boolean_a": [
-        "953",
-        0
-      ],
-      "boolean_b": [
-        "941",
-        0
-      ]
+      "boolean_a": ["953", 0],
+      "boolean_b": ["941", 0]
     },
     "class_type": "vsLinx_BooleanAndOperator",
     "_meta": {
@@ -1303,18 +1022,9 @@
   },
   "920": {
     "inputs": {
-      "switch": [
-        "935",
-        0
-      ],
-      "on_false": [
-        "922:669",
-        0
-      ],
-      "on_true": [
-        "923:847",
-        0
-      ]
+      "switch": ["935", 0],
+      "on_false": ["922:669", 0],
+      "on_true": ["923:847", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1532,7 +1242,7 @@
   },
   "954": {
     "inputs": {
-      "seed": 184490536176039
+      "seed": 752434650794025
     },
     "class_type": "easy seed",
     "_meta": {
@@ -1548,13 +1258,13 @@
       "title": "Negative prompt"
     }
   },
-  "972": {
+  "975": {
     "inputs": {
-      "value": "{red:1.3}, glowing eyes"
+      "value": "fingernails, "
     },
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
-      "title": "Eyes prompt"
+      "title": "Hands prompt"
     }
   },
   "981": {
@@ -1613,7 +1323,7 @@
   },
   "991": {
     "inputs": {
-      "text": "masterpiece, best quality, absurdres, amazing quality, ",
+      "text": "",
       "Add wildcard": "Select wildcard"
     },
     "class_type": "vsLinx_ImpactMultilineWildcardText",
@@ -1623,18 +1333,9 @@
   },
   "992": {
     "inputs": {
-      "switch": [
-        "953",
-        0
-      ],
-      "on_false": [
-        "891",
-        0
-      ],
-      "on_true": [
-        "924:1047",
-        0
-      ]
+      "switch": ["953", 0],
+      "on_false": ["1051", 0],
+      "on_true": ["924:1047", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1643,18 +1344,9 @@
   },
   "993": {
     "inputs": {
-      "switch": [
-        "953",
-        0
-      ],
-      "on_false": [
-        "684:1012",
-        0
-      ],
-      "on_true": [
-        "924:1048",
-        0
-      ]
+      "switch": ["953", 0],
+      "on_false": ["684:1012", 0],
+      "on_true": ["924:1048", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1663,8 +1355,8 @@
   },
   "1050": {
     "inputs": {
-      "image": "IMG2IMG_ADetailer_2026-03-27-133826.png [output]",
-      "select_image": "IMG2IMG_ADetailer_2026-03-27-133826.png",
+      "image": "IMG2IMG_ADetailer_2026-03-27-161716.png [output]",
+      "select_image": "IMG2IMG_ADetailer_2026-03-27-161716.png",
       "auto_refresh": true,
       "Refresh": null,
       "Choose file to upload": null
@@ -1699,24 +1391,6 @@
     "class_type": "ControlNetPreprocessorSelector",
     "_meta": {
       "title": "ControlNet - Preprocessor Selector"
-    }
-  },
-  "689:1013": {
-    "inputs": {
-      "clip_name": "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors"
-    },
-    "class_type": "CLIPVisionLoader",
-    "_meta": {
-      "title": "IPAdapter - Clip Vision Model"
-    }
-  },
-  "689:1014": {
-    "inputs": {
-      "ipadapter_file": "noobAI\\noobIPAMARK1_mark1.safetensors"
-    },
-    "class_type": "IPAdapterModelLoader",
-    "_meta": {
-      "title": "IPAdapter - Model Loader"
     }
   },
   "933:836": {
@@ -1755,20 +1429,29 @@
       "title": "ControlNet - Preprocessor Selector"
     }
   },
+  "689:1013": {
+    "inputs": {
+      "clip_name": "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors"
+    },
+    "class_type": "CLIPVisionLoader",
+    "_meta": {
+      "title": "IPAdapter - Clip Vision Model"
+    }
+  },
+  "689:1014": {
+    "inputs": {
+      "ipadapter_file": "noobIPAMARK1_mark1.safetensors"
+    },
+    "class_type": "IPAdapterModelLoader",
+    "_meta": {
+      "title": "IPAdapter - Model Loader"
+    }
+  },
   "906:706": {
     "inputs": {
-      "switch": [
-        "903",
-        0
-      ],
-      "on_false": [
-        "508",
-        0
-      ],
-      "on_true": [
-        "931",
-        0
-      ]
+      "switch": ["903", 0],
+      "on_false": ["508", 0],
+      "on_true": ["931", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1777,18 +1460,9 @@
   },
   "906:705": {
     "inputs": {
-      "switch": [
-        "903",
-        0
-      ],
-      "on_false": [
-        "509",
-        0
-      ],
-      "on_true": [
-        "930",
-        0
-      ]
+      "switch": ["903", 0],
+      "on_false": ["509", 0],
+      "on_true": ["930", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1797,18 +1471,9 @@
   },
   "906:703": {
     "inputs": {
-      "switch": [
-        "903",
-        0
-      ],
-      "on_false": [
-        "507",
-        0
-      ],
-      "on_true": [
-        "932",
-        0
-      ]
+      "switch": ["903", 0],
+      "on_false": ["507", 0],
+      "on_true": ["932", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1817,18 +1482,9 @@
   },
   "906:704": {
     "inputs": {
-      "switch": [
-        "903",
-        0
-      ],
-      "on_false": [
-        "618",
-        0
-      ],
-      "on_true": [
-        "929",
-        0
-      ]
+      "switch": ["903", 0],
+      "on_false": ["618", 0],
+      "on_true": ["929", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1837,18 +1493,9 @@
   },
   "906:708": {
     "inputs": {
-      "switch": [
-        "903",
-        0
-      ],
-      "on_false": [
-        "507",
-        1
-      ],
-      "on_true": [
-        "932",
-        1
-      ]
+      "switch": ["903", 0],
+      "on_false": ["507", 1],
+      "on_true": ["932", 1]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1857,18 +1504,9 @@
   },
   "906:709": {
     "inputs": {
-      "switch": [
-        "903",
-        0
-      ],
-      "on_false": [
-        "618",
-        1
-      ],
-      "on_true": [
-        "929",
-        1
-      ]
+      "switch": ["903", 0],
+      "on_false": ["618", 1],
+      "on_true": ["929", 1]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -1895,14 +1533,8 @@
   },
   "673:193": {
     "inputs": {
-      "text": [
-        "673:475",
-        0
-      ],
-      "clip": [
-        "829",
-        1
-      ]
+      "text": ["673:475", 0],
+      "clip": ["829", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1911,14 +1543,8 @@
   },
   "673:464": {
     "inputs": {
-      "text": [
-        "673:465",
-        0
-      ],
-      "clip": [
-        "828",
-        1
-      ]
+      "text": ["673:465", 0],
+      "clip": ["828", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1927,11 +1553,7 @@
   },
   "673:465": {
     "inputs": {
-      "separator": "",
-      "text2": [
-        "972",
-        0
-      ]
+      "separator": ""
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1949,7 +1571,8 @@
   },
   "673:481": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["975", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1958,14 +1581,8 @@
   },
   "673:194": {
     "inputs": {
-      "text": [
-        "673:481",
-        0
-      ],
-      "clip": [
-        "831",
-        1
-      ]
+      "text": ["673:481", 0],
+      "clip": ["831", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1983,14 +1600,8 @@
   },
   "673:196": {
     "inputs": {
-      "text": [
-        "673:483",
-        0
-      ],
-      "clip": [
-        "833",
-        1
-      ]
+      "text": ["673:483", 0],
+      "clip": ["833", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -1999,14 +1610,8 @@
   },
   "673:195": {
     "inputs": {
-      "text": [
-        "673:482",
-        0
-      ],
-      "clip": [
-        "832",
-        1
-      ]
+      "text": ["673:482", 0],
+      "clip": ["832", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2024,14 +1629,8 @@
   },
   "673:197": {
     "inputs": {
-      "text": [
-        "673:484",
-        0
-      ],
-      "clip": [
-        "834",
-        1
-      ]
+      "text": ["673:484", 0],
+      "clip": ["834", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2049,14 +1648,8 @@
   },
   "673:192": {
     "inputs": {
-      "text": [
-        "673:478",
-        0
-      ],
-      "clip": [
-        "830",
-        1
-      ]
+      "text": ["673:478", 0],
+      "clip": ["830", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2065,488 +1658,17 @@
   },
   "673:184": {
     "inputs": {
-      "text": [
-        "673:471",
-        0
-      ],
-      "clip": [
-        "827",
-        1
-      ]
+      "text": ["673:471", 0],
+      "clip": ["827", 1]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "Face Clip transform"
     }
   },
-  "679:547": {
-    "inputs": {
-      "expression": "a * b",
-      "a": [
-        "679:528",
-        1
-      ],
-      "b": [
-        "679:541",
-        1
-      ]
-    },
-    "class_type": "MathExpression|pysssss",
-    "_meta": {
-      "title": "Height * scale calc"
-    }
-  },
-  "679:608": {
-    "inputs": {
-      "find1": "\\",
-      "replace1": "",
-      "find2": "",
-      "replace2": "",
-      "find3": "",
-      "replace3": "",
-      "text": [
-        "981",
-        0
-      ]
-    },
-    "class_type": "CR Text Replace",
-    "_meta": {
-      "title": "remove backslash"
-    }
-  },
-  "679:1005": {
-    "inputs": {
-      "add_noise": "enable",
-      "noise_seed": [
-        "522",
-        0
-      ],
-      "steps": [
-        "509",
-        0
-      ],
-      "cfg": [
-        "508",
-        0
-      ],
-      "sampler_name": [
-        "507",
-        0
-      ],
-      "scheduler": [
-        "618",
-        0
-      ],
-      "start_at_step": 0,
-      "end_at_step": [
-        "840",
-        0
-      ],
-      "return_with_leftover_noise": "enable",
-      "model": [
-        "681",
-        0
-      ],
-      "positive": [
-        "679:520",
-        0
-      ],
-      "negative": [
-        "679:520",
-        1
-      ],
-      "latent_image": [
-        "679:530",
-        0
-      ]
-    },
-    "class_type": "KSamplerAdvanced",
-    "_meta": {
-      "title": "Sampler"
-    }
-  },
-  "679:693": {
-    "inputs": {
-      "add_noise": "disable",
-      "noise_seed": [
-        "522",
-        0
-      ],
-      "steps": [
-        "509",
-        0
-      ],
-      "cfg": [
-        "508",
-        0
-      ],
-      "sampler_name": [
-        "507",
-        0
-      ],
-      "scheduler": [
-        "618",
-        0
-      ],
-      "start_at_step": [
-        "840",
-        0
-      ],
-      "end_at_step": 10000,
-      "return_with_leftover_noise": "disable",
-      "model": [
-        "684:699",
-        0
-      ],
-      "positive": [
-        "679:691",
-        0
-      ],
-      "negative": [
-        "679:690",
-        0
-      ],
-      "latent_image": [
-        "679:1005",
-        0
-      ]
-    },
-    "class_type": "KSamplerAdvanced",
-    "_meta": {
-      "title": "Refiner Sampler"
-    }
-  },
-  "679:691": {
-    "inputs": {
-      "text": [
-        "679:1006",
-        0
-      ],
-      "clip": [
-        "684:1011",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "Pos Prompt convert"
-    }
-  },
-  "679:690": {
-    "inputs": {
-      "text": [
-        "970",
-        0
-      ],
-      "clip": [
-        "684:1011",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "Neg Prompt convert"
-    }
-  },
-  "679:521": {
-    "inputs": {
-      "seed": [
-        "522",
-        0
-      ],
-      "steps": [
-        "509",
-        0
-      ],
-      "cfg": [
-        "508",
-        0
-      ],
-      "sampler_name": [
-        "507",
-        0
-      ],
-      "scheduler": [
-        "618",
-        0
-      ],
-      "denoise": [
-        "558",
-        0
-      ],
-      "model": [
-        "681",
-        0
-      ],
-      "positive": [
-        "679:520",
-        0
-      ],
-      "negative": [
-        "679:520",
-        1
-      ],
-      "latent_image": [
-        "679:530",
-        0
-      ]
-    },
-    "class_type": "KSampler",
-    "_meta": {
-      "title": "KSampler"
-    }
-  },
-  "679:530": {
-    "inputs": {
-      "width": [
-        "679:548",
-        0
-      ],
-      "height": [
-        "679:547",
-        0
-      ],
-      "batch_size": 1
-    },
-    "class_type": "EmptyLatentImage",
-    "_meta": {
-      "title": "Empty Latent Image"
-    }
-  },
-  "679:528": {
-    "inputs": {
-      "image": [
-        "745",
-        0
-      ]
-    },
-    "class_type": "ImageGenResolutionFromImage",
-    "_meta": {
-      "title": "Get Image sizes"
-    }
-  },
-  "679:548": {
-    "inputs": {
-      "expression": "a * b",
-      "a": [
-        "679:528",
-        0
-      ],
-      "b": [
-        "679:541",
-        1
-      ]
-    },
-    "class_type": "MathExpression|pysssss",
-    "_meta": {
-      "title": "Width * scale calc"
-    }
-  },
-  "679:541": {
-    "inputs": {
-      "expression": "iif(a < b, c / a, c / b)",
-      "a": [
-        "679:528",
-        0
-      ],
-      "b": [
-        "679:528",
-        1
-      ],
-      "c": [
-        "989",
-        0
-      ]
-    },
-    "class_type": "MathExpression|pysssss",
-    "_meta": {
-      "title": "Calculate scale"
-    }
-  },
-  "679:540": {
-    "inputs": {
-      "separator": "",
-      "text1": [
-        "991",
-        0
-      ],
-      "text2": [
-        "679:537",
-        0
-      ]
-    },
-    "class_type": "CR Text Concatenate",
-    "_meta": {
-      "title": "IMG2IMG + Tagger prompt"
-    }
-  },
-  "679:537": {
-    "inputs": {
-      "model": "wd-v1-4-moat-tagger-v2",
-      "threshold": 0.4000000000000001,
-      "character_threshold": 0.9000000000000001,
-      "replace_underscore": true,
-      "trailing_comma": false,
-      "exclude_tags": [
-        "679:608",
-        0
-      ],
-      "tags": "1girl, solo, long hair, breasts, looking at viewer, smile, bangs, blonde hair, brown hair, black hair, cleavage, bare shoulders, jewelry, closed mouth, underwear, green eyes, collarbone, upper body, multicolored hair, earrings, hand up, necklace, bra, mole, two-tone hair, makeup, lipstick, hand on own face, eyeshadow, brown background, watch, colored inner hair, red lips, wristwatch",
-      "image": [
-        "745",
-        0
-      ]
-    },
-    "class_type": "WD14Tagger|pysssss",
-    "_meta": {
-      "title": "Interrogate"
-    }
-  },
-  "679:1006": {
-    "inputs": {
-      "wildcard_text": "",
-      "populated_text": [
-        "679:540",
-        0
-      ],
-      "mode": "populate",
-      "seed": 183330170831903,
-      "Select to add Wildcard": "Select the Wildcard to add to the text"
-    },
-    "class_type": "ImpactWildcardProcessor",
-    "_meta": {
-      "title": "Dynamic Wildcard Processor"
-    }
-  },
-  "679:572": {
-    "inputs": {
-      "Input": 2,
-      "image1": [
-        "745",
-        0
-      ],
-      "image2": [
-        "679:524",
-        0
-      ]
-    },
-    "class_type": "CR Image Input Switch",
-    "_meta": {
-      "title": "Input Image Switch"
-    }
-  },
-  "679:524": {
-    "inputs": {
-      "samples": [
-        "679:701",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
-    },
-    "class_type": "VAEDecode",
-    "_meta": {
-      "title": "VAE Decode"
-    }
-  },
-  "679:701": {
-    "inputs": {
-      "switch": [
-        "885",
-        0
-      ],
-      "on_false": [
-        "679:521",
-        0
-      ],
-      "on_true": [
-        "679:693",
-        0
-      ]
-    },
-    "class_type": "LazySwitchKJ",
-    "_meta": {
-      "title": "Sampler Switch"
-    }
-  },
-  "679:527": {
-    "inputs": {
-      "preprocessor": [
-        "692:1016",
-        0
-      ],
-      "resolution": [
-        "989",
-        0
-      ],
-      "image": [
-        "745",
-        0
-      ]
-    },
-    "class_type": "AIO_Preprocessor",
-    "_meta": {
-      "title": "ControlNet PreProcessor"
-    }
-  },
-  "679:529": {
-    "inputs": {
-      "text": [
-        "679:1006",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
-    },
-    "class_type": "CLIPTextEncode",
-    "_meta": {
-      "title": "Text to prompt"
-    }
-  },
-  "679:520": {
-    "inputs": {
-      "strength": [
-        "582",
-        0
-      ],
-      "start_percent": 0,
-      "end_percent": 1,
-      "positive": [
-        "679:529",
-        0
-      ],
-      "negative": [
-        "684:261",
-        0
-      ],
-      "control_net": [
-        "692:1015",
-        0
-      ],
-      "image": [
-        "679:527",
-        0
-      ],
-      "vae_optional": [
-        "436",
-        2
-      ]
-    },
-    "class_type": "ACN_AdvancedControlNetApply_v2",
-    "_meta": {
-      "title": "ControlNet"
-    }
-  },
   "684:514": {
     "inputs": {
-      "scheduler": [
-        "618",
-        0
-      ],
+      "scheduler": ["618", 0],
       "extra_scheduler": "None"
     },
     "class_type": "ImpactSchedulerAdapter",
@@ -2569,7 +1691,7 @@
       "wildcard_text": "",
       "populated_text": "",
       "mode": "populate",
-      "seed": 752960280596399,
+      "seed": 860151428026590,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -2579,14 +1701,8 @@
   },
   "684:523": {
     "inputs": {
-      "text": [
-        "684:1008",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "text": ["684:1008", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2597,10 +1713,7 @@
     "inputs": {
       "sampling": "v_prediction",
       "zsnr": true,
-      "model": [
-        "842",
-        0
-      ]
+      "model": ["842", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -2611,10 +1724,7 @@
     "inputs": {
       "sampling": "eps",
       "zsnr": false,
-      "model": [
-        "842",
-        0
-      ]
+      "model": ["842", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -2624,10 +1734,7 @@
   "684:460": {
     "inputs": {
       "expression": "a * (-1)\n",
-      "a": [
-        "461",
-        0
-      ]
+      "a": ["461", 0]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -2636,14 +1743,8 @@
   },
   "684:459": {
     "inputs": {
-      "stop_at_clip_layer": [
-        "684:460",
-        0
-      ],
-      "clip": [
-        "681",
-        1
-      ]
+      "stop_at_clip_layer": ["684:460", 0],
+      "clip": ["681", 1]
     },
     "class_type": "CLIPSetLastLayer",
     "_meta": {
@@ -2652,14 +1753,8 @@
   },
   "684:1011": {
     "inputs": {
-      "stop_at_clip_layer": [
-        "684:460",
-        0
-      ],
-      "clip": [
-        "842",
-        1
-      ]
+      "stop_at_clip_layer": ["684:460", 0],
+      "clip": ["842", 1]
     },
     "class_type": "CLIPSetLastLayer",
     "_meta": {
@@ -2670,10 +1765,7 @@
     "inputs": {
       "sampling": "eps",
       "zsnr": false,
-      "model": [
-        "635",
-        0
-      ]
+      "model": ["635", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -2684,10 +1776,7 @@
     "inputs": {
       "sampling": "v_prediction",
       "zsnr": true,
-      "model": [
-        "635",
-        0
-      ]
+      "model": ["635", 0]
     },
     "class_type": "ModelSamplingDiscrete",
     "_meta": {
@@ -2696,18 +1785,9 @@
   },
   "684:699": {
     "inputs": {
-      "switch": [
-        "987",
-        0
-      ],
-      "on_false": [
-        "684:697",
-        0
-      ],
-      "on_true": [
-        "684:1010",
-        0
-      ]
+      "switch": ["987", 0],
+      "on_false": ["684:697", 0],
+      "on_true": ["684:1010", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2716,18 +1796,9 @@
   },
   "684:700": {
     "inputs": {
-      "switch": [
-        "986",
-        0
-      ],
-      "on_false": [
-        "684:161",
-        0
-      ],
-      "on_true": [
-        "684:81",
-        0
-      ]
+      "switch": ["986", 0],
+      "on_false": ["684:161", 0],
+      "on_true": ["684:81", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2736,14 +1807,8 @@
   },
   "684:261": {
     "inputs": {
-      "text": [
-        "684:1012",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "text": ["684:1012", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -2753,12 +1818,9 @@
   "684:1012": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": [
-        "970",
-        0
-      ],
+      "populated_text": ["970", 0],
       "mode": "populate",
-      "seed": 43806559377085,
+      "seed": 870633316475127,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -2768,14 +1830,8 @@
   },
   "922:672": {
     "inputs": {
-      "stitcher": [
-        "922:1028",
-        0
-      ],
-      "inpainted_image": [
-        "922:1027",
-        0
-      ]
+      "stitcher": ["922:1028", 0],
+      "inpainted_image": ["922:1027", 0]
     },
     "class_type": "InpaintStitchImproved",
     "_meta": {
@@ -2784,14 +1840,8 @@
   },
   "922:1027": {
     "inputs": {
-      "samples": [
-        "922:671",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
+      "samples": ["922:671", 0],
+      "vae": ["436", 2]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -2800,46 +1850,16 @@
   },
   "922:671": {
     "inputs": {
-      "seed": [
-        "954",
-        0
-      ],
-      "steps": [
-        "906:705",
-        0
-      ],
-      "cfg": [
-        "906:706",
-        0
-      ],
-      "sampler_name": [
-        "906:703",
-        0
-      ],
-      "scheduler": [
-        "906:704",
-        0
-      ],
-      "denoise": [
-        "949",
-        0
-      ],
-      "model": [
-        "681",
-        0
-      ],
-      "positive": [
-        "905",
-        0
-      ],
-      "negative": [
-        "904",
-        0
-      ],
-      "latent_image": [
-        "922:669",
-        2
-      ]
+      "seed": ["954", 0],
+      "steps": ["906:705", 0],
+      "cfg": ["906:706", 0],
+      "sampler_name": ["906:703", 0],
+      "scheduler": ["906:704", 0],
+      "denoise": ["949", 0],
+      "model": ["456", 0],
+      "positive": ["905", 0],
+      "negative": ["904", 0],
+      "latent_image": ["922:669", 2]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -2849,26 +1869,11 @@
   "922:669": {
     "inputs": {
       "noise_mask": true,
-      "positive": [
-        "924:1046",
-        0
-      ],
-      "negative": [
-        "924:1045",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ],
-      "pixels": [
-        "922:1028",
-        1
-      ],
-      "mask": [
-        "922:1028",
-        2
-      ]
+      "positive": ["924:1046", 0],
+      "negative": ["924:1045", 0],
+      "vae": ["436", 2],
+      "pixels": ["922:1028", 1],
+      "mask": ["922:1028", 2]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -2888,33 +1893,21 @@
       "mask_fill_holes": true,
       "mask_expand_pixels": 0,
       "mask_invert": false,
-      "mask_blend_pixels": [
-        "934",
-        0
-      ],
+      "mask_blend_pixels": ["934", 0],
       "mask_hipass_filter": 0.1,
       "extend_for_outpainting": false,
       "extend_up_factor": 1,
       "extend_down_factor": 1,
       "extend_left_factor": 1,
       "extend_right_factor": 1,
-      "context_from_mask_extend_factor": [
-        "950",
-        0
-      ],
+      "context_from_mask_extend_factor": ["950", 0],
       "output_resize_to_target_size": false,
       "output_target_width": 2048,
       "output_target_height": 2048,
       "output_padding": "32",
       "device_mode": "gpu (much faster)",
-      "image": [
-        "1050",
-        0
-      ],
-      "mask": [
-        "1050",
-        1
-      ]
+      "image": ["1050", 0],
+      "mask": ["1050", 1]
     },
     "class_type": "InpaintCropImproved",
     "_meta": {
@@ -2923,18 +1916,9 @@
   },
   "922:674": {
     "inputs": {
-      "switch": [
-        "953",
-        0
-      ],
-      "on_false": [
-        "32",
-        0
-      ],
-      "on_true": [
-        "923:850",
-        0
-      ]
+      "switch": ["953", 0],
+      "on_false": ["70", 0],
+      "on_true": ["923:850", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2943,18 +1927,9 @@
   },
   "923:1030": {
     "inputs": {
-      "switch": [
-        "936",
-        0
-      ],
-      "on_false": [
-        "649",
-        0
-      ],
-      "on_true": [
-        "933:1049",
-        0
-      ]
+      "switch": ["936", 0],
+      "on_false": ["649", 0],
+      "on_true": ["933:1049", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2963,18 +1938,9 @@
   },
   "923:867": {
     "inputs": {
-      "switch": [
-        "936",
-        0
-      ],
-      "on_false": [
-        "15",
-        0
-      ],
-      "on_true": [
-        "933:836",
-        0
-      ]
+      "switch": ["936", 0],
+      "on_false": ["15", 0],
+      "on_true": ["933:836", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -2983,10 +1949,7 @@
   },
   "923:839": {
     "inputs": {
-      "mask": [
-        "923:848",
-        2
-      ]
+      "mask": ["923:848", 2]
     },
     "class_type": "MaskToImage",
     "_meta": {
@@ -2995,18 +1958,9 @@
   },
   "923:1037": {
     "inputs": {
-      "switch": [
-        "935",
-        0
-      ],
-      "on_false": [
-        "1050",
-        0
-      ],
-      "on_true": [
-        "923:846",
-        0
-      ]
+      "switch": ["935", 0],
+      "on_false": ["1050", 0],
+      "on_true": ["923:846", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -3016,10 +1970,7 @@
   "923:1038": {
     "inputs": {
       "expression": "a + 0.5",
-      "a": [
-        "906:706",
-        0
-      ]
+      "a": ["906:706", 0]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -3029,10 +1980,7 @@
   "923:1039": {
     "inputs": {
       "expression": "((a < 10) * a + (a >= 10) * max(18, a - 10))",
-      "a": [
-        "906:705",
-        0
-      ]
+      "a": ["906:705", 0]
     },
     "class_type": "MathExpression|pysssss",
     "_meta": {
@@ -3041,14 +1989,8 @@
   },
   "923:846": {
     "inputs": {
-      "samples": [
-        "923:845",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
+      "samples": ["923:845", 0],
+      "vae": ["436", 2]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -3057,46 +1999,16 @@
   },
   "923:845": {
     "inputs": {
-      "seed": [
-        "954",
-        0
-      ],
-      "steps": [
-        "906:705",
-        0
-      ],
-      "cfg": [
-        "906:706",
-        0
-      ],
-      "sampler_name": [
-        "906:703",
-        0
-      ],
-      "scheduler": [
-        "906:704",
-        0
-      ],
-      "denoise": [
-        "949",
-        0
-      ],
-      "model": [
-        "681",
-        0
-      ],
-      "positive": [
-        "905",
-        0
-      ],
-      "negative": [
-        "904",
-        0
-      ],
-      "latent_image": [
-        "923:847",
-        2
-      ]
+      "seed": ["954", 0],
+      "steps": ["906:705", 0],
+      "cfg": ["906:706", 0],
+      "sampler_name": ["906:703", 0],
+      "scheduler": ["906:704", 0],
+      "denoise": ["949", 0],
+      "model": ["456", 0],
+      "positive": ["905", 0],
+      "negative": ["904", 0],
+      "latent_image": ["923:847", 2]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -3106,26 +2018,11 @@
   "923:847": {
     "inputs": {
       "noise_mask": true,
-      "positive": [
-        "924:1046",
-        0
-      ],
-      "negative": [
-        "924:1045",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ],
-      "pixels": [
-        "923:848",
-        1
-      ],
-      "mask": [
-        "923:848",
-        2
-      ]
+      "positive": ["924:1046", 0],
+      "negative": ["924:1045", 0],
+      "vae": ["436", 2],
+      "pixels": ["923:848", 1],
+      "mask": ["923:848", 2]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -3134,14 +2031,8 @@
   },
   "923:1040": {
     "inputs": {
-      "samples": [
-        "923:1041",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ]
+      "samples": ["923:1041", 0],
+      "vae": ["436", 2]
     },
     "class_type": "VAEDecode",
     "_meta": {
@@ -3161,33 +2052,21 @@
       "mask_fill_holes": true,
       "mask_expand_pixels": 0,
       "mask_invert": false,
-      "mask_blend_pixels": [
-        "934",
-        0
-      ],
+      "mask_blend_pixels": ["934", 0],
       "mask_hipass_filter": 0.1,
       "extend_for_outpainting": false,
       "extend_up_factor": 1,
       "extend_down_factor": 1,
       "extend_left_factor": 1,
       "extend_right_factor": 1,
-      "context_from_mask_extend_factor": [
-        "950",
-        0
-      ],
+      "context_from_mask_extend_factor": ["950", 0],
       "output_resize_to_target_size": false,
       "output_target_width": 2048,
       "output_target_height": 2048,
       "output_padding": "32",
       "device_mode": "gpu (much faster)",
-      "image": [
-        "1050",
-        0
-      ],
-      "mask": [
-        "1050",
-        1
-      ]
+      "image": ["1050", 0],
+      "mask": ["1050", 1]
     },
     "class_type": "InpaintCropImproved",
     "_meta": {
@@ -3196,14 +2075,8 @@
   },
   "923:843": {
     "inputs": {
-      "stitcher": [
-        "923:848",
-        0
-      ],
-      "inpainted_image": [
-        "923:1040",
-        0
-      ]
+      "stitcher": ["923:848", 0],
+      "inpainted_image": ["923:1040", 0]
     },
     "class_type": "InpaintStitchImproved",
     "_meta": {
@@ -3212,18 +2085,9 @@
   },
   "923:850": {
     "inputs": {
-      "switch": [
-        "935",
-        0
-      ],
-      "on_false": [
-        "922:672",
-        0
-      ],
-      "on_true": [
-        "923:852",
-        0
-      ]
+      "switch": ["935", 0],
+      "on_false": ["922:672", 0],
+      "on_true": ["923:852", 0]
     },
     "class_type": "LazySwitchKJ",
     "_meta": {
@@ -3233,19 +2097,10 @@
   "923:852": {
     "inputs": {
       "method": "mkl",
-      "strength": [
-        "947",
-        0
-      ],
+      "strength": ["947", 0],
       "multithread": true,
-      "image_ref": [
-        "1050",
-        0
-      ],
-      "image_target": [
-        "923:843",
-        0
-      ]
+      "image_ref": ["1050", 0],
+      "image_target": ["923:843", 0]
     },
     "class_type": "ColorMatch",
     "_meta": {
@@ -3255,26 +2110,11 @@
   "923:837": {
     "inputs": {
       "noise_mask": true,
-      "positive": [
-        "924:1046",
-        0
-      ],
-      "negative": [
-        "924:1045",
-        0
-      ],
-      "vae": [
-        "436",
-        2
-      ],
-      "pixels": [
-        "923:1042",
-        0
-      ],
-      "mask": [
-        "923:1043",
-        0
-      ]
+      "positive": ["924:1046", 0],
+      "negative": ["924:1045", 0],
+      "vae": ["436", 2],
+      "pixels": ["923:1042", 0],
+      "mask": ["923:1043", 0]
     },
     "class_type": "InpaintModelConditioning",
     "_meta": {
@@ -3284,18 +2124,9 @@
   "923:1042": {
     "inputs": {
       "upscale_method": "nearest-exact",
-      "factor": [
-        "923:1030",
-        0
-      ],
-      "upscale_model": [
-        "923:867",
-        0
-      ],
-      "image": [
-        "923:846",
-        0
-      ]
+      "factor": ["923:1030", 0],
+      "upscale_model": ["923:867", 0],
+      "image": ["923:846", 0]
     },
     "class_type": "vsLinx_UpscaleByFactorWithModel",
     "_meta": {
@@ -3305,10 +2136,7 @@
   "923:1043": {
     "inputs": {
       "channel": "red",
-      "image": [
-        "923:1044",
-        0
-      ]
+      "image": ["923:1044", 0]
     },
     "class_type": "ImageToMask",
     "_meta": {
@@ -3318,18 +2146,9 @@
   "923:1044": {
     "inputs": {
       "upscale_method": "nearest-exact",
-      "factor": [
-        "923:1030",
-        0
-      ],
-      "upscale_model": [
-        "923:867",
-        0
-      ],
-      "image": [
-        "923:839",
-        0
-      ]
+      "factor": ["923:1030", 0],
+      "upscale_model": ["923:867", 0],
+      "image": ["923:839", 0]
     },
     "class_type": "vsLinx_UpscaleByFactorWithModel",
     "_meta": {
@@ -3338,46 +2157,16 @@
   },
   "923:1041": {
     "inputs": {
-      "seed": [
-        "954",
-        0
-      ],
-      "steps": [
-        "923:1039",
-        0
-      ],
-      "cfg": [
-        "923:1038",
-        1
-      ],
-      "sampler_name": [
-        "906:703",
-        0
-      ],
-      "scheduler": [
-        "906:704",
-        0
-      ],
-      "denoise": [
-        "946",
-        0
-      ],
-      "model": [
-        "681",
-        0
-      ],
-      "positive": [
-        "923:837",
-        0
-      ],
-      "negative": [
-        "923:837",
-        1
-      ],
-      "latent_image": [
-        "923:837",
-        2
-      ]
+      "seed": ["954", 0],
+      "steps": ["923:1039", 0],
+      "cfg": ["923:1038", 1],
+      "sampler_name": ["906:703", 0],
+      "scheduler": ["906:704", 0],
+      "denoise": ["946", 0],
+      "model": ["456", 0],
+      "positive": ["923:837", 0],
+      "negative": ["923:837", 1],
+      "latent_image": ["923:837", 2]
     },
     "class_type": "KSampler",
     "_meta": {
@@ -3386,14 +2175,8 @@
   },
   "924:1045": {
     "inputs": {
-      "text": [
-        "924:1048",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "text": ["924:1048", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -3402,14 +2185,8 @@
   },
   "924:1046": {
     "inputs": {
-      "text": [
-        "924:1047",
-        0
-      ],
-      "clip": [
-        "684:459",
-        0
-      ]
+      "text": ["924:1047", 0],
+      "clip": ["684:459", 0]
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
@@ -3419,12 +2196,9 @@
   "924:1047": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": [
-        "984",
-        0
-      ],
+      "populated_text": ["984", 0],
       "mode": "populate",
-      "seed": 368154881459225,
+      "seed": 368154881459213,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -3435,12 +2209,9 @@
   "924:1048": {
     "inputs": {
       "wildcard_text": "",
-      "populated_text": [
-        "985",
-        0
-      ],
+      "populated_text": ["985", 0],
       "mode": "populate",
-      "seed": 523606705155357,
+      "seed": 41997569973898,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
