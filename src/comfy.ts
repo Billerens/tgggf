@@ -72,7 +72,7 @@ export type ComfyFlow = "base" | "i2i";
 
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 const BASE_WORKFLOW_TEMPLATE_PATH = "comfy_api.json";
-const I2I_WORKFLOW_TEMPLATE_PATH = "comfy_api_i2i.json";
+const I2I_WORKFLOW_TEMPLATE_PATH = "comfy_api_i2i_2.json";
 const POSITIVE_PROMPT_NODE_ID = "1050";
 const SIZE_NODE_ID = "141";
 const SEED_NODE_ID = "137";
@@ -82,9 +82,13 @@ const STYLE_STRENGTH_NODE_ID = "430";
 const COMPOSITION_STRENGTH_NODE_ID = "431";
 const HIRES_FIX_NODE_ID = "849";
 const I2I_POSITIVE_PROMPT_NODE_ID = "523";
+const I2I_IMG2IMG_PROMPT_NODE_ID = "991";
+const I2I_INPAINT_POSITIVE_NODE_ID = "984";
 const I2I_SEED_NODE_ID = "522";
 const I2I_SOURCE_IMAGE_NODE_ID = "454";
+const I2I_ALTERNATIVE_STYLE_IMAGE_NODE_ID = "574";
 const I2I_STYLE_STRENGTH_NODE_ID = "430";
+const I2I_MULTI_IMAGE_LIST_NODE_ID = "745";
 const BASE_OUTPUT_TITLE_PREFERENCES = [
   "Preview after Detailing",
   "Preview after Inpaint",
@@ -100,9 +104,16 @@ const HISTORY_POLL_INTERVAL_MS = 1200;
 interface ComfyFlowConfig {
   templatePath: string;
   positivePromptNodeId: string;
+  positivePromptNodeIds?: string[];
+  promptFallbackNodeId?: string;
+  promptSwitchTitle?: string;
+  promptSwitchInputName?: string;
+  promptSwitchFallbackValue?: number | string | boolean;
   sizeNodeId?: string;
   seedNodeId?: string;
   styleImageNodeId?: string;
+  styleImageNodeIds?: string[];
+  imageListNodeId?: string;
   compositionImageNodeId?: string;
   styleStrengthNodeId?: string;
   compositionStrengthNodeId?: string;
@@ -135,8 +146,22 @@ const FLOW_CONFIGS: Record<ComfyFlow, ComfyFlowConfig> = {
   i2i: {
     templatePath: I2I_WORKFLOW_TEMPLATE_PATH,
     positivePromptNodeId: I2I_POSITIVE_PROMPT_NODE_ID,
+    positivePromptNodeIds: [
+      I2I_IMG2IMG_PROMPT_NODE_ID,
+      I2I_INPAINT_POSITIVE_NODE_ID,
+      I2I_POSITIVE_PROMPT_NODE_ID,
+    ],
+    promptFallbackNodeId: "1051",
+    promptSwitchTitle: "prompt switch",
+    promptSwitchInputName: "Input",
+    promptSwitchFallbackValue: 1,
     seedNodeId: I2I_SEED_NODE_ID,
-    styleImageNodeId: I2I_SOURCE_IMAGE_NODE_ID,
+    styleImageNodeId: I2I_ALTERNATIVE_STYLE_IMAGE_NODE_ID,
+    styleImageNodeIds: [
+      I2I_ALTERNATIVE_STYLE_IMAGE_NODE_ID,
+      I2I_SOURCE_IMAGE_NODE_ID,
+    ],
+    imageListNodeId: I2I_MULTI_IMAGE_LIST_NODE_ID,
     styleStrengthNodeId: I2I_STYLE_STRENGTH_NODE_ID,
     outputTitlePreferences: I2I_OUTPUT_TITLE_PREFERENCES,
     detailPromptTitles: {
@@ -304,16 +329,43 @@ function createWorkflowInstance(template: ComfyWorkflow) {
   return structuredClone(template) as ComfyWorkflow;
 }
 
+function setPromptOnNode(
+  workflow: ComfyWorkflow,
+  prompt: string,
+  nodeId: string,
+  strict: boolean,
+) {
+  const node = workflow[nodeId];
+  if (!node || !node.inputs) {
+    if (strict) {
+      throw new Error(`Нода ${nodeId} не найдена в workflow.`);
+    }
+    return false;
+  }
+  if (typeof node.inputs.text === "string" || typeof node.inputs.text === "undefined") {
+    node.inputs.text = prompt;
+    return true;
+  }
+  if (typeof node.inputs.value === "string" || typeof node.inputs.value === "undefined") {
+    node.inputs.value = prompt;
+    return true;
+  }
+  if (typeof node.inputs.string === "string" || typeof node.inputs.string === "undefined") {
+    node.inputs.string = prompt;
+    return true;
+  }
+  if (strict) {
+    throw new Error(`Нода ${nodeId} не содержит текстовый input (text/value/string).`);
+  }
+  return false;
+}
+
 function setPositivePrompt(
   workflow: ComfyWorkflow,
   prompt: string,
   nodeId: string = POSITIVE_PROMPT_NODE_ID,
 ) {
-  const node = workflow[nodeId];
-  if (!node || !node.inputs) {
-    throw new Error(`Нода ${nodeId} не найдена в workflow.`);
-  }
-  node.inputs.text = prompt;
+  setPromptOnNode(workflow, prompt, nodeId, true);
 }
 
 function setSize(
@@ -403,6 +455,40 @@ function setBooleanByExactTitle(workflow: ComfyWorkflow, title: string, value?: 
   }
 }
 
+function setBooleanInputByExactTitle(
+  workflow: ComfyWorkflow,
+  title: string,
+  inputName: string,
+  value?: boolean,
+) {
+  if (typeof value !== "boolean") return;
+  const target = title.toLowerCase();
+  for (const node of Object.values(workflow)) {
+    if (!node.inputs) continue;
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle !== target) continue;
+    const current = node.inputs[inputName];
+    if (typeof current === "boolean" || Array.isArray(current) || typeof current === "undefined") {
+      node.inputs[inputName] = value;
+    }
+  }
+}
+
+function setInputByExactTitle(
+  workflow: ComfyWorkflow,
+  title: string,
+  inputName: string,
+  value: string | number | boolean,
+) {
+  const target = title.toLowerCase();
+  for (const node of Object.values(workflow)) {
+    if (!node.inputs) continue;
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle !== target) continue;
+    node.inputs[inputName] = value;
+  }
+}
+
 function hasNodeByExactTitle(workflow: ComfyWorkflow, title: string) {
   const target = title.toLowerCase();
   for (const node of Object.values(workflow)) {
@@ -458,6 +544,15 @@ function applyDetailing(
       // i2i templates may not expose the legacy "Inpaint?" switch; keep a conservative denoise baseline.
       setSliderByExactTitle(workflow, "Denoise", 0.55);
       setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", 0.24);
+      // Explicitly bypass all part-detailers in i2i when detailing is disabled.
+      setBooleanInputByExactTitle(workflow, "Face bypass", "bypass", true);
+      setBooleanInputByExactTitle(workflow, "Eyes bypass", "bypass", true);
+      setBooleanInputByExactTitle(workflow, "Nose bypass", "bypass", true);
+      setBooleanInputByExactTitle(workflow, "Lips bypass", "bypass", true);
+      setBooleanInputByExactTitle(workflow, "Hands bypass", "bypass", true);
+      setBooleanInputByExactTitle(workflow, "Nipples bypass", "bypass", true);
+      setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", true);
+      setBooleanInputByExactTitle(workflow, "Penis bypass", "bypass", true);
     }
     return;
   }
@@ -489,6 +584,16 @@ function applyDetailing(
     const i2iDenoise = i2iDenoiseMap[detailing.level as DetailLevel];
     setSliderByExactTitle(workflow, "Denoise", i2iDenoise.base);
     setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", i2iDenoise.hires);
+    // Mirror "Enable * Detailer" behavior using bypass switches present in i2i_2 flow.
+    setBooleanInputByExactTitle(workflow, "Face bypass", "bypass", !enabledTargets.has("face"));
+    setBooleanInputByExactTitle(workflow, "Eyes bypass", "bypass", !enabledTargets.has("eyes"));
+    setBooleanInputByExactTitle(workflow, "Nose bypass", "bypass", !enabledTargets.has("nose"));
+    setBooleanInputByExactTitle(workflow, "Lips bypass", "bypass", !enabledTargets.has("lips"));
+    setBooleanInputByExactTitle(workflow, "Hands bypass", "bypass", !enabledTargets.has("hands"));
+    // Always bypass erotic detailers in app flow.
+    setBooleanInputByExactTitle(workflow, "Nipples bypass", "bypass", true);
+    setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", true);
+    setBooleanInputByExactTitle(workflow, "Penis bypass", "bypass", true);
   }
   setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : 0);
   setSliderByExactTitle(workflow, "Denoise Eyes", enabledTargets.has("eyes") ? denoise.eyes : 0);
@@ -540,6 +645,21 @@ function setCompositionImageFilename(
   const node = workflow[nodeId];
   if (!node || !node.inputs) return;
   node.inputs.image = filename;
+}
+
+function setImageListSelectedPaths(
+  workflow: ComfyWorkflow,
+  filename?: string,
+  nodeId?: string,
+) {
+  if (!nodeId || !filename) return;
+  const node = workflow[nodeId];
+  if (!node || !node.inputs) return;
+  const variants = [filename, `${filename} [input]`, `input/${filename}`];
+  node.inputs.selected_paths = JSON.stringify(variants);
+  if (typeof node.inputs.fail_if_empty === "boolean") {
+    node.inputs.fail_if_empty = false;
+  }
 }
 
 function setCheckpointName(workflow: ComfyWorkflow, checkpointName?: string) {
@@ -836,12 +956,18 @@ function extractMetaFromPayload(payload: unknown): ComfyImageGenerationMeta {
     }
   }
 
-  const promptNodeIds = [POSITIVE_PROMPT_NODE_ID, I2I_POSITIVE_PROMPT_NODE_ID];
+  const promptNodeIds = [
+    POSITIVE_PROMPT_NODE_ID,
+    I2I_POSITIVE_PROMPT_NODE_ID,
+    I2I_IMG2IMG_PROMPT_NODE_ID,
+    I2I_INPAINT_POSITIVE_NODE_ID,
+  ];
   for (const nodeId of promptNodeIds) {
     const promptNode = promptGraph?.[nodeId] as Record<string, unknown> | undefined;
     const promptInputs = promptNode?.inputs as Record<string, unknown> | undefined;
-    const promptFromGraph = promptInputs?.text;
-    if (typeof promptFromGraph === "string" && promptFromGraph.trim()) {
+    const candidates = [promptInputs?.text, promptInputs?.value, promptInputs?.string];
+    const promptFromGraph = candidates.find((value) => typeof value === "string" && value.trim()) as string | undefined;
+    if (promptFromGraph) {
       result.prompt = promptFromGraph.trim();
       break;
     }
@@ -1045,7 +1171,34 @@ export async function generateComfyImages(
       }
       const template = await loadWorkflowTemplate(item.flow);
       const workflow = createWorkflowInstance(template);
-      setPositivePrompt(workflow, item.prompt, flowConfig.positivePromptNodeId);
+      const promptNodeIds =
+        flowConfig.positivePromptNodeIds && flowConfig.positivePromptNodeIds.length > 0
+          ? flowConfig.positivePromptNodeIds
+          : [flowConfig.positivePromptNodeId];
+      let promptApplied = false;
+      for (const nodeId of promptNodeIds) {
+        promptApplied = setPromptOnNode(workflow, item.prompt, nodeId, false) || promptApplied;
+      }
+      if (flowConfig.promptFallbackNodeId) {
+        promptApplied =
+          setPromptOnNode(workflow, item.prompt, flowConfig.promptFallbackNodeId, false) ||
+          promptApplied;
+      }
+      if (!promptApplied) {
+        setPositivePrompt(workflow, item.prompt, flowConfig.positivePromptNodeId);
+      }
+      if (
+        flowConfig.promptSwitchTitle &&
+        flowConfig.promptSwitchInputName &&
+        flowConfig.promptSwitchFallbackValue !== undefined
+      ) {
+        setInputByExactTitle(
+          workflow,
+          flowConfig.promptSwitchTitle,
+          flowConfig.promptSwitchInputName,
+          flowConfig.promptSwitchFallbackValue,
+        );
+      }
       if (flowConfig.sizeNodeId) {
         setSize(workflow, item.width, item.height, flowConfig.sizeNodeId);
       }
@@ -1076,9 +1229,15 @@ export async function generateComfyImages(
           auth,
           signal,
         );
-        if (flowConfig.styleImageNodeId) {
-          setStyleImageFilename(workflow, uploadedFilename, flowConfig.styleImageNodeId);
+        const styleNodeIds = new Set<string>();
+        if (flowConfig.styleImageNodeId) styleNodeIds.add(flowConfig.styleImageNodeId);
+        for (const nodeId of flowConfig.styleImageNodeIds ?? []) {
+          styleNodeIds.add(nodeId);
         }
+        for (const nodeId of styleNodeIds) {
+          setStyleImageFilename(workflow, uploadedFilename, nodeId);
+        }
+        setImageListSelectedPaths(workflow, uploadedFilename, flowConfig.imageListNodeId);
         if (flowConfig.compositionImageNodeId) {
           setCompositionImageFilename(
             workflow,

@@ -534,19 +534,22 @@ export default function App() {
 
         let sideRef = "";
         if (generateSideView) {
-          const sidePrompt = `${promptBundle.fullBodyPrompt}, full body, side view, profile view, neutral standing pose, calm pose, relaxed posture, hands at sides, arms relaxed, same person as reference, same hairstyle, same hair color, same outfit as reference image, same clothing details, same accessories, no outfit change, no hairstyle change, same body type, consistent character identity, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`;
+          const sideSeed = packSeed + 101;
+          const sideReferenceStrength = 0.72;
+          const sideCompositionStrength = 0.22;
+          const sidePrompt = `${promptBundle.fullBodyPrompt}, full body, strict side profile, exact 90 degree side view, body fully rotated sideways, profile silhouette, single eye visible, single cheek visible, shoulder line in profile, hips in profile, no frontal pose, no three-quarter pose, no back pose, neutral standing pose, relaxed posture, arms relaxed, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`;
           const sideUrls = await generateComfyImages(
             [
               {
-                flow: "i2i",
+                flow: "base",
                 prompt: sidePrompt,
                 width: fullBodyWidth,
                 height: fullBodyHeight,
-                seed: packSeed,
+                seed: sideSeed,
                 checkpointName: personaDraft.imageCheckpoint || undefined,
                 styleReferenceImage: fullBodyRef,
-                styleStrength: 1,
-                compositionStrength: 0,
+                styleStrength: sideReferenceStrength,
+                compositionStrength: sideCompositionStrength,
                 forceHiResFix: useHiResFix,
                 enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
@@ -571,8 +574,8 @@ export default function App() {
           if (sideRef) {
             setLookImageMetaByUrl((prev) => ({
               ...prev,
-              ...(sideUrls[0] ? { [sideUrls[0]]: { seed: packSeed, prompt: sidePrompt } } : {}),
-              [sideRef]: { seed: packSeed, prompt: sidePrompt },
+              ...(sideUrls[0] ? { [sideUrls[0]]: { seed: sideSeed, prompt: sidePrompt } } : {}),
+              [sideRef]: { seed: sideSeed, prompt: sidePrompt },
             }));
             patchPack({ fullBodySideUrl: sideRef });
           }
@@ -580,19 +583,22 @@ export default function App() {
 
         let backRef = "";
         if (generateBackView) {
-          const backPrompt = `${promptBundle.fullBodyPrompt}, full body, back view, from behind, neutral standing pose, calm pose, relaxed posture, hands at sides, arms relaxed, same person as reference, same hairstyle, same hair color, same outfit as reference image, same clothing details, same accessories, no outfit change, no hairstyle change, same body type, consistent character identity, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`;
+          const backSeed = packSeed + 211;
+          const backReferenceStrength = 0.72;
+          const backCompositionStrength = 0.22;
+          const backPrompt = `${promptBundle.fullBodyPrompt}, full body, strict back view, rear view, exactly from behind, back facing camera, face not visible, no frontal pose, no side pose, no three-quarter pose, shoulder blades visible from behind, back silhouette centered, neutral standing pose, relaxed posture, arms relaxed, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`;
           const backUrls = await generateComfyImages(
             [
               {
-                flow: "i2i",
+                flow: "base",
                 prompt: backPrompt,
                 width: fullBodyWidth,
                 height: fullBodyHeight,
-                seed: packSeed,
+                seed: backSeed,
                 checkpointName: personaDraft.imageCheckpoint || undefined,
                 styleReferenceImage: fullBodyRef,
-                styleStrength: 1,
-                compositionStrength: 0,
+                styleStrength: backReferenceStrength,
+                compositionStrength: backCompositionStrength,
                 forceHiResFix: useHiResFix,
                 enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
@@ -617,8 +623,8 @@ export default function App() {
           if (backRef) {
             setLookImageMetaByUrl((prev) => ({
               ...prev,
-              ...(backUrls[0] ? { [backUrls[0]]: { seed: packSeed, prompt: backPrompt } } : {}),
-              [backRef]: { seed: packSeed, prompt: backPrompt },
+              ...(backUrls[0] ? { [backUrls[0]]: { seed: backSeed, prompt: backPrompt } } : {}),
+              [backRef]: { seed: backSeed, prompt: backPrompt },
             }));
             patchPack({ fullBodyBackUrl: backRef });
           }

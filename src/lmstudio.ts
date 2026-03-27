@@ -394,6 +394,14 @@ export interface PersonaLookPromptResponse {
   detailPrompts: PersonaLookDetailPrompts;
 }
 
+interface PersonaLookIdentityLocks {
+  face?: string;
+  eyes?: string;
+  hair?: string;
+  body?: string;
+  outfit?: string;
+}
+
 export async function generateThemedComfyPrompt(
   settings: AppSettings,
   persona: Pick<
@@ -731,7 +739,27 @@ export async function generatePersonaDrafts(
   return personas;
 }
 
-function parseLookPromptJson(text: string): PersonaLookPromptResponse {
+function splitTags(value: string) {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function mergeRequiredTags(basePrompt: string, requiredTags: string[]) {
+  const existing = splitTags(basePrompt);
+  const existingLower = new Set(existing.map((tag) => tag.toLowerCase()));
+  const normalizedRequired = requiredTags
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .filter((tag) => !existingLower.has(tag.toLowerCase()));
+  return [...normalizedRequired, ...existing].join(", ");
+}
+
+function parseLookPromptJson(
+  text: string,
+  payload?: PersonaLookPromptRequest,
+): PersonaLookPromptResponse {
   const trimmed = text.trim();
   const jsonStart = trimmed.indexOf("{");
   const jsonEnd = trimmed.lastIndexOf("}");
@@ -741,12 +769,36 @@ function parseLookPromptJson(text: string): PersonaLookPromptResponse {
       : trimmed;
   const parsed = JSON.parse(chunk) as Partial<PersonaLookPromptResponse>;
 
-  const avatarPrompt = (parsed.avatarPrompt ?? "").trim();
-  const fullBodyPrompt = (parsed.fullBodyPrompt ?? "").trim();
+  let avatarPrompt = (parsed.avatarPrompt ?? "").trim();
+  let fullBodyPrompt = (parsed.fullBodyPrompt ?? "").trim();
   const detailPromptsRaw =
     parsed.detailPrompts && typeof parsed.detailPrompts === "object"
       ? (parsed.detailPrompts as Partial<PersonaLookDetailPrompts>)
       : {};
+  const identityLocksRaw =
+    (parsed as Record<string, unknown>).identityLocks &&
+    typeof (parsed as Record<string, unknown>).identityLocks === "object"
+      ? ((parsed as Record<string, unknown>).identityLocks as PersonaLookIdentityLocks)
+      : {};
+  const identityLocks = {
+    face: (identityLocksRaw.face ?? "").trim(),
+    eyes: (identityLocksRaw.eyes ?? "").trim(),
+    hair: (identityLocksRaw.hair ?? "").trim(),
+    body: (identityLocksRaw.body ?? "").trim(),
+    outfit: (identityLocksRaw.outfit ?? "").trim(),
+  };
+
+  if (payload) {
+    const mustKeep = [
+      identityLocks.hair,
+      identityLocks.face,
+      identityLocks.eyes,
+      identityLocks.body,
+    ].filter(Boolean);
+    const mustKeepFullBody = [...mustKeep, identityLocks.outfit].filter(Boolean);
+    avatarPrompt = mergeRequiredTags(avatarPrompt, mustKeep);
+    fullBodyPrompt = mergeRequiredTags(fullBodyPrompt, mustKeepFullBody);
+  }
   const detailPrompts: PersonaLookDetailPrompts = {
     face:
       (detailPromptsRaw.face ?? "").trim() ||
@@ -792,10 +844,17 @@ export async function generatePersonaLookPrompts(
   const systemPrompt = [
     "Ты конвертер описаний внешности в ComfyUI prompts.",
     "Верни ТОЛЬКО JSON объект без markdown и пояснений.",
-    'Формат строго: {"avatarPrompt":"...","fullBodyPrompt":"...","detailPrompts":{"face":"...","eyes":"...","nose":"...","lips":"...","hands":"..."}}',
+    'Формат строго: {"avatarPrompt":"...","fullBodyPrompt":"...","detailPrompts":{"face":"...","eyes":"...","nose":"...","lips":"...","hands":"..."},"identityLocks":{"face":"...","eyes":"...","hair":"...","body":"...","outfit":"..."}}',
     "Оба промпта должны быть только comma-separated English tags.",
     "detailPrompts.* также только comma-separated English tags.",
+    "identityLocks.* также comma-separated English tags (короткие, конкретные).",
     "Каждый тег короткий (1-2 слова), конкретный и визуальный.",
+    "Не выдумывай лишние детали. Используй только данные из Appearance/Style/Archetype.",
+    "Если деталь не указана, оставляй нейтрально и безопасно (без экзотики и фетиш-элементов).",
+    "Сначала зафиксируй identityLocks из входного описания (лицо/глаза/волосы/тело/outfit), затем строй avatar/fullBody вокруг них.",
+    "Особый приоритет: прическа (hair). Точно фиксируй длину, укладку, пробор, текстуру и цвет волос.",
+    "Прическа должна быть максимально консистентной между avatarPrompt и fullBodyPrompt.",
+    "Если волосы указаны слабо, дополни только нейтрально (например neat hairstyle), но не меняй базовый цвет/длину.",
     "Сохраняй консистентность идентичности между avatarPrompt и fullBodyPrompt.",
     "Оба prompt должны описывать только одного человека: solo, single subject, без других людей в кадре.",
     "Запрещены посторонние персонажи, лишние руки/лица/тела, группы людей и странные анатомические артефакты.",
@@ -807,6 +866,9 @@ export async function generatePersonaLookPrompts(
     "Тематическую/спец-одежду добавляй только если это прямо следует из описания персонажа (Appearance/Style/Archetype).",
     "Не добавляй провокационные/фетишные элементы гардероба, если они явно не запрошены в описании.",
     "Обязательно повторяй стабильные признаки лица/волос/глаз/телосложения/стиля.",
+    "Hair-теги должны идти в начале обоих prompt (после quality-тегов), чтобы модель не теряла прическу.",
+    "Если вход содержит конкретные черты лица/глаз/волос/роста/маркеров — они обязательны в обоих prompt.",
+    "Рост добавляй аккуратно как нейтральный дескриптор пропорций (без фантазий).",
     "Разница между полями: avatarPrompt = close face portrait/headshot (лицо крупно в кадре); fullBodyPrompt = full body.",
     "Для fullBodyPrompt всегда указывай clean/plain background (solid studio backdrop, no environment).",
     "Для fullBodyPrompt задавай спокойную нейтральную позу (neutral standing pose, relaxed posture, arms relaxed).",
@@ -818,12 +880,24 @@ export async function generatePersonaLookPrompts(
     "detailPrompts.hands описывает аккуратные пальцы/ногти/анатомию кистей без лишних пальцев.",
     "В detailPrompts не добавляй сексуализированных тегов и NSFW.",
     "Без противоречащих тегов и без описаний предложениями.",
+    "Запрещено добавлять новые яркие атрибуты, которых нет во входе (например необычный цвет глаз/волос, специфический фетиш-гардероб, экстремальные черты).",
   ].join("\n");
 
   const input = [
     `Name: ${payload.name || "Unknown"}`,
     `Personality: ${payload.personalityPrompt || "-"}`,
-    `Appearance: ${formatAppearanceProfile(payload.appearance)}`,
+    `Appearance (full): ${formatAppearanceProfile(payload.appearance)}`,
+    `Appearance.faceDescription: ${payload.appearance.faceDescription || "-"}`,
+    `Appearance.height: ${payload.appearance.height || "-"}`,
+    `Appearance.eyes: ${payload.appearance.eyes || "-"}`,
+    `Appearance.lips: ${payload.appearance.lips || "-"}`,
+    `Appearance.hair: ${payload.appearance.hair || "-"}`,
+    `Appearance.skin: ${payload.appearance.skin || "-"}`,
+    `Appearance.ageType: ${payload.appearance.ageType || "-"}`,
+    `Appearance.bodyType: ${payload.appearance.bodyType || "-"}`,
+    `Appearance.markers: ${payload.appearance.markers || "-"}`,
+    `Appearance.accessories: ${payload.appearance.accessories || "-"}`,
+    `Appearance.clothingStyle: ${payload.appearance.clothingStyle || "-"}`,
     `Style: ${payload.stylePrompt || "-"}`,
     `Archetype: ${payload.advanced.core.archetype || "-"}`,
     `Voice tone: ${payload.advanced.voice.tone || "-"}`,
@@ -839,7 +913,7 @@ export async function generatePersonaLookPrompts(
       input,
       system_prompt: systemPrompt,
       max_output_tokens: Math.max(220, Math.min(700, settings.maxTokens)),
-      temperature: Math.max(0.4, Math.min(0.9, settings.temperature)),
+      temperature: Math.max(0.25, Math.min(0.55, settings.temperature)),
       store: false,
     }),
   });
@@ -862,5 +936,5 @@ export async function generatePersonaLookPrompts(
     throw new Error("Модель вернула пустой ответ для prompts внешности.");
   }
 
-  return parseLookPromptJson(text);
+  return parseLookPromptJson(text, payload);
 }
