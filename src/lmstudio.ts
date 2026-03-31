@@ -468,12 +468,20 @@ export async function generateThemedComfyPrompt(
 
   const systemPrompt = [
     "Ты генератор одного ComfyUI prompt для изображения персонажа.",
-    "Ответ должен содержать только один блок <comfyui_prompt>...</comfyui_prompt> без markdown.",
-    "Внутри блока только comma-separated English tags.",
+    "Ответ должен содержать ровно два блока без markdown: сначала <theme_tags>...</theme_tags>, затем <comfyui_prompt>...</comfyui_prompt>.",
+    "В блоке <theme_tags> верни 8-12 кратких comma-separated English tags, которые напрямую описывают тему/контекст кадра.",
+    "theme_tags должны быть конкретными (локация, роль, действие, атмосфера) и не противоречить теме.",
+    "Внутри ОБОИХ блоков разрешены ТОЛЬКО comma-separated English tags.",
+    "Каждый тег: 1-4 слова, lowercase, без точки в конце.",
+    "ЗАПРЕЩЕНО: полные предложения, художественные описания, markdown, двоеточия с пояснениями, нумерация, буллеты, кавычки.",
+    "ЗАПРЕЩЕНО: конструкции типа 'a woman standing...', 'she is...', 'this scene shows...'.",
+    "Правильный стиль: 'solo, one person, upper body, soft rim light, city street at night'.",
     "Описывай строго одного человека (solo, single subject, one person).",
     "Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
+    "Все теги из <theme_tags> ОБЯЗАТЕЛЬНО должны присутствовать в <comfyui_prompt> без потери смысла.",
     "Используй уместную одежду, если тема не требует специального костюма.",
     "Добавляй композицию, свет, фон, ракурс, качество.",
+    "Перед отправкой проверь self-check: если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
     "Без пояснений вне блока.",
   ].join("\n");
 
@@ -495,7 +503,7 @@ export async function generateThemedComfyPrompt(
       input,
       system_prompt: systemPrompt,
       max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
-      temperature: Math.max(0.5, Math.min(1, settings.temperature)),
+      temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
       store: false,
     }),
   });
@@ -520,12 +528,49 @@ export async function generateThemedComfyPrompt(
 
   const parsed = splitAssistantContent(text);
   const prompt = (parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt ?? "").trim();
-  if (prompt) return prompt;
+  const themeTags = extractThemeTags(text, topic);
+  if (prompt) {
+    return mergeRequiredTags(prompt, themeTags);
+  }
 
-  return text
+  const fallbackPrompt = text
     .replace(/<\/?comfyui_prompt>/gi, "")
+    .replace(/<\/?theme_tags>/gi, "")
     .replace(/\s+/g, " ")
     .trim();
+  return mergeRequiredTags(fallbackPrompt, themeTags);
+}
+
+function extractThemeTags(text: string, topic: string): string[] {
+  const direct = extractTaggedBlock(text, "theme_tags");
+  const parsedDirect = splitTags(direct || "");
+  if (parsedDirect.length > 0) return parsedDirect;
+  return fallbackThemeTags(topic);
+}
+
+function extractTaggedBlock(text: string, tag: string): string {
+  const pattern = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
+  const match = text.match(pattern);
+  return (match?.[1] ?? "").trim();
+}
+
+function fallbackThemeTags(topic: string): string[] {
+  const normalized = topic
+    .toLowerCase()
+    .replace(/[\n\r\t]+/g, " ")
+    .replace(/[.;:!?()[\]{}"'`]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return [];
+
+  const rawParts = normalized
+    .split(/[,\-\\/|]+/)
+    .flatMap((part) => part.split(" "))
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const deduped = Array.from(new Set(rawParts));
+  return deduped.slice(0, 8);
 }
 
 function normalizeBaseUrl(url: string) {
