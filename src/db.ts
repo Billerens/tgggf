@@ -96,6 +96,7 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
 
   merged.model = merged.model.trim() || DEFAULT_SETTINGS.model;
   merged.comfyBaseUrl = merged.comfyBaseUrl.trim() || DEFAULT_SETTINGS.comfyBaseUrl;
+  merged.saveComfyOutputs = Boolean(merged.saveComfyOutputs);
   if (!Number.isFinite(merged.chatStyleStrength)) {
     merged.chatStyleStrength = DEFAULT_SETTINGS.chatStyleStrength;
   }
@@ -174,6 +175,7 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
 const DEFAULT_SETTINGS: AppSettings = {
   lmBaseUrl: resolveDefaultBaseUrl(),
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
+  saveComfyOutputs: false,
   model: "local-model",
   temperature: 0.7,
   maxTokens: 600,

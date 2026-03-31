@@ -1,4 +1,4 @@
-import type { EndpointAuthConfig } from "./types";
+import type { EndpointAuthConfig, ImageGenerationMeta } from "./types";
 
 interface ComfyNode {
   class_type?: string;
@@ -43,10 +43,7 @@ declare global {
   }
 }
 
-export interface ComfyImageGenerationMeta {
-  seed?: number;
-  prompt?: string;
-}
+export type ComfyImageGenerationMeta = ImageGenerationMeta;
 
 export interface ComfyGenerationItem {
   prompt: string;
@@ -63,6 +60,7 @@ export interface ComfyGenerationItem {
   upscaleFactor?: number;
   hiresFixDenoise?: number;
   colorFixStrength?: number;
+  saveComfyOutputs?: boolean;
   outputNodeTitleIncludes?: string[];
   strictOutputNodeMatch?: boolean;
   pickLatestImageOnly?: boolean;
@@ -894,6 +892,14 @@ function publishComfyDebugSnapshot(snapshot: unknown) {
   }
 }
 
+function stripImageSaverNodes(workflow: ComfyWorkflow) {
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    if (node.class_type === "Image Saver") {
+      delete workflow[nodeId];
+    }
+  }
+}
+
 function dataUrlToBlob(dataUrl: string) {
   const [meta, payload] = dataUrl.split(",");
   if (!meta || !payload) {
@@ -1082,6 +1088,18 @@ function extractMetaFromPayload(payload: unknown): ComfyImageGenerationMeta {
 
   // Comfy prompt-style metadata.
   const promptGraph = root?.prompt as Record<string, unknown> | undefined;
+  if (promptGraph) {
+    const nodeIds = Object.keys(promptGraph);
+    if (
+      nodeIds.includes(I2I_SEED_NODE_ID) ||
+      nodeIds.includes(I2I_MULTI_IMAGE_LIST_NODE_ID) ||
+      nodeIds.includes(I2I_IMG2IMG_PROMPT_NODE_ID)
+    ) {
+      result.flow = "i2i";
+    } else if (nodeIds.includes(SEED_NODE_ID) || nodeIds.includes(POSITIVE_PROMPT_NODE_ID)) {
+      result.flow = "base";
+    }
+  }
   const seedNodeIds = [SEED_NODE_ID, I2I_SEED_NODE_ID];
   for (const nodeId of seedNodeIds) {
     const seedNode = promptGraph?.[nodeId] as Record<string, unknown> | undefined;
@@ -1107,6 +1125,18 @@ function extractMetaFromPayload(payload: unknown): ComfyImageGenerationMeta {
     if (promptFromGraph) {
       result.prompt = promptFromGraph.trim();
       break;
+    }
+  }
+
+  if (promptGraph) {
+    for (const node of Object.values(promptGraph)) {
+      const rec = node as Record<string, unknown> | undefined;
+      const inputs = rec?.inputs as Record<string, unknown> | undefined;
+      const ckpt = inputs?.ckpt_name;
+      if (typeof ckpt === "string" && ckpt.trim()) {
+        result.model = ckpt.trim();
+        break;
+      }
     }
   }
 
@@ -1144,6 +1174,11 @@ function extractMetaFromPayload(payload: unknown): ComfyImageGenerationMeta {
       ) {
         if (typeof child === "string" && child.trim()) {
           result.prompt = child.trim();
+        }
+      }
+      if (!result.model && (normalizedKey.includes("ckpt") || normalizedKey.includes("checkpoint") || normalizedKey === "model")) {
+        if (typeof child === "string" && child.trim()) {
+          result.model = child.trim();
         }
       }
       visit(child, depth + 1);
@@ -1288,6 +1323,7 @@ export async function generateComfyImages(
             upscaleFactor: item.upscaleFactor,
             hiresFixDenoise: item.hiresFixDenoise,
             colorFixStrength: item.colorFixStrength,
+            saveComfyOutputs: item.saveComfyOutputs,
             outputNodeTitleIncludes: item.outputNodeTitleIncludes,
             strictOutputNodeMatch: item.strictOutputNodeMatch,
             pickLatestImageOnly: item.pickLatestImageOnly,
@@ -1401,6 +1437,10 @@ export async function generateComfyImages(
         }
       }
       sanitizeWorkflowForApi(workflow);
+      if (!item.saveComfyOutputs) {
+        // Do not persist generations via Image Saver; we consume Preview outputs.
+        stripImageSaverNodes(workflow);
+      }
       publishComfyDebugSnapshot(
         createComfyDebugSnapshot(item.flow ?? "base", baseUrl, workflow, item),
       );

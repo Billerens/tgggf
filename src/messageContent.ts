@@ -154,6 +154,23 @@ function normalizeStateDelta(obj: Record<string, unknown>) {
   const trust = pickNumber(deltaRaw, ["trust", "trust_delta", "trustDelta"]);
   const engagement = pickNumber(deltaRaw, ["engagement", "engagement_delta", "engagementDelta"]);
   const energy = pickNumber(deltaRaw, ["energy", "energy_delta", "energyDelta"]);
+  const lust = pickNumber(deltaRaw, ["lust", "lust_delta", "lustDelta", "arousal", "arousal_delta", "arousalDelta"]);
+  const fear = pickNumber(deltaRaw, ["fear", "fear_delta", "fearDelta", "anxiety", "anxiety_delta", "anxietyDelta"]);
+  const affection = pickNumber(deltaRaw, [
+    "affection",
+    "affection_delta",
+    "affectionDelta",
+    "closeness_affect",
+    "closenessAffect",
+  ]);
+  const tension = pickNumber(deltaRaw, [
+    "tension",
+    "tension_delta",
+    "tensionDelta",
+    "stress",
+    "stress_delta",
+    "stressDelta",
+  ]);
   const mood = pickString(deltaRaw, ["mood", "emotion"]);
   const relationshipStage = normalizeRelationshipStage(
     pickString(deltaRaw, ["relationshipStage", "relationship_stage", "stage", "relationship"]),
@@ -172,6 +189,10 @@ function normalizeStateDelta(obj: Record<string, unknown>) {
   if (typeof trust === "number") stateDelta.trust = trust;
   if (typeof engagement === "number") stateDelta.engagement = engagement;
   if (typeof energy === "number") stateDelta.energy = energy;
+  if (typeof lust === "number") stateDelta.lust = lust;
+  if (typeof fear === "number") stateDelta.fear = fear;
+  if (typeof affection === "number") stateDelta.affection = affection;
+  if (typeof tension === "number") stateDelta.tension = tension;
   if (mood) stateDelta.mood = mood as ControlStateDelta["mood"];
   if (relationshipStage) stateDelta.relationshipStage = relationshipStage;
   if (relationshipType) stateDelta.relationshipType = relationshipType;

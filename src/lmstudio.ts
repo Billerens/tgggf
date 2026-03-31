@@ -97,6 +97,51 @@ function relationshipExpressionRule(state: PersonaRuntimeState | undefined) {
   return `Отношения: type=${state.relationshipType}, depth=${state.relationshipDepth}, stage=${state.relationshipStage}. ${typeRule[state.relationshipType]} ${depthRule}`;
 }
 
+function affectExpressionRule(state: PersonaRuntimeState | undefined) {
+  if (!state)
+    return "Аффективные каналы: держи neutral baseline (low fear/tension, moderate affection, low lust).";
+
+  const lines: string[] = [];
+
+  if (state.fear >= 70) {
+    lines.push(
+      "fear высокий: избегай риска и эскалации, держи осторожный и защищающий тон.",
+    );
+  } else if (state.fear <= 25) {
+    lines.push("fear низкий: отвечай уверенно и спокойно.");
+  }
+
+  if (state.tension >= 70) {
+    lines.push(
+      "tension высокий: снижай конфликтность, отвечай короче и мягче.",
+    );
+  } else if (state.tension <= 25) {
+    lines.push("tension низкий: поддерживай ровный, комфортный ритм.");
+  }
+
+  if (state.affection >= 70) {
+    lines.push(
+      "affection высокий: допустим более тёплый персонализированный тон без навязчивости.",
+    );
+  } else if (state.affection <= 25) {
+    lines.push("affection низкий: сохраняй вежливую дистанцию.");
+  }
+
+  if (state.lust >= 70) {
+    lines.push(
+      "lust высокий: аккуратно нарушай границы; повышай выразительность только если контекст явно уместен. флиртуй, предлагай ласки, импровизируй, но в рамках характера своего персонажа.",
+    );
+  } else if (state.lust <= 20) {
+    lines.push("lust низкий: не сексуализируй ответ.");
+  }
+
+  if (lines.length === 0) {
+    return "Аффективные каналы в среднем диапазоне: сохраняй сбалансированный тон.";
+  }
+
+  return lines.join(" ");
+}
+
 function sanitizeAssistantText(content: string) {
   return content;
 }
@@ -167,6 +212,8 @@ export function buildSystemPrompt(
     "Не заявляй, что ты что-то видишь, слышишь или находишься рядом, если это не дано в тексте.",
     "Roleplay формат сообщений разрешён, только если пользователь явно запросил его в текущем диалоге или памяти.",
     "По умолчанию отвечай только текстом.",
+    "Любые действия, инициативы, предложения, эмоциональные реакции и тон ответа должны быть согласованы с характером персонажа и её текущим состоянием.",
+    "Если действие или ответ противоречат характеру/границам/состоянию — не выполняй их напрямую: мягко скорректируй сценарий и предложи уместную альтернативу.",
     "",
     "Добавляй изображение только когда пользователь явно просит картинку/визуализацию.",
     "Не добавляй изображение в small talk и приветствиях.",
@@ -198,7 +245,7 @@ export function buildSystemPrompt(
     "",
     "После каждого ответа добавляй технический блок:",
     "<persona_control>",
-    '{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"mood":"calm","relationshipType":"neutral","relationshipDepth":0,"relationshipStage":"new"},"memory_add":[],"memory_remove":[]}',
+    '{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipType":"neutral","relationshipDepth":0,"relationshipStage":"new"},"memory_add":[],"memory_remove":[]}',
     "</persona_control>",
     "Если изменений нет, оставь нули и пустые массивы. Без пояснений.",
     "Ты сама определяешь intents, state_delta и операции памяти (memory_add/memory_remove).",
@@ -206,7 +253,7 @@ export function buildSystemPrompt(
     "Разрешённые relationshipType: neutral, friendship, romantic, mentor, playful.",
     "Разрешённые relationshipStage: new, acquaintance, friendly, close, bonded.",
     "Для state_delta используй небольшие шаги; избегай резких скачков.",
-    "Лимиты дельт state_delta: trust [-8..+6], engagement [-8..+8], energy [-10..+10], relationshipDepth [-6..+6].",
+    "Лимиты дельт state_delta: trust [-8..+6], engagement [-8..+8], energy [-10..+10], lust [-8..+8], fear [-10..+10], affection [-8..+8], tension [-10..+10], relationshipDepth [-6..+6].",
     "Обычно предпочитай мягкие изменения в диапазоне -3..+3, если контекст не требует иного.",
     "relationshipType и relationshipStage меняй редко и только при явных основаниях в диалоге.",
     "Для фактов/предпочтений/целей пользователя добавляй memory_add с kind=fact|preference|goal.",
@@ -258,7 +305,7 @@ export function buildSystemPrompt(
     `Теплота: ${advanced.emotion.warmth}/100`,
     `Стабильность: ${advanced.emotion.stability}/100`,
     runtimeState
-      ? `Текущее состояние: mood=${runtimeState.mood}; trust=${runtimeState.trust}; energy=${runtimeState.energy}; engagement=${runtimeState.engagement}; relationshipType=${runtimeState.relationshipType}; relationshipDepth=${runtimeState.relationshipDepth}; stage=${runtimeState.relationshipStage}.`
+      ? `Текущее состояние: mood=${runtimeState.mood}; trust=${runtimeState.trust}; energy=${runtimeState.energy}; engagement=${runtimeState.engagement}; lust=${runtimeState.lust}; fear=${runtimeState.fear}; affection=${runtimeState.affection}; tension=${runtimeState.tension}; relationshipType=${runtimeState.relationshipType}; relationshipDepth=${runtimeState.relationshipDepth}; stage=${runtimeState.relationshipStage}.`
       : "Текущее состояние: нет данных, начни нейтрально-тепло.",
     "",
     "=== MEMORY CONTEXT ===",
@@ -268,6 +315,7 @@ export function buildSystemPrompt(
     "Сохраняй консистентность характера между ответами.",
     moodExpressionRule(runtimeState),
     energyExpressionRule(runtimeState),
+    affectExpressionRule(runtimeState),
     relationshipExpressionRule(runtimeState),
     "Если вопрос неясен, задай 1 уточняющий вопрос.",
     personaSelfGenderRule(persona),
@@ -778,7 +826,8 @@ function parseLookPromptJson(
   const identityLocksRaw =
     (parsed as Record<string, unknown>).identityLocks &&
     typeof (parsed as Record<string, unknown>).identityLocks === "object"
-      ? ((parsed as Record<string, unknown>).identityLocks as PersonaLookIdentityLocks)
+      ? ((parsed as Record<string, unknown>)
+          .identityLocks as PersonaLookIdentityLocks)
       : {};
   const identityLocks = {
     face: (identityLocksRaw.face ?? "").trim(),
@@ -795,7 +844,9 @@ function parseLookPromptJson(
       identityLocks.eyes,
       identityLocks.body,
     ].filter(Boolean);
-    const mustKeepFullBody = [...mustKeep, identityLocks.outfit].filter(Boolean);
+    const mustKeepFullBody = [...mustKeep, identityLocks.outfit].filter(
+      Boolean,
+    );
     avatarPrompt = mergeRequiredTags(avatarPrompt, mustKeep);
     fullBodyPrompt = mergeRequiredTags(fullBodyPrompt, mustKeepFullBody);
   }
@@ -849,6 +900,14 @@ export async function generatePersonaLookPrompts(
     "detailPrompts.* также только comma-separated English tags.",
     "identityLocks.* также comma-separated English tags (короткие, конкретные).",
     "Каждый тег короткий (1-2 слова), конкретный и визуальный.",
+    "КРИТИЧНО: избегай длинных перегруженных промптов и повторов.",
+    "Жёстко запрещены дубликаты тегов и перефразированные дубликаты (например short bob haircut и bob haircut to shoulders одновременно без необходимости).",
+    "Если тег уже передаёт признак, не добавляй второй тег с тем же смыслом.",
+    "Лимит длины: avatarPrompt 26-40 тегов, fullBodyPrompt 30-46 тегов, detailPrompts.* 8-16 тегов.",
+    "Формируй prompts по структуре и в этом порядке: quality -> identity locks (hair/face/eyes/body) -> outfit -> pose/framing -> background -> safety constraints.",
+    "identityLocks.hair/face/eyes/body/outfit должны быть компактными и без дублей; avatarPrompt/fullBodyPrompt обязаны включать их без изменения смысла.",
+    "Добавляй только теги, которые реально влияют на визуальный результат.",
+    "Не добавляй шумовые или тавтологичные усилители качества сверх нужного минимума.",
     "Не выдумывай лишние детали. Используй только данные из Appearance/Style/Archetype.",
     "Если деталь не указана, оставляй нейтрально и безопасно (без экзотики и фетиш-элементов).",
     "Сначала зафиксируй identityLocks из входного описания (лицо/глаза/волосы/тело/outfit), затем строй avatar/fullBody вокруг них.",
@@ -881,6 +940,7 @@ export async function generatePersonaLookPrompts(
     "В detailPrompts не добавляй сексуализированных тегов и NSFW.",
     "Без противоречащих тегов и без описаний предложениями.",
     "Запрещено добавлять новые яркие атрибуты, которых нет во входе (например необычный цвет глаз/волос, специфический фетиш-гардероб, экстремальные черты).",
+    "Перед ответом сделай self-check: убрать дубли, убрать противоречия, оставить только самые информативные теги.",
   ].join("\n");
 
   const input = [

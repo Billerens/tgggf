@@ -118,6 +118,10 @@ export function calculateStateEvolution(
   const behavior = persona.advanced.behavior;
   const isHostile = /(туп|идиот|ненавиж|бесишь|пош[её]л|дебил|агресс|оскорб|fuck|stupid|hate|idiot)/i.test(userMessage);
   const isSupportive = /(спасибо|благодар|класс|отлично|хорошо|супер|great|thanks|awesome)/i.test(userMessage);
+  const hasRomanticCue = /(люблю|поцел|обним|нежн|роман|сексу|страст|хочу тебя|want you|kiss|hug|romantic)/i.test(
+    userMessage,
+  );
+  const hasThreatCue = /(угрож|боюсь|страш|panic|паник|убью|насили|threat|danger|опасно)/i.test(userMessage);
 
   // Empathy affects trust gain/loss
   const trustModifier = (behavior.empathy - 55) / 25;
@@ -141,10 +145,27 @@ export function calculateStateEvolution(
   };
   const relationshipDepth = Math.max(0, Math.min(100, prev.relationshipDepth + depthDelta(rawTrustDelta, engagementDelta)));
 
+  // Additional affect channels for nuanced RP dynamics
+  const affectionDelta = (isSupportive ? 2 : 0) + (isHostile ? -3 : 0) + (hasRomanticCue ? 2 : 0);
+  const affection = Math.max(0, Math.min(100, prev.affection + affectionDelta));
+
+  const lustDelta = (hasRomanticCue ? 2 : 0) + (isHostile ? -2 : 0);
+  const lust = Math.max(0, Math.min(100, prev.lust + lustDelta));
+
+  const fearDelta = (hasThreatCue ? 4 : 0) + (isHostile ? 2 : 0) + (isSupportive ? -1 : 0);
+  const fear = Math.max(0, Math.min(100, prev.fear + fearDelta));
+
+  const tensionDelta = (isHostile ? 3 : 0) + (hasThreatCue ? 3 : 0) + (isSupportive ? -2 : 0);
+  const tension = Math.max(0, Math.min(100, prev.tension + tensionDelta));
+
   return {
     trust,
     engagement,
     energy,
+    affection,
+    lust,
+    fear,
+    tension,
     relationshipDepth,
     relationshipStage: relationshipStageFromDepth(relationshipDepth),
   };

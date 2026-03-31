@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { DEFAULT_SETTINGS, dbApi } from "./db";
 import { requestChatCompletion } from "./lmstudio";
-import { generateComfyImages } from "./comfy";
+import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
 import { localizeImageUrls } from "./imageStorage";
 import {
   applyPersonaControlProposal,
@@ -18,6 +18,7 @@ import type {
   AppSettings,
   ChatMessage,
   ChatSession,
+  ImageGenerationMeta,
   Persona,
   PersonaAdvancedProfile,
   PersonaMemory,
@@ -517,6 +518,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (promptsForGeneration.length > 0) {
         void (async () => {
           const aggregatedLocalizedUrls: string[] = [];
+          const aggregatedMetaByUrl: Record<string, ImageGenerationMeta> = {};
           let completedCount = 0;
           const styleReferenceImage =
             activePersona.avatarUrl.trim() || activePersona.fullBodyUrl.trim() || undefined;
@@ -524,30 +526,55 @@ export const useAppStore = create<AppState>((set, get) => ({
             typeof activeChat?.chatStyleStrength === "number"
               ? activeChat.chatStyleStrength
               : get().settings.chatStyleStrength;
+          const comfyItems = promptsForGeneration.map((prompt) => ({
+            flow: "base" as const,
+            prompt,
+            checkpointName: activePersona.imageCheckpoint || undefined,
+            seed: randomSeed(),
+            styleReferenceImage,
+            styleStrength: styleReferenceImage ? chatStyleStrength : undefined,
+            compositionStrength: 0,
+            saveComfyOutputs: get().settings.saveComfyOutputs,
+          }));
 
           try {
             await generateComfyImages(
-              promptsForGeneration.map((prompt) => ({
-                prompt,
-                checkpointName: activePersona.imageCheckpoint || undefined,
-                seed: randomSeed(),
-                styleReferenceImage,
-                styleStrength: styleReferenceImage ? chatStyleStrength : undefined,
-                compositionStrength: 0,
-              })),
+              comfyItems,
               get().settings.comfyBaseUrl,
               get().settings.comfyAuth,
-              async (promptImageUrls) => {
+              async (promptImageUrls, index) => {
                 completedCount += 1;
                 const localizedChunk = await localizeImageUrls(promptImageUrls);
+                const item = comfyItems[index];
+                const extractedMeta =
+                  promptImageUrls[0]
+                    ? await readComfyImageGenerationMeta(
+                        promptImageUrls[0],
+                        get().settings.comfyBaseUrl,
+                        get().settings.comfyAuth,
+                      )
+                    : null;
+                const meta: ImageGenerationMeta = {
+                  seed: extractedMeta?.seed ?? item.seed,
+                  prompt: extractedMeta?.prompt ?? item.prompt,
+                  model: extractedMeta?.model ?? item.checkpointName,
+                  flow: extractedMeta?.flow ?? item.flow,
+                };
                 for (const localized of localizedChunk) {
                   if (!aggregatedLocalizedUrls.includes(localized)) {
                     aggregatedLocalizedUrls.push(localized);
+                  }
+                  aggregatedMetaByUrl[localized] = meta;
+                }
+                for (const original of promptImageUrls) {
+                  if (original?.trim()) {
+                    aggregatedMetaByUrl[original] = meta;
                   }
                 }
 
                 await patchAssistantMessage({
                   imageUrls: [...aggregatedLocalizedUrls],
+                  imageMetaByUrl: { ...aggregatedMetaByUrl },
                   imageGenerationPending:
                     completedCount < promptsForGeneration.length,
                   imageGenerationExpected: promptsForGeneration.length,
@@ -557,6 +584,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             );
             await patchAssistantMessage({
               imageUrls: [...aggregatedLocalizedUrls],
+              imageMetaByUrl: { ...aggregatedMetaByUrl },
               imageGenerationPending: false,
               imageGenerationExpected: promptsForGeneration.length,
               imageGenerationCompleted: promptsForGeneration.length,

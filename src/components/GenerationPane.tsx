@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Image, Infinity, Play, Square } from "lucide-react";
+import type { ImageGenerationMeta } from "../types";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface GenerationPaneProps {
@@ -14,6 +15,7 @@ interface GenerationPaneProps {
   isRunning: boolean;
   completedCount: number;
   generatedImageUrls: string[];
+  imageMetaByUrl: Record<string, ImageGenerationMeta>;
   pendingImageCount: number;
   onStart: () => void;
   onStop: () => void;
@@ -31,11 +33,13 @@ export function GenerationPane({
   isRunning,
   completedCount,
   generatedImageUrls,
+  imageMetaByUrl,
   pendingImageCount,
   onStart,
   onStop,
 }: GenerationPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
 
   return (
     <>
@@ -132,7 +136,10 @@ export function GenerationPane({
                   type="button"
                   key={`${url}-${index}`}
                   className="bubble-image-btn"
-                  onClick={() => setPreviewSrc(url)}
+                  onClick={() => {
+                    setPreviewSrc(url);
+                    setPreviewMeta(imageMetaByUrl[url]);
+                  }}
                 >
                   <img src={url} alt={`generated-${index + 1}`} loading="lazy" />
                 </button>
@@ -148,7 +155,14 @@ export function GenerationPane({
         </div>
         </section>
       </main>
-      <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      <ImagePreviewModal
+        src={previewSrc}
+        meta={previewMeta}
+        onClose={() => {
+          setPreviewSrc(null);
+          setPreviewMeta(undefined);
+        }}
+      />
     </>
   );
 }

@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SendHorizontal, Trash2, ChevronDown, HeartHandshake, Brain, Database, Zap, Link2 } from "lucide-react";
 import { getMoodLabel } from "../personaProfiles";
-import type { ChatMessage, ChatSession, Persona, PersonaRuntimeState } from "../types";
+import type {
+  ChatMessage,
+  ChatSession,
+  ImageGenerationMeta,
+  Persona,
+  PersonaRuntimeState,
+} from "../types";
 import type { PersonaControlPayload } from "../personaDynamics";
 import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
@@ -12,6 +18,7 @@ interface ChatPaneProps {
   activePersona: Persona | null;
   activeChatId: string | null;
   messages: ChatMessage[];
+  imageMetaByUrl: Record<string, ImageGenerationMeta>;
   messageInput: string;
   setMessageInput: (value: string) => void;
   isLoading: boolean;
@@ -61,9 +68,17 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
     const trust = formatDelta("trust", stateDelta.trust);
     const engagement = formatDelta("engagement", stateDelta.engagement);
     const energy = formatDelta("energy", stateDelta.energy);
+    const lust = formatDelta("lust", stateDelta.lust);
+    const fear = formatDelta("fear", stateDelta.fear);
+    const affection = formatDelta("affection", stateDelta.affection);
+    const tension = formatDelta("tension", stateDelta.tension);
     if (trust) lines.push(trust);
     if (engagement) lines.push(engagement);
     if (energy) lines.push(energy);
+    if (lust) lines.push(lust);
+    if (fear) lines.push(fear);
+    if (affection) lines.push(affection);
+    if (tension) lines.push(tension);
     if (stateDelta.mood) lines.push(`mood: ${stateDelta.mood}`);
     if (stateDelta.relationshipType) lines.push(`relationshipType: ${stateDelta.relationshipType}`);
     if (Number.isFinite(stateDelta.relationshipDepth)) {
@@ -112,6 +127,7 @@ export function ChatPane({
   activePersona,
   activeChatId,
   messages,
+  imageMetaByUrl,
   messageInput,
   setMessageInput,
   isLoading,
@@ -125,6 +141,7 @@ export function ChatPane({
   onOpenChatDetails,
 }: ChatPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -307,7 +324,10 @@ export function ChatPane({
                       key={`${msg.id}-img-${index}`}
                       type="button"
                       className="bubble-image-btn"
-                      onClick={() => setPreviewSrc(url)}
+                      onClick={() => {
+                        setPreviewSrc(url);
+                        setPreviewMeta(imageMetaByUrl[url]);
+                      }}
                     >
                       <img src={url} alt={`generated-${index + 1}`} loading="lazy" />
                     </button>
@@ -356,7 +376,14 @@ export function ChatPane({
           </button>
         </form>
       </div>
-      <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      <ImagePreviewModal
+        src={previewSrc}
+        meta={previewMeta}
+        onClose={() => {
+          setPreviewSrc(null);
+          setPreviewMeta(undefined);
+        }}
+      />
     </main>
   );
 }

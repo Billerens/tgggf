@@ -121,8 +121,16 @@ export interface ChatMessage {
   imageGenerationPending?: boolean;
   imageGenerationExpected?: number;
   imageGenerationCompleted?: number;
+  imageMetaByUrl?: Record<string, ImageGenerationMeta>;
   personaControlRaw?: string;
   createdAt: string;
+}
+
+export interface ImageGenerationMeta {
+  seed?: number;
+  prompt?: string;
+  model?: string;
+  flow?: "base" | "i2i";
 }
 
 export interface GeneratorImageEntry {
@@ -130,6 +138,7 @@ export interface GeneratorImageEntry {
   iteration: number;
   prompt: string;
   imageUrls: string[];
+  imageMetaByUrl?: Record<string, ImageGenerationMeta>;
   createdAt: string;
 }
 
@@ -154,6 +163,10 @@ export interface PersonaRuntimeState {
   trust: number;
   energy: number;
   engagement: number;
+  lust: number;
+  fear: number;
+  affection: number;
+  tension: number;
   relationshipType: RelationshipType;
   relationshipDepth: number;
   relationshipStage: RelationshipStage;
@@ -177,6 +190,7 @@ export interface PersonaMemory {
 export interface AppSettings {
   lmBaseUrl: string;
   comfyBaseUrl: string;
+  saveComfyOutputs: boolean;
   model: string;
   temperature: number;
   maxTokens: number;

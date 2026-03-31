@@ -1118,6 +1118,8 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   position: relative;
   max-width: min(96vw, 1400px);
   max-height: 92vh;
+  display: flex;
+  flex-direction: column;
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid var(--border-light);
@@ -1126,7 +1128,7 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
 .image-preview-img {
   display: block;
   max-width: min(96vw, 1400px);
-  max-height: 92vh;
+  max-height: calc(92vh - 190px);
   object-fit: contain;
 }
 .image-preview-close {
@@ -1134,6 +1136,43 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   top: 10px;
   right: 10px;
   z-index: 1;
+}
+.image-preview-meta {
+  border-top: 1px solid var(--border-light);
+  background: rgba(5, 7, 12, 0.9);
+  padding: 10px 12px 12px;
+  display: grid;
+  gap: 8px;
+}
+.image-preview-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.image-preview-meta-grid p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.image-preview-meta-grid strong {
+  color: var(--text-primary);
+}
+.image-preview-meta-prompt {
+  display: grid;
+  gap: 4px;
+}
+.image-preview-meta-prompt strong {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.image-preview-meta-prompt pre {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  max-height: 92px;
+  overflow: auto;
 }
 .enhance-compare-dialog {
   position: relative;
@@ -1327,6 +1366,13 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
   .image-preview-close {
     top: calc(8px + env(safe-area-inset-top, 0px));
     right: 8px;
+  }
+  .image-preview-meta-grid {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .image-preview-img {
+    max-height: calc(100svh - 260px);
   }
   .enhance-compare-stage {
     aspect-ratio: auto;

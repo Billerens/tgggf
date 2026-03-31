@@ -1,6 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
-import type { AppSettings, ChatMessage, ChatSession, Persona, PersonaMemory, PersonaRuntimeState } from "../types";
+import type {
+  AppSettings,
+  ChatMessage,
+  ChatSession,
+  ImageGenerationMeta,
+  Persona,
+  PersonaMemory,
+  PersonaRuntimeState,
+} from "../types";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface ChatDetailsModalProps {
@@ -8,6 +16,7 @@ interface ChatDetailsModalProps {
   chat: ChatSession | null;
   persona: Persona | null;
   messages: ChatMessage[];
+  imageMetaByUrl: Record<string, ImageGenerationMeta>;
   memories: PersonaMemory[];
   runtimeState: PersonaRuntimeState | null;
   settings: AppSettings;
@@ -20,6 +29,7 @@ type DetailsTab = "attachments" | "status";
 interface ImageAttachment {
   src: string;
   alt: string;
+  meta?: ImageGenerationMeta;
   messageId: string;
   role: ChatMessage["role"];
   createdAt: string;
@@ -28,7 +38,10 @@ interface ImageAttachment {
 const IMAGE_URL_REGEX = /(https?:\/\/[^\s)"'<>]+\.(?:png|jpe?g|gif|webp|bmp|svg|avif)(?:\?[^\s)"'<>]*)?)/gi;
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gi;
 
-function extractImageAttachments(messages: ChatMessage[]): ImageAttachment[] {
+function extractImageAttachments(
+  messages: ChatMessage[],
+  imageMetaByUrl: Record<string, ImageGenerationMeta>,
+): ImageAttachment[] {
   const attachments: ImageAttachment[] = [];
   const known = new Set<string>();
 
@@ -45,6 +58,7 @@ function extractImageAttachments(messages: ChatMessage[]): ImageAttachment[] {
       attachments.push({
         src,
         alt: "Generated image",
+        meta: imageMetaByUrl[src],
         messageId: message.id,
         role: message.role,
         createdAt: message.createdAt,
@@ -61,6 +75,7 @@ function extractImageAttachments(messages: ChatMessage[]): ImageAttachment[] {
       attachments.push({
         src,
         alt: alt || "Изображение",
+        meta: imageMetaByUrl[src],
         messageId: message.id,
         role: message.role,
         createdAt: message.createdAt,
@@ -76,6 +91,7 @@ function extractImageAttachments(messages: ChatMessage[]): ImageAttachment[] {
       attachments.push({
         src,
         alt: "Изображение",
+        meta: imageMetaByUrl[src],
         messageId: message.id,
         role: message.role,
         createdAt: message.createdAt,
@@ -109,6 +125,7 @@ export function ChatDetailsModal({
   chat,
   persona,
   messages,
+  imageMetaByUrl,
   memories,
   runtimeState,
   settings,
@@ -117,6 +134,7 @@ export function ChatDetailsModal({
 }: ChatDetailsModalProps) {
   const [tab, setTab] = useState<DetailsTab>("attachments");
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
   const [useGlobalStyleStrength, setUseGlobalStyleStrength] = useState(
     typeof chat?.chatStyleStrength !== "number",
   );
@@ -125,7 +143,10 @@ export function ChatDetailsModal({
       ? chat.chatStyleStrength
       : settings.chatStyleStrength,
   );
-  const attachments = useMemo(() => extractImageAttachments(messages), [messages]);
+  const attachments = useMemo(
+    () => extractImageAttachments(messages, imageMetaByUrl),
+    [messages, imageMetaByUrl],
+  );
   const memoryByLayer = useMemo(() => groupMemories(memories), [memories]);
 
   useEffect(() => {
@@ -180,7 +201,10 @@ export function ChatDetailsModal({
                     <button
                       type="button"
                       className="attachment-preview-btn"
-                      onClick={() => setPreviewSrc(attachment.src)}
+                      onClick={() => {
+                        setPreviewSrc(attachment.src);
+                        setPreviewMeta(attachment.meta);
+                      }}
                     >
                       <img src={attachment.src} alt={attachment.alt} loading="lazy" />
                     </button>
@@ -221,6 +245,10 @@ export function ChatDetailsModal({
                     <p>trust: {runtimeState.trust}</p>
                     <p>engagement: {runtimeState.engagement}</p>
                     <p>energy: {runtimeState.energy}</p>
+                    <p>lust: {runtimeState.lust}</p>
+                    <p>fear: {runtimeState.fear}</p>
+                    <p>affection: {runtimeState.affection}</p>
+                    <p>tension: {runtimeState.tension}</p>
                     <p>relationshipType: {runtimeState.relationshipType}</p>
                     <p>relationshipDepth: {runtimeState.relationshipDepth}</p>
                     <p>relationshipStage: {runtimeState.relationshipStage}</p>
@@ -312,7 +340,14 @@ export function ChatDetailsModal({
           </section>
         )}
       </div>
-      <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      <ImagePreviewModal
+        src={previewSrc}
+        meta={previewMeta}
+        onClose={() => {
+          setPreviewSrc(null);
+          setPreviewMeta(undefined);
+        }}
+      />
     </div>
   );
 }

@@ -83,19 +83,6 @@ function stringifyAppearance(appearance: Persona["appearance"]) {
     .join(", ");
 }
 
-async function getImageDimensions(url: string) {
-  return new Promise<{ width: number; height: number }>((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const width = Math.max(256, Math.min(2048, img.naturalWidth || 1024));
-      const height = Math.max(256, Math.min(2048, img.naturalHeight || 1024));
-      resolve({ width, height });
-    };
-    img.onerror = () => resolve({ width: 1024, height: 1024 });
-    img.src = url;
-  });
-}
-
 export default function App() {
   const [enhanceReview, setEnhanceReview] = useState<{
     packIndex: number | null;
@@ -332,6 +319,16 @@ export default function App() {
         .reverse(),
     [generationSession],
   );
+  const generationImageMetaByUrl = useMemo(() => {
+    const next: Record<string, ComfyImageGenerationMeta> = {};
+    for (const entry of generationSession?.entries ?? []) {
+      const metaMap = entry.imageMetaByUrl ?? {};
+      for (const [url, meta] of Object.entries(metaMap)) {
+        next[url] = meta;
+      }
+    }
+    return next;
+  }, [generationSession]);
 
   useEffect(() => {
     if (!generationPersonaId && personas.length > 0) {
@@ -540,6 +537,7 @@ export default function App() {
         if (lookDetailLevel === "strong") return "medium";
         return "soft";
       };
+      const generationSalt = crypto.randomUUID();
       const sharedSeed = stableSeedFromText(
         [
           personaDraft.name,
@@ -547,6 +545,7 @@ export default function App() {
           personaDraft.stylePrompt,
           promptBundle.avatarPrompt,
           promptBundle.fullBodyPrompt,
+          generationSalt,
         ].join("|"),
       );
       const packs: PersonaLookPack[] = [];
@@ -584,6 +583,7 @@ export default function App() {
               forceHiResFix: useHiResFix,
               enableUpscaler: useUpscaler,
               upscaleFactor: 1.5,
+              saveComfyOutputs: settings.saveComfyOutputs,
               detailing: resolveDetailLevel("front")
                 ? {
                     enabled: true,
@@ -607,8 +607,22 @@ export default function App() {
         }
         setLookImageMetaByUrl((prev) => ({
           ...prev,
-          ...(fullBodyUrls[0] ? { [fullBodyUrls[0]]: { seed: packSeed, prompt: fullBodyPrompt } } : {}),
-          [fullBodyRef]: { seed: packSeed, prompt: fullBodyPrompt },
+          ...(fullBodyUrls[0]
+            ? {
+                [fullBodyUrls[0]]: {
+                  seed: packSeed,
+                  prompt: fullBodyPrompt,
+                  model: personaDraft.imageCheckpoint || undefined,
+                  flow: "base",
+                },
+              }
+            : {}),
+          [fullBodyRef]: {
+            seed: packSeed,
+            prompt: fullBodyPrompt,
+            model: personaDraft.imageCheckpoint || undefined,
+            flow: "base",
+          },
         }));
         patchPack({ fullBodyUrl: fullBodyRef });
 
@@ -633,6 +647,7 @@ export default function App() {
                 forceHiResFix: useHiResFix,
                 enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
+                saveComfyOutputs: settings.saveComfyOutputs,
                 detailing: resolveDetailLevel("side")
                   ? {
                       enabled: true,
@@ -654,8 +669,22 @@ export default function App() {
           if (sideRef) {
             setLookImageMetaByUrl((prev) => ({
               ...prev,
-              ...(sideUrls[0] ? { [sideUrls[0]]: { seed: sideSeed, prompt: sidePrompt } } : {}),
-              [sideRef]: { seed: sideSeed, prompt: sidePrompt },
+              ...(sideUrls[0]
+                ? {
+                    [sideUrls[0]]: {
+                      seed: sideSeed,
+                      prompt: sidePrompt,
+                      model: personaDraft.imageCheckpoint || undefined,
+                      flow: "i2i",
+                    },
+                  }
+                : {}),
+              [sideRef]: {
+                seed: sideSeed,
+                prompt: sidePrompt,
+                model: personaDraft.imageCheckpoint || undefined,
+                flow: "i2i",
+              },
             }));
             patchPack({ fullBodySideUrl: sideRef });
           }
@@ -682,6 +711,7 @@ export default function App() {
                 forceHiResFix: useHiResFix,
                 enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
+                saveComfyOutputs: settings.saveComfyOutputs,
                 detailing: resolveDetailLevel("back")
                   ? {
                       enabled: true,
@@ -703,8 +733,22 @@ export default function App() {
           if (backRef) {
             setLookImageMetaByUrl((prev) => ({
               ...prev,
-              ...(backUrls[0] ? { [backUrls[0]]: { seed: backSeed, prompt: backPrompt } } : {}),
-              [backRef]: { seed: backSeed, prompt: backPrompt },
+              ...(backUrls[0]
+                ? {
+                    [backUrls[0]]: {
+                      seed: backSeed,
+                      prompt: backPrompt,
+                      model: personaDraft.imageCheckpoint || undefined,
+                      flow: "i2i",
+                    },
+                  }
+                : {}),
+              [backRef]: {
+                seed: backSeed,
+                prompt: backPrompt,
+                model: personaDraft.imageCheckpoint || undefined,
+                flow: "i2i",
+              },
             }));
             patchPack({ fullBodyBackUrl: backRef });
           }
@@ -722,6 +766,7 @@ export default function App() {
               styleReferenceImage: fullBodyRef,
               styleStrength: 1,
               compositionStrength: 0,
+              saveComfyOutputs: settings.saveComfyOutputs,
               detailing: resolveDetailLevel("front")
                 ? {
                     enabled: true,
@@ -745,8 +790,22 @@ export default function App() {
         }
         setLookImageMetaByUrl((prev) => ({
           ...prev,
-          ...(avatarUrls[0] ? { [avatarUrls[0]]: { seed: packSeed, prompt: avatarPrompt } } : {}),
-          [avatarRef]: { seed: packSeed, prompt: avatarPrompt },
+          ...(avatarUrls[0]
+            ? {
+                [avatarUrls[0]]: {
+                  seed: packSeed,
+                  prompt: avatarPrompt,
+                  model: personaDraft.imageCheckpoint || undefined,
+                  flow: "i2i",
+                },
+              }
+            : {}),
+          [avatarRef]: {
+            seed: packSeed,
+            prompt: avatarPrompt,
+            model: personaDraft.imageCheckpoint || undefined,
+            flow: "i2i",
+          },
         }));
         patchPack({ avatarUrl: avatarRef });
 
@@ -817,8 +876,13 @@ export default function App() {
     try {
       const promptBundle = await getCachedLookPromptBundle();
       ensureEnhanceActive();
-      const dims = await getImageDimensions(imageUrl);
-      ensureEnhanceActive();
+      const fullBodyWidth = lookFastMode ? 704 : 832;
+      const fullBodyHeight = lookFastMode ? 1024 : 1216;
+      const avatarSize = lookFastMode ? 768 : 1024;
+      const dims =
+        kind === "avatar"
+          ? { width: avatarSize, height: avatarSize }
+          : { width: fullBodyWidth, height: fullBodyHeight };
       const detailLevel = lookDetailLevel === "off" ? "medium" : lookDetailLevel;
       const basePrompt =
         kind === "avatar"
@@ -862,7 +926,10 @@ export default function App() {
             compositionStrength: 1,
             forceHiResFix: true,
             enableUpscaler: true,
-            upscaleFactor: 1.25,
+            upscaleFactor: 2,
+            hiresFixDenoise: 0.3,
+            colorFixStrength: 0.4,
+            saveComfyOutputs: settings.saveComfyOutputs,
             outputNodeTitleIncludes: [
               "Preview after Detailing",
             ],
@@ -890,8 +957,22 @@ export default function App() {
       }
       setLookImageMetaByUrl((prev) => ({
         ...prev,
-        ...(enhancedUrls[0] ? { [enhancedUrls[0]]: { seed: enhanceSeed, prompt: sourcePrompt } } : {}),
-        [improved]: { seed: enhanceSeed, prompt: sourcePrompt },
+        ...(enhancedUrls[0]
+          ? {
+              [enhancedUrls[0]]: {
+                seed: enhanceSeed,
+                prompt: sourcePrompt,
+                model: personaDraft.imageCheckpoint || undefined,
+                flow: "i2i",
+              },
+            }
+          : {}),
+        [improved]: {
+          seed: enhanceSeed,
+          prompt: sourcePrompt,
+          model: personaDraft.imageCheckpoint || undefined,
+          flow: "i2i",
+        },
       }));
       setEnhanceReview({
         packIndex,
@@ -1062,26 +1143,46 @@ export default function App() {
         );
         setGenerationPendingImageCount((prev) => prev + 1);
         let localized: string[] = [];
+        let localizedMetaByUrl: Record<string, ComfyImageGenerationMeta> = {};
         try {
+          const seed = stableSeedFromText(`${session.id}:${iteration}:${generationTopic}`);
+          const styleReferenceImage =
+            persona.avatarUrl.trim() || persona.fullBodyUrl.trim() || undefined;
+          const generationItem = {
+            flow: "base" as const,
+            prompt,
+            checkpointName: persona.imageCheckpoint || undefined,
+            seed,
+            styleReferenceImage,
+            styleStrength: styleReferenceImage ? settings.chatStyleStrength : undefined,
+            compositionStrength: 0,
+            saveComfyOutputs: settings.saveComfyOutputs,
+          };
           const imageUrls = await generateComfyImages(
             [
-              {
-                prompt,
-                checkpointName: persona.imageCheckpoint || undefined,
-                seed: stableSeedFromText(`${session.id}:${iteration}:${generationTopic}`),
-                styleReferenceImage:
-                  persona.avatarUrl.trim() || persona.fullBodyUrl.trim() || undefined,
-                styleStrength:
-                  persona.avatarUrl.trim() || persona.fullBodyUrl.trim()
-                    ? settings.chatStyleStrength
-                    : undefined,
-                compositionStrength: 0,
-              },
+              generationItem,
             ],
             settings.comfyBaseUrl,
             settings.comfyAuth,
           );
+          const extractedMeta =
+            imageUrls[0]
+              ? await readComfyImageGenerationMeta(
+                  imageUrls[0],
+                  settings.comfyBaseUrl,
+                  settings.comfyAuth,
+                )
+              : null;
           localized = await localizeImageUrls(imageUrls);
+          const meta: ComfyImageGenerationMeta = {
+            prompt: extractedMeta?.prompt ?? generationItem.prompt,
+            seed: extractedMeta?.seed ?? generationItem.seed,
+            model: extractedMeta?.model ?? generationItem.checkpointName,
+            flow: extractedMeta?.flow ?? generationItem.flow,
+          };
+          localizedMetaByUrl = Object.fromEntries(
+            localized.map((url) => [url, meta]),
+          );
         } finally {
           setGenerationPendingImageCount((prev) => Math.max(0, prev - 1));
         }
@@ -1090,6 +1191,7 @@ export default function App() {
           iteration,
           prompt,
           imageUrls: localized,
+          imageMetaByUrl: localizedMetaByUrl,
           createdAt: new Date().toISOString(),
         };
         completed = iteration;
@@ -1180,6 +1282,7 @@ export default function App() {
             isRunning={generationIsRunning}
             completedCount={generationCompletedCount}
             generatedImageUrls={generatedImageUrls}
+            imageMetaByUrl={generationImageMetaByUrl}
             pendingImageCount={generationPendingImageCount}
             onStart={() => void startGeneration()}
             onStop={stopGeneration}
@@ -1190,6 +1293,9 @@ export default function App() {
             activePersona={activePersona}
             activeChatId={activeChatId}
             messages={messages}
+            imageMetaByUrl={Object.fromEntries(
+              messages.flatMap((message) => Object.entries(message.imageMetaByUrl ?? {})),
+            )}
             messageInput={messageInput}
             setMessageInput={setMessageInput}
             isLoading={isLoading}
@@ -1215,6 +1321,9 @@ export default function App() {
           chat={activeChat}
           persona={activePersona}
           messages={messages}
+          imageMetaByUrl={Object.fromEntries(
+            messages.flatMap((message) => Object.entries(message.imageMetaByUrl ?? {})),
+          )}
           memories={activeMemories}
           runtimeState={activePersonaState}
           settings={settings}
@@ -1288,6 +1397,7 @@ export default function App() {
           comfyCheckpoints={comfyCheckpoints}
           checkpointsLoading={checkpointsLoading}
           onRefreshCheckpoints={() => void loadComfyCheckpoints(settingsDraft.comfyBaseUrl)}
+          imageMetaByUrl={lookImageMetaByUrl}
         />
 
         <ErrorToast error={error} onClose={clearError} />

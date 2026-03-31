@@ -25,6 +25,10 @@ export interface PersonaControlPayload {
     trust?: number;
     engagement?: number;
     energy?: number;
+    lust?: number;
+    fear?: number;
+    affection?: number;
+    tension?: number;
     mood?: PersonaRuntimeState["mood"];
     relationshipType?: RelationshipType;
     relationshipDepth?: number;
@@ -152,6 +156,34 @@ function normalizeState(state: PersonaRuntimeState, personaId: string, chatId: s
     trust: clamp(state.trust, 0, 100),
     energy: clamp(state.energy, 0, 100),
     engagement: clamp(state.engagement, 0, 100),
+    lust: clamp(
+      Number.isFinite((state as Partial<PersonaRuntimeState>).lust)
+        ? Number((state as Partial<PersonaRuntimeState>).lust)
+        : 0,
+      0,
+      100,
+    ),
+    fear: clamp(
+      Number.isFinite((state as Partial<PersonaRuntimeState>).fear)
+        ? Number((state as Partial<PersonaRuntimeState>).fear)
+        : 5,
+      0,
+      100,
+    ),
+    affection: clamp(
+      Number.isFinite((state as Partial<PersonaRuntimeState>).affection)
+        ? Number((state as Partial<PersonaRuntimeState>).affection)
+        : clamp(25 + Math.round(state.trust * 0.25), 10, 80),
+      0,
+      100,
+    ),
+    tension: clamp(
+      Number.isFinite((state as Partial<PersonaRuntimeState>).tension)
+        ? Number((state as Partial<PersonaRuntimeState>).tension)
+        : 10,
+      0,
+      100,
+    ),
     relationshipType,
     relationshipDepth,
     activeTopics: normalizeTopics(state.activeTopics),
@@ -169,6 +201,10 @@ export function createInitialPersonaState(persona: Persona, chatId: string): Per
     trust: clamp(32 + Math.round(base.warmth * 0.2), 20, 65),
     energy: clamp(50 + Math.round(persona.advanced.behavior.initiative * 0.2), 30, 90),
     engagement: clamp(45 + Math.round(persona.advanced.behavior.curiosity * 0.25), 30, 95),
+    lust: 0,
+    fear: 5,
+    affection: clamp(24 + Math.round(base.warmth * 0.18), 10, 75),
+    tension: 10,
     relationshipType: "neutral",
     relationshipDepth: 12,
     relationshipStage: "new",
@@ -317,6 +353,10 @@ export function applyPersonaControlProposal({
   const trustDelta = clampDelta(stateDelta.trust ?? 0, -8, 6);
   const engagementDelta = clampDelta(stateDelta.engagement ?? 0, -8, 8);
   const energyDelta = clampDelta(stateDelta.energy ?? 0, -10, 10);
+  const lustDelta = clampDelta(stateDelta.lust ?? 0, -8, 8);
+  const fearDelta = clampDelta(stateDelta.fear ?? 0, -10, 10);
+  const affectionDelta = clampDelta(stateDelta.affection ?? 0, -8, 8);
+  const tensionDelta = clampDelta(stateDelta.tension ?? 0, -10, 10);
   const relationshipDepthDelta = clampDelta(stateDelta.relationshipDepth ?? 0, -6, 6);
 
   const nextTrust = clamp(
@@ -331,6 +371,26 @@ export function applyPersonaControlProposal({
   );
   const nextEnergy = clamp(
     baseState.energy + energyDelta,
+    0,
+    100,
+  );
+  const nextLust = clamp(
+    baseState.lust + lustDelta,
+    0,
+    100,
+  );
+  const nextFear = clamp(
+    baseState.fear + fearDelta,
+    0,
+    100,
+  );
+  const nextAffection = clamp(
+    baseState.affection + affectionDelta,
+    0,
+    100,
+  );
+  const nextTension = clamp(
+    baseState.tension + tensionDelta,
     0,
     100,
   );
@@ -361,6 +421,10 @@ export function applyPersonaControlProposal({
     trust: nextTrust,
     engagement: nextEngagement,
     energy: nextEnergy,
+    lust: nextLust,
+    fear: nextFear,
+    affection: nextAffection,
+    tension: nextTension,
     relationshipType,
     relationshipDepth: nextRelationshipDepth,
     mood,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Sparkles, Trash2, UserRound, X } from "lucide-react";
 import type { GeneratedPersonaDraft } from "../lmstudio";
-import type { Persona } from "../types";
+import type { ImageGenerationMeta, Persona } from "../types";
 import type {
   LookDetailLevel,
   LookEnhanceTarget,
@@ -62,6 +62,7 @@ interface PersonaModalProps {
   comfyCheckpoints: string[];
   checkpointsLoading: boolean;
   onRefreshCheckpoints: () => void;
+  imageMetaByUrl: Record<string, ImageGenerationMeta>;
 }
 
 interface SliderFieldProps {
@@ -219,6 +220,7 @@ export function PersonaModal({
   comfyCheckpoints,
   checkpointsLoading,
   onRefreshCheckpoints,
+  imageMetaByUrl,
 }: PersonaModalProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const hasAppearance = Object.values(personaDraft.appearance).some((value) => value.trim());
@@ -1311,7 +1313,11 @@ export function PersonaModal({
           </div>
         )}
       </div>
-      <ImagePreviewModal src={previewSrc} onClose={() => setPreviewSrc(null)} />
+      <ImagePreviewModal
+        src={previewSrc}
+        meta={previewSrc ? imageMetaByUrl[previewSrc] : undefined}
+        onClose={() => setPreviewSrc(null)}
+      />
     </div>
   );
 }

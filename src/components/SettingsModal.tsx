@@ -187,6 +187,16 @@ export function SettingsModal({
                   placeholder="http://127.0.0.1:8188"
                 />
               </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.saveComfyOutputs}
+                  onChange={(e) =>
+                    setSettingsDraft((v) => ({ ...v, saveComfyOutputs: e.target.checked }))
+                  }
+                />
+                Сохранять изображения в output папку ComfyUI (Image Saver)
+              </label>
               <AuthSettingsSection
                 title="Авторизация LM endpoint"
                 auth={settingsDraft.lmAuth}
