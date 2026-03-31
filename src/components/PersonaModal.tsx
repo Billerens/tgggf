@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Sparkles, Trash2, UserRound, X } from "lucide-react";
 import type { GeneratedPersonaDraft } from "../lmstudio";
+import { dbApi } from "../db";
 import type { ImageGenerationMeta, Persona } from "../types";
 import type {
   LookDetailLevel,
@@ -222,7 +223,111 @@ export function PersonaModal({
   onRefreshCheckpoints,
   imageMetaByUrl,
 }: PersonaModalProps) {
+  const [imageSrcById, setImageSrcById] = useState<Record<string, string>>({});
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [previewMetaOverride, setPreviewMetaOverride] = useState<ImageGenerationMeta | undefined>(undefined);
+  const [previewKind, setPreviewKind] = useState<"avatar" | "fullbody" | "side" | "back" | null>(null);
+
+  const parseImageIdFromLink = (value: string) => {
+    const normalized = value.trim();
+    if (!normalized.startsWith("idb://")) return "";
+    return normalized.slice("idb://".length).trim();
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const ids = Array.from(
+        new Set(
+          [
+            personaDraft.avatarImageId,
+            personaDraft.fullBodyImageId,
+            personaDraft.fullBodySideImageId,
+            personaDraft.fullBodyBackImageId,
+            ...generatedLookPacks.flatMap((pack) => [
+              pack.avatarImageId,
+              pack.fullBodyImageId,
+              pack.fullBodySideImageId,
+              pack.fullBodyBackImageId,
+              parseImageIdFromLink(pack.avatarUrl),
+              parseImageIdFromLink(pack.fullBodyUrl),
+              parseImageIdFromLink(pack.fullBodySideUrl),
+              parseImageIdFromLink(pack.fullBodyBackUrl),
+            ]),
+          ]
+            .map((value) => (value ?? "").trim())
+            .filter(Boolean),
+        ),
+      );
+      if (ids.length === 0) {
+        if (!cancelled) setImageSrcById({});
+        return;
+      }
+      const assets = await dbApi.getImageAssets(ids);
+      if (cancelled) return;
+      setImageSrcById(Object.fromEntries(assets.map((asset) => [asset.id, asset.dataUrl])));
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    personaDraft.avatarImageId,
+    personaDraft.fullBodyImageId,
+    personaDraft.fullBodySideImageId,
+    personaDraft.fullBodyBackImageId,
+    generatedLookPacks,
+  ]);
+
+  const resolveImageSrc = (raw: string, imageId?: string) => {
+    const normalized = raw.trim();
+    if (normalized.startsWith("idb://")) {
+      const resolvedImageId = (imageId ?? parseImageIdFromLink(normalized)).trim();
+      return imageSrcById[resolvedImageId] ?? "";
+    }
+    return normalized;
+  };
+
+  const draftAvatarSrc = resolveImageSrc(personaDraft.avatarUrl, personaDraft.avatarImageId);
+  const draftFullBodySrc = resolveImageSrc(personaDraft.fullBodyUrl, personaDraft.fullBodyImageId);
+  const draftSideSrc = resolveImageSrc(personaDraft.fullBodySideUrl, personaDraft.fullBodySideImageId);
+  const draftBackSrc = resolveImageSrc(personaDraft.fullBodyBackUrl, personaDraft.fullBodyBackImageId);
+
+  const openPreview = async (
+    src: string,
+    kind: "avatar" | "fullbody" | "side" | "back",
+    imageId?: string,
+  ) => {
+    const normalizedImageId = (imageId ?? "").trim();
+    if (normalizedImageId) {
+      const asset = await dbApi.getImageAsset(normalizedImageId);
+      if (asset?.dataUrl) {
+        setPreviewSrc(asset.dataUrl);
+        setPreviewKind(kind);
+        setPreviewMetaOverride(asset.meta);
+        return;
+      }
+    }
+    setPreviewSrc(src || null);
+    setPreviewKind(kind);
+    setPreviewMetaOverride(undefined);
+  };
+
+  const resolvePreviewMeta = (src: string | null, kind: "avatar" | "fullbody" | "side" | "back" | null) => {
+    if (!src) return undefined;
+    if (kind) {
+      const slotMeta = imageMetaByUrl[`__slot__:${kind}`];
+      if (slotMeta) return slotMeta;
+    }
+    const normalizedSrc = src.trim();
+    const direct = imageMetaByUrl[normalizedSrc] ?? imageMetaByUrl[src];
+    if (direct) return direct;
+    if (normalizedSrc === draftAvatarSrc.trim()) return imageMetaByUrl["__slot__:avatar"];
+    if (normalizedSrc === draftFullBodySrc.trim()) return imageMetaByUrl["__slot__:fullbody"];
+    if (normalizedSrc === draftSideSrc.trim()) return imageMetaByUrl["__slot__:side"];
+    if (normalizedSrc === draftBackSrc.trim()) return imageMetaByUrl["__slot__:back"];
+    return undefined;
+  };
   const hasAppearance = Object.values(personaDraft.appearance).some((value) => value.trim());
   const describeGeneratedAppearance = (draft: GeneratedPersonaDraft) =>
     [
@@ -569,81 +674,89 @@ export function PersonaModal({
                 personaDraft.fullBodySideUrl ||
                 personaDraft.fullBodyBackUrl ? (
                   <div className="persona-look-grid">
-                    {personaDraft.avatarUrl ? (
+                    {draftAvatarSrc ? (
                       <article className="persona-look-card avatar">
                         <span>Avatar</span>
                         <div className="persona-look-image-wrap">
                           <button
                             type="button"
                             className="persona-look-preview-btn"
-                            onClick={() => setPreviewSrc(personaDraft.avatarUrl)}
+                            onClick={() => {
+                              void openPreview(draftAvatarSrc, "avatar", personaDraft.avatarImageId);
+                            }}
                           >
-                            <img src={personaDraft.avatarUrl} alt="persona-avatar" loading="lazy" />
+                            <img src={draftAvatarSrc} alt="persona-avatar" loading="lazy" />
                           </button>
                           <EnhanceOverlayButton
                             busy={enhancingLookImageKey === "draft:avatar"}
                             onEnhance={(targetOverride) =>
-                              onEnhanceLookImage(null, "avatar", personaDraft.avatarUrl, targetOverride)
+                              onEnhanceLookImage(null, "avatar", draftAvatarSrc, targetOverride)
                             }
                           />
                         </div>
                       </article>
                     ) : null}
-                    {personaDraft.fullBodyUrl ? (
+                    {draftFullBodySrc ? (
                       <article className="persona-look-card fullbody">
                         <span>Fullbody</span>
                         <div className="persona-look-image-wrap">
                           <button
                             type="button"
                             className="persona-look-preview-btn"
-                            onClick={() => setPreviewSrc(personaDraft.fullBodyUrl)}
+                            onClick={() => {
+                              void openPreview(draftFullBodySrc, "fullbody", personaDraft.fullBodyImageId);
+                            }}
                           >
-                            <img src={personaDraft.fullBodyUrl} alt="persona-fullbody" loading="lazy" />
+                            <img src={draftFullBodySrc} alt="persona-fullbody" loading="lazy" />
                           </button>
                           <EnhanceOverlayButton
                             busy={enhancingLookImageKey === "draft:fullbody"}
                             onEnhance={(targetOverride) =>
-                              onEnhanceLookImage(null, "fullbody", personaDraft.fullBodyUrl, targetOverride)
+                              onEnhanceLookImage(null, "fullbody", draftFullBodySrc, targetOverride)
                             }
                           />
                         </div>
                       </article>
                     ) : null}
-                    {personaDraft.fullBodySideUrl ? (
+                    {draftSideSrc ? (
                       <article className="persona-look-card fullbody">
                         <span>Fullbody Side</span>
                         <div className="persona-look-image-wrap">
                           <button
                             type="button"
                             className="persona-look-preview-btn"
-                            onClick={() => setPreviewSrc(personaDraft.fullBodySideUrl)}
+                            onClick={() => {
+                              void openPreview(draftSideSrc, "side", personaDraft.fullBodySideImageId);
+                            }}
                           >
-                            <img src={personaDraft.fullBodySideUrl} alt="persona-fullbody-side" loading="lazy" />
+                            <img src={draftSideSrc} alt="persona-fullbody-side" loading="lazy" />
                           </button>
                           <EnhanceOverlayButton
                             busy={enhancingLookImageKey === "draft:side"}
                             onEnhance={(targetOverride) =>
-                              onEnhanceLookImage(null, "side", personaDraft.fullBodySideUrl, targetOverride)
+                              onEnhanceLookImage(null, "side", draftSideSrc, targetOverride)
                             }
                           />
                         </div>
                       </article>
                     ) : null}
-                    {personaDraft.fullBodyBackUrl ? (
+                    {draftBackSrc ? (
                       <article className="persona-look-card fullbody">
                         <span>Fullbody Back</span>
                         <div className="persona-look-image-wrap">
                           <button
                             type="button"
                             className="persona-look-preview-btn"
-                            onClick={() => setPreviewSrc(personaDraft.fullBodyBackUrl)}
+                            onClick={() => {
+                              void openPreview(draftBackSrc, "back", personaDraft.fullBodyBackImageId);
+                            }}
                           >
-                            <img src={personaDraft.fullBodyBackUrl} alt="persona-fullbody-back" loading="lazy" />
+                            <img src={draftBackSrc} alt="persona-fullbody-back" loading="lazy" />
                           </button>
                           <EnhanceOverlayButton
                             busy={enhancingLookImageKey === "draft:back"}
                             onEnhance={(targetOverride) =>
-                              onEnhanceLookImage(null, "back", personaDraft.fullBodyBackUrl, targetOverride)
+                              onEnhanceLookImage(null, "back", draftBackSrc, targetOverride)
                             }
                           />
                         </div>
@@ -655,25 +768,34 @@ export function PersonaModal({
                   <div className="generated-list">
                     {generatedLookPacks.map((pack, index) => (
                       <article key={`${pack.fullBodyUrl}-${index}`} className="generated-card">
+                        {(() => {
+                          const packAvatarSrc = resolveImageSrc(pack.avatarUrl, pack.avatarImageId);
+                          const packFullBodySrc = resolveImageSrc(pack.fullBodyUrl, pack.fullBodyImageId);
+                          const packSideSrc = resolveImageSrc(pack.fullBodySideUrl, pack.fullBodySideImageId);
+                          const packBackSrc = resolveImageSrc(pack.fullBodyBackUrl, pack.fullBodyBackImageId);
+                          return (
+                            <>
                         <strong>
                           Пакет #{index + 1} {pack.status === "pending" ? "(генерируется...)" : ""}
                         </strong>
                         <div className="persona-look-grid">
                           <article className="persona-look-card avatar">
                             <span>Avatar</span>
-                            {pack.avatarUrl ? (
+                            {packAvatarSrc ? (
                               <div className="persona-look-image-wrap">
                                 <button
                                   type="button"
                                   className="persona-look-preview-btn"
-                                  onClick={() => setPreviewSrc(pack.avatarUrl)}
+                                  onClick={() => {
+                                    void openPreview(packAvatarSrc, "avatar", pack.avatarImageId);
+                                  }}
                                 >
-                                  <img src={pack.avatarUrl} alt={`look-pack-${index + 1}-avatar`} loading="lazy" />
+                                  <img src={packAvatarSrc} alt={`look-pack-${index + 1}-avatar`} loading="lazy" />
                                 </button>
                                 <EnhanceOverlayButton
                                   busy={enhancingLookImageKey === `${index}:avatar`}
                                   onEnhance={(targetOverride) =>
-                                    onEnhanceLookImage(index, "avatar", pack.avatarUrl, targetOverride)
+                                    onEnhanceLookImage(index, "avatar", packAvatarSrc, targetOverride)
                                   }
                                 />
                               </div>
@@ -683,19 +805,21 @@ export function PersonaModal({
                           </article>
                           <article className="persona-look-card fullbody">
                             <span>Fullbody</span>
-                            {pack.fullBodyUrl ? (
+                            {packFullBodySrc ? (
                               <div className="persona-look-image-wrap">
                                 <button
                                   type="button"
                                   className="persona-look-preview-btn"
-                                  onClick={() => setPreviewSrc(pack.fullBodyUrl)}
+                                  onClick={() => {
+                                    void openPreview(packFullBodySrc, "fullbody", pack.fullBodyImageId);
+                                  }}
                                 >
-                                  <img src={pack.fullBodyUrl} alt={`look-pack-${index + 1}-fullbody`} loading="lazy" />
+                                  <img src={packFullBodySrc} alt={`look-pack-${index + 1}-fullbody`} loading="lazy" />
                                 </button>
                                 <EnhanceOverlayButton
                                   busy={enhancingLookImageKey === `${index}:fullbody`}
                                   onEnhance={(targetOverride) =>
-                                    onEnhanceLookImage(index, "fullbody", pack.fullBodyUrl, targetOverride)
+                                    onEnhanceLookImage(index, "fullbody", packFullBodySrc, targetOverride)
                                   }
                                 />
                               </div>
@@ -706,15 +830,17 @@ export function PersonaModal({
                           {generateSideView ? (
                             <article className="persona-look-card fullbody">
                               <span>Side</span>
-                              {pack.fullBodySideUrl ? (
+                              {packSideSrc ? (
                                 <div className="persona-look-image-wrap">
                                   <button
                                     type="button"
                                     className="persona-look-preview-btn"
-                                    onClick={() => setPreviewSrc(pack.fullBodySideUrl)}
+                                    onClick={() => {
+                                      void openPreview(packSideSrc, "side", pack.fullBodySideImageId);
+                                    }}
                                   >
                                     <img
-                                      src={pack.fullBodySideUrl}
+                                      src={packSideSrc}
                                       alt={`look-pack-${index + 1}-side`}
                                       loading="lazy"
                                     />
@@ -722,7 +848,7 @@ export function PersonaModal({
                                   <EnhanceOverlayButton
                                     busy={enhancingLookImageKey === `${index}:side`}
                                     onEnhance={(targetOverride) =>
-                                      onEnhanceLookImage(index, "side", pack.fullBodySideUrl, targetOverride)
+                                      onEnhanceLookImage(index, "side", packSideSrc, targetOverride)
                                     }
                                   />
                                 </div>
@@ -734,15 +860,17 @@ export function PersonaModal({
                           {generateBackView ? (
                             <article className="persona-look-card fullbody">
                               <span>Back</span>
-                              {pack.fullBodyBackUrl ? (
+                              {packBackSrc ? (
                                 <div className="persona-look-image-wrap">
                                   <button
                                     type="button"
                                     className="persona-look-preview-btn"
-                                    onClick={() => setPreviewSrc(pack.fullBodyBackUrl)}
+                                    onClick={() => {
+                                      void openPreview(packBackSrc, "back", pack.fullBodyBackImageId);
+                                    }}
                                   >
                                     <img
-                                      src={pack.fullBodyBackUrl}
+                                      src={packBackSrc}
                                       alt={`look-pack-${index + 1}-back`}
                                       loading="lazy"
                                     />
@@ -750,7 +878,7 @@ export function PersonaModal({
                                   <EnhanceOverlayButton
                                     busy={enhancingLookImageKey === `${index}:back`}
                                     onEnhance={(targetOverride) =>
-                                      onEnhanceLookImage(index, "back", pack.fullBodyBackUrl, targetOverride)
+                                      onEnhanceLookImage(index, "back", packBackSrc, targetOverride)
                                     }
                                   />
                                 </div>
@@ -767,6 +895,9 @@ export function PersonaModal({
                         >
                           Применить этот пакет
                         </button>
+                            </>
+                          );
+                        })()}
                       </article>
                     ))}
                   </div>
@@ -1315,8 +1446,12 @@ export function PersonaModal({
       </div>
       <ImagePreviewModal
         src={previewSrc}
-        meta={previewSrc ? imageMetaByUrl[previewSrc] : undefined}
-        onClose={() => setPreviewSrc(null)}
+        meta={previewMetaOverride ?? resolvePreviewMeta(previewSrc, previewKind)}
+        onClose={() => {
+          setPreviewSrc(null);
+          setPreviewKind(null);
+          setPreviewMetaOverride(undefined);
+        }}
       />
     </div>
   );

@@ -36,6 +36,7 @@ import {
 
 type PersonaLookPromptBundle = Awaited<ReturnType<typeof generatePersonaLookPrompts>>;
 type PwaInstallStatus = "installed" | "available" | "unavailable";
+type LookMetaKind = "avatar" | "fullbody" | "side" | "back";
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -55,6 +56,67 @@ function waitMs(ms: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+function splitPromptTags(prompt: string) {
+  return prompt
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function mergePromptTags(basePrompt: string, additionalTags: string[]) {
+  const existing = splitPromptTags(basePrompt);
+  const seen = new Set(existing.map((tag) => tag.toLowerCase()));
+  const merged = [...existing];
+  for (const tag of additionalTags.map((item) => item.trim()).filter(Boolean)) {
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(tag);
+  }
+  return merged.join(", ");
+}
+
+const LOOK_META_SLOT_KEY: Record<LookMetaKind, string> = {
+  avatar: "__slot__:avatar",
+  fullbody: "__slot__:fullbody",
+  side: "__slot__:side",
+  back: "__slot__:back",
+};
+
+function withLookMeta(
+  prev: Record<string, ComfyImageGenerationMeta>,
+  updates: Array<{ kind: LookMetaKind; url?: string; meta: ComfyImageGenerationMeta }>,
+) {
+  const next = { ...prev };
+  for (const update of updates) {
+    if (update.url) {
+      next[update.url] = update.meta;
+    }
+    next[LOOK_META_SLOT_KEY[update.kind]] = update.meta;
+  }
+  return next;
+}
+
+function synchronizeLookMetaWithUrls(
+  metaByUrl: Record<string, ComfyImageGenerationMeta> | undefined,
+  urls: Partial<Record<LookMetaKind, string>>,
+) {
+  const next: Record<string, ComfyImageGenerationMeta> = { ...(metaByUrl ?? {}) };
+  for (const kind of Object.keys(LOOK_META_SLOT_KEY) as LookMetaKind[]) {
+    const slotKey = LOOK_META_SLOT_KEY[kind];
+    const url = (urls[kind] ?? "").trim();
+    const slotMeta = next[slotKey];
+    const urlMeta = url ? next[url] : undefined;
+    const resolved = slotMeta ?? urlMeta;
+    if (!resolved) continue;
+    next[slotKey] = resolved;
+    if (url) {
+      next[url] = resolved;
+    }
+  }
+  return next;
 }
 
 function mapEnhanceTargetToDetailTargets(
@@ -83,12 +145,24 @@ function stringifyAppearance(appearance: Persona["appearance"]) {
     .join(", ");
 }
 
+function toImageAssetLink(imageId: string) {
+  const normalized = imageId.trim();
+  return normalized ? `idb://${normalized}` : "";
+}
+
+function parseImageAssetId(value: string) {
+  const normalized = value.trim();
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
+
 export default function App() {
   const [enhanceReview, setEnhanceReview] = useState<{
     packIndex: number | null;
     kind: "avatar" | "fullbody" | "side" | "back";
     beforeUrl: string;
     afterUrl: string;
+    afterImageId: string;
   } | null>(null);
 
   const {
@@ -163,6 +237,7 @@ export default function App() {
   const lookGenerationAbortRef = useRef<AbortController | null>(null);
   const lookEnhanceRunRef = useRef(0);
   const lookEnhanceAbortRef = useRef<AbortController | null>(null);
+  const lookSessionAssetIdsRef = useRef<Set<string>>(new Set());
   const lookPromptBundleCacheRef = useRef<{
     key: string;
     bundle: PersonaLookPromptBundle;
@@ -427,9 +502,128 @@ export default function App() {
     setGenerationSessionId((prev) => (prev === sessionId ? nextSessionId : prev));
   };
 
-  const startEditPersona = (persona: Persona) => {
+  const buildLookSlotMeta = (
+    kind: LookMetaKind,
+    syncedLookMeta: Record<string, ComfyImageGenerationMeta>,
+    url: string,
+  ) => {
+    const normalizedUrl = url.trim();
+    if (normalizedUrl && syncedLookMeta[normalizedUrl]) return syncedLookMeta[normalizedUrl];
+    return syncedLookMeta[LOOK_META_SLOT_KEY[kind]];
+  };
+
+  const createLookAsset = async (
+    imageUrl: string,
+    meta: ComfyImageGenerationMeta | undefined,
+  ) => {
+    const normalizedUrl = imageUrl.trim();
+    if (!normalizedUrl) return "";
+    if (normalizedUrl.startsWith("idb://")) {
+      const existingId = normalizedUrl.slice("idb://".length).trim();
+      if (!existingId) return "";
+      if (meta) {
+        const existing = await dbApi.getImageAsset(existingId);
+        if (existing) {
+          await dbApi.saveImageAsset({
+            ...existing,
+            meta,
+          });
+        }
+      }
+      return existingId;
+    }
+    const imageId = crypto.randomUUID();
+    await dbApi.saveImageAsset({
+      id: imageId,
+      dataUrl: normalizedUrl,
+      meta,
+      createdAt: new Date().toISOString(),
+    });
+    lookSessionAssetIdsRef.current.add(imageId);
+    return imageId;
+  };
+
+  const saveLookImageAndGetRef = async (
+    imageUrl: string,
+    meta: ComfyImageGenerationMeta,
+  ) => {
+    const imageId = await createLookAsset(imageUrl, meta);
+    return {
+      imageId,
+      imageUrl: toImageAssetLink(imageId),
+    };
+  };
+
+  const startEditPersona = async (persona: Persona) => {
+    const imageAssets = await dbApi.getImageAssets([
+      persona.avatarImageId,
+      persona.fullBodyImageId,
+      persona.fullBodySideImageId,
+      persona.fullBodyBackImageId,
+    ]);
+    const assetById = Object.fromEntries(imageAssets.map((asset) => [asset.id, asset]));
+    const resolvedAvatarUrl =
+      assetById[persona.avatarImageId]?.dataUrl ||
+      (persona.avatarUrl.startsWith("idb://") ? "" : persona.avatarUrl) ||
+      "";
+    const resolvedFullBodyUrl =
+      assetById[persona.fullBodyImageId]?.dataUrl ||
+      (persona.fullBodyUrl.startsWith("idb://") ? "" : persona.fullBodyUrl) ||
+      "";
+    const resolvedSideUrl =
+      assetById[persona.fullBodySideImageId]?.dataUrl ||
+      (persona.fullBodySideUrl.startsWith("idb://") ? "" : persona.fullBodySideUrl) ||
+      "";
+    const resolvedBackUrl =
+      assetById[persona.fullBodyBackImageId]?.dataUrl ||
+      (persona.fullBodyBackUrl.startsWith("idb://") ? "" : persona.fullBodyBackUrl) ||
+      "";
+    const syncedLookMeta = synchronizeLookMetaWithUrls(persona.imageMetaByUrl, {
+      avatar: resolvedAvatarUrl,
+      fullbody: resolvedFullBodyUrl,
+      side: resolvedSideUrl,
+      back: resolvedBackUrl,
+    });
+    const avatarMeta = persona.avatarImageId ? assetById[persona.avatarImageId]?.meta : undefined;
+    if (avatarMeta) {
+      syncedLookMeta[LOOK_META_SLOT_KEY.avatar] = avatarMeta;
+      if (resolvedAvatarUrl) syncedLookMeta[resolvedAvatarUrl] = avatarMeta;
+    }
+    const fullBodyMeta = persona.fullBodyImageId ? assetById[persona.fullBodyImageId]?.meta : undefined;
+    if (fullBodyMeta) {
+      syncedLookMeta[LOOK_META_SLOT_KEY.fullbody] = fullBodyMeta;
+      if (resolvedFullBodyUrl) syncedLookMeta[resolvedFullBodyUrl] = fullBodyMeta;
+    }
+    const sideMeta = persona.fullBodySideImageId ? assetById[persona.fullBodySideImageId]?.meta : undefined;
+    if (sideMeta) {
+      syncedLookMeta[LOOK_META_SLOT_KEY.side] = sideMeta;
+      if (resolvedSideUrl) syncedLookMeta[resolvedSideUrl] = sideMeta;
+    }
+    const backMeta = persona.fullBodyBackImageId ? assetById[persona.fullBodyBackImageId]?.meta : undefined;
+    if (backMeta) {
+      syncedLookMeta[LOOK_META_SLOT_KEY.back] = backMeta;
+      if (resolvedBackUrl) syncedLookMeta[resolvedBackUrl] = backMeta;
+    }
+
+    const ensureImageId = async (
+      kind: LookMetaKind,
+      existingImageId: string,
+      resolvedUrl: string,
+    ) => {
+      const normalizedExisting = existingImageId.trim();
+      if (normalizedExisting) return normalizedExisting;
+      const normalizedUrl = resolvedUrl.trim();
+      if (!normalizedUrl || normalizedUrl.startsWith("idb://")) return "";
+      return createLookAsset(normalizedUrl, buildLookSlotMeta(kind, syncedLookMeta, normalizedUrl));
+    };
+
+    const avatarImageId = await ensureImageId("avatar", persona.avatarImageId, resolvedAvatarUrl);
+    const fullBodyImageId = await ensureImageId("fullbody", persona.fullBodyImageId, resolvedFullBodyUrl);
+    const fullBodySideImageId = await ensureImageId("side", persona.fullBodySideImageId, resolvedSideUrl);
+    const fullBodyBackImageId = await ensureImageId("back", persona.fullBodyBackImageId, resolvedBackUrl);
     setEditingPersonaId(persona.id);
     setGeneratedLookPacks([]);
+    setLookImageMetaByUrl(syncedLookMeta);
     setPersonaDraft({
       name: persona.name,
       personalityPrompt: persona.personalityPrompt,
@@ -437,10 +631,15 @@ export default function App() {
       appearance: persona.appearance,
       imageCheckpoint: persona.imageCheckpoint,
       advanced: persona.advanced,
-      avatarUrl: persona.avatarUrl,
-      fullBodyUrl: persona.fullBodyUrl,
-      fullBodySideUrl: persona.fullBodySideUrl,
-      fullBodyBackUrl: persona.fullBodyBackUrl,
+      avatarUrl: avatarImageId ? toImageAssetLink(avatarImageId) : resolvedAvatarUrl,
+      fullBodyUrl: fullBodyImageId ? toImageAssetLink(fullBodyImageId) : resolvedFullBodyUrl,
+      fullBodySideUrl: fullBodySideImageId ? toImageAssetLink(fullBodySideImageId) : resolvedSideUrl,
+      fullBodyBackUrl: fullBodyBackImageId ? toImageAssetLink(fullBodyBackImageId) : resolvedBackUrl,
+      avatarImageId,
+      fullBodyImageId,
+      fullBodySideImageId,
+      fullBodyBackImageId,
+      imageMetaByUrl: syncedLookMeta,
     });
     setShowPersonaModal(true);
     setPersonaModalTab("editor");
@@ -449,25 +648,101 @@ export default function App() {
   const onPersonaSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (!personaDraft.name.trim()) return;
-    await savePersona({ ...personaDraft, id: editingPersonaId ?? undefined });
+    const syncedLookMeta = synchronizeLookMetaWithUrls(lookImageMetaByUrl, {
+      avatar: personaDraft.avatarUrl,
+      fullbody: personaDraft.fullBodyUrl,
+      side: personaDraft.fullBodySideUrl,
+      back: personaDraft.fullBodyBackUrl,
+    });
+    const avatarImageId = await createLookAsset(
+      personaDraft.avatarUrl,
+      buildLookSlotMeta("avatar", syncedLookMeta, personaDraft.avatarUrl),
+    );
+    const fullBodyImageId = await createLookAsset(
+      personaDraft.fullBodyUrl,
+      buildLookSlotMeta("fullbody", syncedLookMeta, personaDraft.fullBodyUrl),
+    );
+    const fullBodySideImageId = await createLookAsset(
+      personaDraft.fullBodySideUrl,
+      buildLookSlotMeta("side", syncedLookMeta, personaDraft.fullBodySideUrl),
+    );
+    const fullBodyBackImageId = await createLookAsset(
+      personaDraft.fullBodyBackUrl,
+      buildLookSlotMeta("back", syncedLookMeta, personaDraft.fullBodyBackUrl),
+    );
+    await savePersona({
+      ...personaDraft,
+      avatarUrl: toImageAssetLink(avatarImageId),
+      fullBodyUrl: toImageAssetLink(fullBodyImageId),
+      fullBodySideUrl: toImageAssetLink(fullBodySideImageId),
+      fullBodyBackUrl: toImageAssetLink(fullBodyBackImageId),
+      imageMetaByUrl: syncedLookMeta,
+      avatarImageId,
+      fullBodyImageId,
+      fullBodySideImageId,
+      fullBodyBackImageId,
+      id: editingPersonaId ?? undefined,
+    });
+    for (const retainedId of [avatarImageId, fullBodyImageId, fullBodySideImageId, fullBodyBackImageId]) {
+      if (retainedId) {
+        lookSessionAssetIdsRef.current.delete(retainedId);
+      }
+    }
     setEditingPersonaId(null);
+    setLookImageMetaByUrl({});
     setPersonaDraft(createEmptyPersonaDraft());
   };
 
   const onResetDraft = () => {
     setEditingPersonaId(null);
     setGeneratedLookPacks([]);
+    setLookImageMetaByUrl({});
     setPersonaDraft(createEmptyPersonaDraft());
   };
 
   const applyLookPack = (pack: PersonaLookPack) => {
+    setLookImageMetaByUrl((prev) =>
+      synchronizeLookMetaWithUrls(prev, {
+        avatar: pack.avatarUrl,
+        fullbody: pack.fullBodyUrl,
+        side: pack.fullBodySideUrl,
+        back: pack.fullBodyBackUrl,
+      }),
+    );
     setPersonaDraft((prev) => ({
       ...prev,
       avatarUrl: pack.avatarUrl,
       fullBodyUrl: pack.fullBodyUrl,
       fullBodySideUrl: pack.fullBodySideUrl,
       fullBodyBackUrl: pack.fullBodyBackUrl,
+      avatarImageId: pack.avatarImageId ?? parseImageAssetId(pack.avatarUrl),
+      fullBodyImageId: pack.fullBodyImageId ?? parseImageAssetId(pack.fullBodyUrl),
+      fullBodySideImageId: pack.fullBodySideImageId ?? parseImageAssetId(pack.fullBodySideUrl),
+      fullBodyBackImageId: pack.fullBodyBackImageId ?? parseImageAssetId(pack.fullBodyBackUrl),
     }));
+  };
+
+  const closePersonaModal = async () => {
+    stopPersonaLookGeneration();
+    stopLookEnhancement();
+    const referencedIds = new Set(
+      personas.flatMap((persona) =>
+        [
+          persona.avatarImageId,
+          persona.fullBodyImageId,
+          persona.fullBodySideImageId,
+          persona.fullBodyBackImageId,
+        ]
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    );
+    const orphans = Array.from(lookSessionAssetIdsRef.current).filter((id) => !referencedIds.has(id));
+    if (orphans.length > 0) {
+      await dbApi.deleteImageAssets(orphans);
+    }
+    lookSessionAssetIdsRef.current.clear();
+    setShowPersonaModal(false);
   };
 
   const onSettingsSubmit = async (event: FormEvent) => {
@@ -569,7 +844,28 @@ export default function App() {
             prev.map((pack, idx) => (idx === packIndex ? { ...pack, ...patch } : pack)),
           );
         };
-        const fullBodyPrompt = `${promptBundle.fullBodyPrompt}, full body, neutral standing pose, calm pose, relaxed posture, hands at sides, arms relaxed, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`;
+        const fullBodyPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
+          "full body",
+          "neutral standing pose",
+          "calm pose",
+          "relaxed posture",
+          "hands at sides",
+          "arms relaxed",
+          "solo",
+          "single subject",
+          "exactly one person",
+          "no other people",
+          "no crowd",
+          "no duplicate body",
+          "no extra limbs",
+          "no collage",
+          "plain background",
+          "solid background",
+          "studio backdrop",
+          "isolated subject",
+          "clean background",
+          "no environment",
+        ]);
         const fullBodyUrls = await generateComfyImages(
           [
             {
@@ -601,37 +897,70 @@ export default function App() {
         ensureActive();
         const localizedFullBody = await localizeImageUrls(fullBodyUrls);
         ensureActive();
-        const fullBodyRef = localizedFullBody[0];
-        if (!fullBodyRef) {
+        const fullBodySource = localizedFullBody[0];
+        if (!fullBodySource) {
           throw new Error(`Не удалось сгенерировать fullbody reference для пакета #${packIndex + 1}.`);
         }
-        setLookImageMetaByUrl((prev) => ({
-          ...prev,
-          ...(fullBodyUrls[0]
-            ? {
-                [fullBodyUrls[0]]: {
-                  seed: packSeed,
-                  prompt: fullBodyPrompt,
-                  model: personaDraft.imageCheckpoint || undefined,
-                  flow: "base",
-                },
-              }
-            : {}),
-          [fullBodyRef]: {
-            seed: packSeed,
-            prompt: fullBodyPrompt,
-            model: personaDraft.imageCheckpoint || undefined,
-            flow: "base",
-          },
-        }));
-        patchPack({ fullBodyUrl: fullBodyRef });
+        const fullBodyMeta: ComfyImageGenerationMeta = {
+          seed: packSeed,
+          prompt: fullBodyPrompt,
+          model: personaDraft.imageCheckpoint || undefined,
+          flow: "base",
+        };
+        const fullBodyAsset = await saveLookImageAndGetRef(fullBodySource, fullBodyMeta);
+        const fullBodyRef = fullBodyAsset.imageUrl;
+        setLookImageMetaByUrl((prev) =>
+          withLookMeta(prev, [
+            {
+              kind: "fullbody",
+              url: fullBodyUrls[0],
+              meta: fullBodyMeta,
+            },
+            {
+              kind: "fullbody",
+              url: fullBodyRef,
+              meta: fullBodyMeta,
+            },
+          ]),
+        );
+        patchPack({ fullBodyUrl: fullBodyRef, fullBodyImageId: fullBodyAsset.imageId });
 
         let sideRef = "";
         if (generateSideView) {
           const sideSeed = packSeed + 101;
           const sideReferenceStrength = 0.72;
           const sideCompositionStrength = 0.22;
-          const sidePrompt = `${promptBundle.fullBodyPrompt}, full body, strict side profile, exact 90 degree side view, body fully rotated sideways, profile silhouette, single eye visible, single cheek visible, shoulder line in profile, hips in profile, no frontal pose, no three-quarter pose, no back pose, neutral standing pose, relaxed posture, arms relaxed, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`;
+          const sidePrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
+            "full body",
+            "strict side profile",
+            "exact 90 degree side view",
+            "body fully rotated sideways",
+            "profile silhouette",
+            "single eye visible",
+            "single cheek visible",
+            "shoulder line in profile",
+            "hips in profile",
+            "no frontal pose",
+            "no three-quarter pose",
+            "no back pose",
+            "neutral standing pose",
+            "relaxed posture",
+            "arms relaxed",
+            "solo",
+            "single subject",
+            "exactly one person",
+            "no other people",
+            "no crowd",
+            "no duplicate body",
+            "no extra limbs",
+            "no collage",
+            "plain background",
+            "solid background",
+            "studio backdrop",
+            "isolated subject",
+            "clean background",
+            "no environment",
+          ]);
           const sideUrls = await generateComfyImages(
             [
               {
@@ -641,7 +970,7 @@ export default function App() {
                 height: fullBodyHeight,
                 seed: sideSeed,
                 checkpointName: personaDraft.imageCheckpoint || undefined,
-                styleReferenceImage: fullBodyRef,
+                styleReferenceImage: fullBodySource,
                 styleStrength: sideReferenceStrength,
                 compositionStrength: sideCompositionStrength,
                 forceHiResFix: useHiResFix,
@@ -665,28 +994,31 @@ export default function App() {
           ensureActive();
           const localizedSide = await localizeImageUrls(sideUrls);
           ensureActive();
-          sideRef = localizedSide[0] ?? "";
+          const sideSource = localizedSide[0] ?? "";
+          const sideMeta: ComfyImageGenerationMeta = {
+            seed: sideSeed,
+            prompt: sidePrompt,
+            model: personaDraft.imageCheckpoint || undefined,
+            flow: "i2i",
+          };
+          const sideAsset = sideSource ? await saveLookImageAndGetRef(sideSource, sideMeta) : null;
+          sideRef = sideAsset?.imageUrl ?? "";
           if (sideRef) {
-            setLookImageMetaByUrl((prev) => ({
-              ...prev,
-              ...(sideUrls[0]
-                ? {
-                    [sideUrls[0]]: {
-                      seed: sideSeed,
-                      prompt: sidePrompt,
-                      model: personaDraft.imageCheckpoint || undefined,
-                      flow: "i2i",
-                    },
-                  }
-                : {}),
-              [sideRef]: {
-                seed: sideSeed,
-                prompt: sidePrompt,
-                model: personaDraft.imageCheckpoint || undefined,
-                flow: "i2i",
-              },
-            }));
-            patchPack({ fullBodySideUrl: sideRef });
+            setLookImageMetaByUrl((prev) =>
+              withLookMeta(prev, [
+                {
+                  kind: "side",
+                  url: sideUrls[0],
+                  meta: sideMeta,
+                },
+                {
+                  kind: "side",
+                  url: sideRef,
+                  meta: sideMeta,
+                },
+              ]),
+            );
+            patchPack({ fullBodySideUrl: sideRef, fullBodySideImageId: sideAsset?.imageId });
           }
         }
 
@@ -695,7 +1027,36 @@ export default function App() {
           const backSeed = packSeed + 211;
           const backReferenceStrength = 0.72;
           const backCompositionStrength = 0.22;
-          const backPrompt = `${promptBundle.fullBodyPrompt}, full body, strict back view, rear view, exactly from behind, back facing camera, face not visible, no frontal pose, no side pose, no three-quarter pose, shoulder blades visible from behind, back silhouette centered, neutral standing pose, relaxed posture, arms relaxed, solo, single subject, exactly one person, no other people, no crowd, no duplicate body, no extra limbs, no collage, plain background, solid background, studio backdrop, isolated subject, clean background, no environment`;
+          const backPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
+            "full body",
+            "strict back view",
+            "rear view",
+            "exactly from behind",
+            "back facing camera",
+            "face not visible",
+            "no frontal pose",
+            "no side pose",
+            "no three-quarter pose",
+            "shoulder blades visible from behind",
+            "back silhouette centered",
+            "neutral standing pose",
+            "relaxed posture",
+            "arms relaxed",
+            "solo",
+            "single subject",
+            "exactly one person",
+            "no other people",
+            "no crowd",
+            "no duplicate body",
+            "no extra limbs",
+            "no collage",
+            "plain background",
+            "solid background",
+            "studio backdrop",
+            "isolated subject",
+            "clean background",
+            "no environment",
+          ]);
           const backUrls = await generateComfyImages(
             [
               {
@@ -705,7 +1066,7 @@ export default function App() {
                 height: fullBodyHeight,
                 seed: backSeed,
                 checkpointName: personaDraft.imageCheckpoint || undefined,
-                styleReferenceImage: fullBodyRef,
+                styleReferenceImage: fullBodySource,
                 styleStrength: backReferenceStrength,
                 compositionStrength: backCompositionStrength,
                 forceHiResFix: useHiResFix,
@@ -729,32 +1090,49 @@ export default function App() {
           ensureActive();
           const localizedBack = await localizeImageUrls(backUrls);
           ensureActive();
-          backRef = localizedBack[0] ?? "";
+          const backSource = localizedBack[0] ?? "";
+          const backMeta: ComfyImageGenerationMeta = {
+            seed: backSeed,
+            prompt: backPrompt,
+            model: personaDraft.imageCheckpoint || undefined,
+            flow: "i2i",
+          };
+          const backAsset = backSource ? await saveLookImageAndGetRef(backSource, backMeta) : null;
+          backRef = backAsset?.imageUrl ?? "";
           if (backRef) {
-            setLookImageMetaByUrl((prev) => ({
-              ...prev,
-              ...(backUrls[0]
-                ? {
-                    [backUrls[0]]: {
-                      seed: backSeed,
-                      prompt: backPrompt,
-                      model: personaDraft.imageCheckpoint || undefined,
-                      flow: "i2i",
-                    },
-                  }
-                : {}),
-              [backRef]: {
-                seed: backSeed,
-                prompt: backPrompt,
-                model: personaDraft.imageCheckpoint || undefined,
-                flow: "i2i",
-              },
-            }));
-            patchPack({ fullBodyBackUrl: backRef });
+            setLookImageMetaByUrl((prev) =>
+              withLookMeta(prev, [
+                {
+                  kind: "back",
+                  url: backUrls[0],
+                  meta: backMeta,
+                },
+                {
+                  kind: "back",
+                  url: backRef,
+                  meta: backMeta,
+                },
+              ]),
+            );
+            patchPack({ fullBodyBackUrl: backRef, fullBodyBackImageId: backAsset?.imageId });
           }
         }
 
-        const avatarPrompt = `${promptBundle.avatarPrompt}, close-up, close face, headshot, face focus, looking at viewer, solo, single subject, one person, no other people, no crowd, detailed background, environmental context, realistic location`;
+        const avatarPrompt = mergePromptTags(promptBundle.avatarPrompt, [
+          "close-up",
+          "close face",
+          "headshot",
+          "face focus",
+          "looking at viewer",
+          "solo",
+          "single subject",
+          "one person",
+          "no other people",
+          "no crowd",
+          "detailed background",
+          "environmental context",
+          "realistic location",
+        ]);
         const avatarUrls = await generateComfyImages(
           [
             {
@@ -763,7 +1141,7 @@ export default function App() {
               height: avatarSize,
               seed: packSeed,
               checkpointName: personaDraft.imageCheckpoint || undefined,
-              styleReferenceImage: fullBodyRef,
+                styleReferenceImage: fullBodySource,
               styleStrength: 1,
               compositionStrength: 0,
               saveComfyOutputs: settings.saveComfyOutputs,
@@ -784,30 +1162,33 @@ export default function App() {
         ensureActive();
         const localizedAvatar = await localizeImageUrls(avatarUrls);
         ensureActive();
-        const avatarRef = localizedAvatar[0] ?? "";
+        const avatarSource = localizedAvatar[0] ?? "";
+        const avatarMeta: ComfyImageGenerationMeta = {
+          seed: packSeed,
+          prompt: avatarPrompt,
+          model: personaDraft.imageCheckpoint || undefined,
+          flow: "i2i",
+        };
+        const avatarAsset = avatarSource ? await saveLookImageAndGetRef(avatarSource, avatarMeta) : null;
+        const avatarRef = avatarAsset?.imageUrl ?? "";
         if (!avatarRef) {
           throw new Error(`Не удалось сгенерировать avatar для пакета #${packIndex + 1}.`);
         }
-        setLookImageMetaByUrl((prev) => ({
-          ...prev,
-          ...(avatarUrls[0]
-            ? {
-                [avatarUrls[0]]: {
-                  seed: packSeed,
-                  prompt: avatarPrompt,
-                  model: personaDraft.imageCheckpoint || undefined,
-                  flow: "i2i",
-                },
-              }
-            : {}),
-          [avatarRef]: {
-            seed: packSeed,
-            prompt: avatarPrompt,
-            model: personaDraft.imageCheckpoint || undefined,
-            flow: "i2i",
-          },
-        }));
-        patchPack({ avatarUrl: avatarRef });
+        setLookImageMetaByUrl((prev) =>
+          withLookMeta(prev, [
+            {
+              kind: "avatar",
+              url: avatarUrls[0],
+              meta: avatarMeta,
+            },
+            {
+              kind: "avatar",
+              url: avatarRef,
+              meta: avatarMeta,
+            },
+          ]),
+        );
+        patchPack({ avatarUrl: avatarRef, avatarImageId: avatarAsset?.imageId });
 
         const readyPack: PersonaLookPack = {
           status: "ready",
@@ -815,7 +1196,15 @@ export default function App() {
           fullBodyUrl: fullBodyRef,
           fullBodySideUrl: sideRef,
           fullBodyBackUrl: backRef,
+          avatarImageId: avatarAsset?.imageId,
+          fullBodyImageId: fullBodyAsset.imageId,
         };
+        if (generateSideView) {
+          readyPack.fullBodySideImageId = parseImageAssetId(sideRef);
+        }
+        if (generateBackView) {
+          readyPack.fullBodyBackImageId = parseImageAssetId(backRef);
+        }
         packs.push(readyPack);
         patchPack(readyPack);
         if (packIndex === 0) {
@@ -911,7 +1300,14 @@ export default function App() {
       const enhanceSeed = stableSeedFromText(
         `${sourceSeed}:${imageUrl}:${kind}:${targetOverride ?? lookEnhanceTarget}:${Date.now()}`,
       );
-      const enhancePrompt = `${sourcePrompt}, same person, same identity, same outfit, same framing, preserve composition, highly detailed`;
+      const enhancePrompt = mergePromptTags(sourcePrompt, [
+        "same person",
+        "same identity",
+        "same outfit",
+        "same framing",
+        "preserve composition",
+        "highly detailed",
+      ]);
       const enhancedUrls = await generateComfyImages(
         [
           {
@@ -951,34 +1347,38 @@ export default function App() {
       ensureEnhanceActive();
       const localized = await localizeImageUrls(enhancedUrls);
       ensureEnhanceActive();
-      const improved = localized[0];
+      const enhanceMeta: ComfyImageGenerationMeta = {
+        seed: enhanceSeed,
+        prompt: sourcePrompt,
+        model: personaDraft.imageCheckpoint || undefined,
+        flow: "i2i",
+      };
+      const improvedSource = localized[0];
+      const improvedAsset = improvedSource ? await saveLookImageAndGetRef(improvedSource, enhanceMeta) : null;
+      const improved = improvedAsset?.imageUrl ?? "";
       if (!improved) {
         throw new Error("Не удалось получить улучшенное изображение.");
       }
-      setLookImageMetaByUrl((prev) => ({
-        ...prev,
-        ...(enhancedUrls[0]
-          ? {
-              [enhancedUrls[0]]: {
-                seed: enhanceSeed,
-                prompt: sourcePrompt,
-                model: personaDraft.imageCheckpoint || undefined,
-                flow: "i2i",
-              },
-            }
-          : {}),
-        [improved]: {
-          seed: enhanceSeed,
-          prompt: sourcePrompt,
-          model: personaDraft.imageCheckpoint || undefined,
-          flow: "i2i",
-        },
-      }));
+      setLookImageMetaByUrl((prev) =>
+        withLookMeta(prev, [
+          {
+            kind,
+            url: enhancedUrls[0],
+            meta: enhanceMeta,
+          },
+          {
+            kind,
+            url: improved,
+            meta: enhanceMeta,
+          },
+        ]),
+      );
       setEnhanceReview({
         packIndex,
         kind,
         beforeUrl: imageUrl,
         afterUrl: improved,
+        afterImageId: improvedAsset?.imageId ?? "",
       });
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
@@ -999,28 +1399,46 @@ export default function App() {
     kind: "avatar" | "fullbody" | "side" | "back",
     beforeUrl: string,
     afterUrl: string,
+    afterImageId: string,
   ) => {
     if (packIndex !== null) {
       setGeneratedLookPacks((prev) =>
-        prev.map((pack, idx) => {
-          if (idx !== packIndex) return pack;
-          if (kind === "avatar") return { ...pack, avatarUrl: afterUrl };
-          if (kind === "side") return { ...pack, fullBodySideUrl: afterUrl };
-          if (kind === "back") return { ...pack, fullBodyBackUrl: afterUrl };
-          return { ...pack, fullBodyUrl: afterUrl };
-        }),
-      );
-    }
-    setPersonaDraft((prev) => ({
-      ...prev,
-      avatarUrl: kind === "avatar" && prev.avatarUrl === beforeUrl ? afterUrl : prev.avatarUrl,
-      fullBodyUrl: kind === "fullbody" && prev.fullBodyUrl === beforeUrl ? afterUrl : prev.fullBodyUrl,
-      fullBodySideUrl: kind === "side" && prev.fullBodySideUrl === beforeUrl ? afterUrl : prev.fullBodySideUrl,
-      fullBodyBackUrl: kind === "back" && prev.fullBodyBackUrl === beforeUrl ? afterUrl : prev.fullBodyBackUrl,
-    }));
+          prev.map((pack, idx) => {
+            if (idx !== packIndex) return pack;
+            if (kind === "avatar") return { ...pack, avatarUrl: afterUrl, avatarImageId: afterImageId };
+            if (kind === "side") return { ...pack, fullBodySideUrl: afterUrl, fullBodySideImageId: afterImageId };
+            if (kind === "back") return { ...pack, fullBodyBackUrl: afterUrl, fullBodyBackImageId: afterImageId };
+            return { ...pack, fullBodyUrl: afterUrl, fullBodyImageId: afterImageId };
+          }),
+        );
+      }
+      setPersonaDraft((prev) => ({
+        ...prev,
+        avatarUrl: kind === "avatar" && prev.avatarUrl === beforeUrl ? afterUrl : prev.avatarUrl,
+        fullBodyUrl: kind === "fullbody" && prev.fullBodyUrl === beforeUrl ? afterUrl : prev.fullBodyUrl,
+        fullBodySideUrl: kind === "side" && prev.fullBodySideUrl === beforeUrl ? afterUrl : prev.fullBodySideUrl,
+        fullBodyBackUrl: kind === "back" && prev.fullBodyBackUrl === beforeUrl ? afterUrl : prev.fullBodyBackUrl,
+        avatarImageId:
+          kind === "avatar" && prev.avatarUrl === beforeUrl
+            ? (afterImageId || prev.avatarImageId)
+            : prev.avatarImageId,
+        fullBodyImageId:
+          kind === "fullbody" && prev.fullBodyUrl === beforeUrl
+            ? (afterImageId || prev.fullBodyImageId)
+            : prev.fullBodyImageId,
+        fullBodySideImageId:
+          kind === "side" && prev.fullBodySideUrl === beforeUrl
+            ? (afterImageId || prev.fullBodySideImageId)
+            : prev.fullBodySideImageId,
+        fullBodyBackImageId:
+          kind === "back" && prev.fullBodyBackUrl === beforeUrl
+            ? (afterImageId || prev.fullBodyBackImageId)
+            : prev.fullBodyBackImageId,
+      }));
   };
 
   const onSaveGenerated = async (draft: GeneratedPersonaDraft) => {
+    const avatarImageId = await createLookAsset(draft.avatarUrl || "", undefined);
     await savePersona({
       name: draft.name,
       personalityPrompt: draft.personalityPrompt,
@@ -1028,14 +1446,19 @@ export default function App() {
       appearance: draft.appearance,
       imageCheckpoint: "",
       advanced: draft.advanced,
-      avatarUrl: draft.avatarUrl || "",
+      avatarUrl: toImageAssetLink(avatarImageId),
       fullBodyUrl: "",
       fullBodySideUrl: "",
       fullBodyBackUrl: "",
+      avatarImageId,
+      fullBodyImageId: "",
+      fullBodySideImageId: "",
+      fullBodyBackImageId: "",
     });
   };
 
   const onMoveGeneratedToEditor = (draft: GeneratedPersonaDraft) => {
+    setLookImageMetaByUrl({});
     setPersonaDraft({
       name: draft.name,
       personalityPrompt: draft.personalityPrompt,
@@ -1047,6 +1470,11 @@ export default function App() {
       fullBodyUrl: "",
       fullBodySideUrl: "",
       fullBodyBackUrl: "",
+      avatarImageId: "",
+      fullBodyImageId: "",
+      fullBodySideImageId: "",
+      fullBodyBackImageId: "",
+      imageMetaByUrl: {},
     });
     setEditingPersonaId(null);
     setPersonaModalTab("editor");
@@ -1180,6 +1608,16 @@ export default function App() {
             model: extractedMeta?.model ?? generationItem.checkpointName,
             flow: extractedMeta?.flow ?? generationItem.flow,
           };
+          await Promise.all(
+            localized.map((url) =>
+              dbApi.saveImageAsset({
+                id: crypto.randomUUID(),
+                dataUrl: url,
+                meta,
+                createdAt: new Date().toISOString(),
+              }),
+            ),
+          );
           localizedMetaByUrl = Object.fromEntries(
             localized.map((url) => [url, meta]),
           );
@@ -1360,7 +1798,9 @@ export default function App() {
           editingPersonaId={editingPersonaId}
           personaDraft={personaDraft}
           setPersonaDraft={setPersonaDraft}
-          onClose={() => setShowPersonaModal(false)}
+          onClose={() => {
+            void closePersonaModal();
+          }}
           onEditPersona={startEditPersona}
           onDeletePersona={(personaId) => void deletePersona(personaId)}
           onSubmitPersona={onPersonaSubmit}
@@ -1389,7 +1829,9 @@ export default function App() {
           onEnhanceLookImage={enhanceLookImage}
           onStopLookEnhancement={stopLookEnhancement}
           generatedLookPacks={generatedLookPacks}
-          onApplyLookPack={applyLookPack}
+          onApplyLookPack={(pack) => {
+            void applyLookPack(pack);
+          }}
           generateSideView={generateSideView}
           setGenerateSideView={setGenerateSideView}
           generateBackView={generateBackView}
@@ -1414,6 +1856,7 @@ export default function App() {
               enhanceReview.kind,
               enhanceReview.beforeUrl,
               enhanceReview.afterUrl,
+              enhanceReview.afterImageId,
             );
             setEnhanceReview(null);
           }}

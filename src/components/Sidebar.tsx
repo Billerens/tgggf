@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { Logo } from "./Logo";
+import { dbApi } from "../db";
 import type { ChatSession, GeneratorSession, Persona } from "../types";
 import type { SidebarTab } from "../ui/types";
 import { formatDate } from "../ui/format";
@@ -49,9 +50,35 @@ interface PersonaPickerProps {
 
 function PersonaPicker({ label, personas, selectedPersonaId, onSelect }: PersonaPickerProps) {
   const [open, setOpen] = useState(false);
+  const [avatarSrcByPersonaId, setAvatarSrcByPersonaId] = useState<Record<string, string>>({});
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selectedPersona =
     personas.find((persona) => persona.id === selectedPersonaId) ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const personaWithImageIds = personas
+        .filter((persona) => persona.avatarImageId.trim())
+        .map((persona) => ({ personaId: persona.id, imageId: persona.avatarImageId.trim() }));
+      if (personaWithImageIds.length === 0) {
+        if (!cancelled) setAvatarSrcByPersonaId({});
+        return;
+      }
+      const assets = await dbApi.getImageAssets(personaWithImageIds.map((item) => item.imageId));
+      if (cancelled) return;
+      const assetById = Object.fromEntries(assets.map((asset) => [asset.id, asset.dataUrl]));
+      setAvatarSrcByPersonaId(
+        Object.fromEntries(
+          personaWithImageIds.map((item) => [item.personaId, assetById[item.imageId] ?? ""]),
+        ),
+      );
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [personas]);
 
   useEffect(() => {
     if (!open) return;
@@ -65,6 +92,17 @@ function PersonaPicker({ label, personas, selectedPersonaId, onSelect }: Persona
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [open]);
 
+  const resolveAvatarSrc = (persona: Persona | null) => {
+    if (!persona) return "";
+    const fromAsset = avatarSrcByPersonaId[persona.id];
+    if (fromAsset) return fromAsset;
+    const raw = persona.avatarUrl.trim();
+    if (!raw || raw.startsWith("idb://")) return "";
+    return raw;
+  };
+
+  const selectedAvatarSrc = resolveAvatarSrc(selectedPersona);
+
   return (
     <div className="sidebar-persona-picker" ref={rootRef}>
       <span>{label}</span>
@@ -75,8 +113,8 @@ function PersonaPicker({ label, personas, selectedPersonaId, onSelect }: Persona
       >
         <div className="sidebar-item-main">
           <div className="sidebar-avatar" aria-hidden="true">
-            {selectedPersona?.avatarUrl ? (
-              <img src={selectedPersona.avatarUrl} alt="" loading="lazy" />
+            {selectedAvatarSrc ? (
+              <img src={selectedAvatarSrc} alt="" loading="lazy" />
             ) : (
               <span>{(selectedPersona?.name || "?").trim().charAt(0).toUpperCase()}</span>
             )}
@@ -102,8 +140,8 @@ function PersonaPicker({ label, personas, selectedPersonaId, onSelect }: Persona
               }}
             >
               <div className="sidebar-avatar" aria-hidden="true">
-                {persona.avatarUrl ? (
-                  <img src={persona.avatarUrl} alt="" loading="lazy" />
+                {resolveAvatarSrc(persona) ? (
+                  <img src={resolveAvatarSrc(persona)} alt="" loading="lazy" />
                 ) : (
                   <span>{persona.name.trim().charAt(0).toUpperCase()}</span>
                 )}
@@ -145,6 +183,42 @@ export function Sidebar({
   onCloseMobile,
   onToggleMobileTab,
 }: SidebarProps) {
+  const [avatarSrcByPersonaId, setAvatarSrcByPersonaId] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const personaWithImageIds = personas
+        .filter((persona) => persona.avatarImageId.trim())
+        .map((persona) => ({ personaId: persona.id, imageId: persona.avatarImageId.trim() }));
+      if (personaWithImageIds.length === 0) {
+        if (!cancelled) setAvatarSrcByPersonaId({});
+        return;
+      }
+      const assets = await dbApi.getImageAssets(personaWithImageIds.map((item) => item.imageId));
+      if (cancelled) return;
+      const assetById = Object.fromEntries(assets.map((asset) => [asset.id, asset.dataUrl]));
+      setAvatarSrcByPersonaId(
+        Object.fromEntries(
+          personaWithImageIds.map((item) => [item.personaId, assetById[item.imageId] ?? ""]),
+        ),
+      );
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [personas]);
+
+  const resolveAvatarSrc = (persona: Persona | null) => {
+    if (!persona) return "";
+    const fromAsset = avatarSrcByPersonaId[persona.id];
+    if (fromAsset) return fromAsset;
+    const raw = persona.avatarUrl.trim();
+    if (!raw || raw.startsWith("idb://")) return "";
+    return raw;
+  };
+
   return (
     <>
       <aside className={`sidebar ${isMobileOpen ? "mobile-open" : ""}`}>
@@ -231,7 +305,7 @@ export function Sidebar({
                   >
                     <div className="sidebar-item-main">
                       <div className="sidebar-avatar" aria-hidden="true">
-                        {chatPersona?.avatarUrl ? <img src={chatPersona.avatarUrl} alt="" loading="lazy" /> : <span>{avatarLetter}</span>}
+                        {resolveAvatarSrc(chatPersona) ? <img src={resolveAvatarSrc(chatPersona)} alt="" loading="lazy" /> : <span>{avatarLetter}</span>}
                       </div>
                       <div className="sidebar-item-text">
                         <strong>{chat.title}</strong>
@@ -261,7 +335,7 @@ export function Sidebar({
                 >
                   <div className="sidebar-item-main">
                     <div className="sidebar-avatar" aria-hidden="true">
-                      {persona.avatarUrl ? <img src={persona.avatarUrl} alt="" loading="lazy" /> : <span>{persona.name.trim().charAt(0).toUpperCase()}</span>}
+                      {resolveAvatarSrc(persona) ? <img src={resolveAvatarSrc(persona)} alt="" loading="lazy" /> : <span>{persona.name.trim().charAt(0).toUpperCase()}</span>}
                     </div>
                     <div className="sidebar-item-text">
                       <strong>{persona.name}</strong>
@@ -316,8 +390,8 @@ export function Sidebar({
                   >
                     <div className="sidebar-item-main">
                       <div className="sidebar-avatar" aria-hidden="true">
-                        {sessionPersona?.avatarUrl ? (
-                          <img src={sessionPersona.avatarUrl} alt="" loading="lazy" />
+                        {resolveAvatarSrc(sessionPersona) ? (
+                          <img src={resolveAvatarSrc(sessionPersona)} alt="" loading="lazy" />
                         ) : (
                           <span>{avatarLetter}</span>
                         )}

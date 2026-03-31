@@ -246,6 +246,10 @@ type LegacyPersonaRecord = Omit<
   | "fullBodyUrl"
   | "fullBodySideUrl"
   | "fullBodyBackUrl"
+  | "avatarImageId"
+  | "fullBodyImageId"
+  | "fullBodySideImageId"
+  | "fullBodyBackImageId"
   | "imageCheckpoint"
 > & {
   advanced?: Partial<PersonaAdvancedProfile>;
@@ -253,6 +257,10 @@ type LegacyPersonaRecord = Omit<
   fullBodyUrl?: string;
   fullBodySideUrl?: string;
   fullBodyBackUrl?: string;
+  avatarImageId?: string;
+  fullBodyImageId?: string;
+  fullBodySideImageId?: string;
+  fullBodyBackImageId?: string;
   imageCheckpoint?: string;
 };
 
@@ -264,6 +272,10 @@ export function normalizePersonaRecord(persona: LegacyPersonaRecord): Persona {
     fullBodyUrl: cleanText(persona.fullBodyUrl),
     fullBodySideUrl: cleanText(persona.fullBodySideUrl),
     fullBodyBackUrl: cleanText(persona.fullBodyBackUrl),
+    avatarImageId: cleanText(persona.avatarImageId),
+    fullBodyImageId: cleanText(persona.fullBodyImageId),
+    fullBodySideImageId: cleanText(persona.fullBodySideImageId),
+    fullBodyBackImageId: cleanText(persona.fullBodyBackImageId),
     advanced: normalizeAdvancedProfile(persona.advanced ?? buildAdvancedProfileFromLegacy(persona)),
   };
 }

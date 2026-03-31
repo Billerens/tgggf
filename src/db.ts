@@ -8,6 +8,7 @@ import type {
   ChatSession,
   EndpointAuthConfig,
   GeneratorSession,
+  ImageAsset,
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
@@ -48,10 +49,15 @@ interface TgGfDb extends DBSchema {
     value: GeneratorSession;
     indexes: { "by-persona": string; "by-updatedAt": string };
   };
+  imageAssets: {
+    key: string;
+    value: ImageAsset;
+    indexes: { "by-createdAt": string };
+  };
 }
 
 const DB_NAME = "tg-gf-db";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
@@ -166,6 +172,14 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
             imageUrls: Array.isArray(entry.imageUrls)
               ? entry.imageUrls.map((url) => (url ?? "").trim()).filter(Boolean)
               : [],
+            imageMetaByUrl:
+              entry.imageMetaByUrl && typeof entry.imageMetaByUrl === "object"
+                ? Object.fromEntries(
+                    Object.entries(entry.imageMetaByUrl).filter(
+                      ([key, value]) => Boolean(key) && Boolean(value && typeof value === "object"),
+                    ),
+                  )
+                : undefined,
           }))
       : [],
   };
@@ -245,6 +259,11 @@ function getDb() {
           const sessions = db.createObjectStore("generatorSessions", { keyPath: "id" });
           sessions.createIndex("by-persona", "personaId");
           sessions.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("imageAssets")) {
+          const imageAssets = db.createObjectStore("imageAssets", { keyPath: "id" });
+          imageAssets.createIndex("by-createdAt", "createdAt");
         }
       },
     });
@@ -422,6 +441,47 @@ export const dbApi = {
   async deleteGeneratorSession(sessionId: string) {
     const db = await getDb();
     await db.delete("generatorSessions", sessionId);
+  },
+
+  async getImageAsset(imageId: string) {
+    const db = await getDb();
+    return db.get("imageAssets", imageId);
+  },
+
+  async getImageAssets(imageIds: string[]) {
+    const uniqueIds = Array.from(
+      new Set(
+        imageIds
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (uniqueIds.length === 0) return [];
+    const db = await getDb();
+    const rows = await Promise.all(uniqueIds.map((imageId) => db.get("imageAssets", imageId)));
+    return rows.filter((row): row is ImageAsset => Boolean(row));
+  },
+
+  async saveImageAsset(asset: ImageAsset) {
+    const db = await getDb();
+    await db.put("imageAssets", asset);
+  },
+
+  async deleteImageAssets(imageIds: string[]) {
+    const uniqueIds = Array.from(
+      new Set(
+        imageIds
+          .map((value) => value.trim())
+          .filter(Boolean),
+      ),
+    );
+    if (uniqueIds.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("imageAssets", "readwrite");
+    for (const imageId of uniqueIds) {
+      await tx.store.delete(imageId);
+    }
+    await tx.done;
   },
 };
 

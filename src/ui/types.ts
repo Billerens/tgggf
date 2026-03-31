@@ -12,6 +12,10 @@ export interface PersonaLookPack {
   fullBodyUrl: string;
   fullBodySideUrl: string;
   fullBodyBackUrl: string;
+  avatarImageId?: string;
+  fullBodyImageId?: string;
+  fullBodySideImageId?: string;
+  fullBodyBackImageId?: string;
 }
 
 export function createEmptyPersonaDraft(): PersonaDraft {
@@ -38,5 +42,10 @@ export function createEmptyPersonaDraft(): PersonaDraft {
     fullBodyUrl: "",
     fullBodySideUrl: "",
     fullBodyBackUrl: "",
+    avatarImageId: "",
+    fullBodyImageId: "",
+    fullBodySideImageId: "",
+    fullBodyBackImageId: "",
+    imageMetaByUrl: {},
   };
 }

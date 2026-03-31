@@ -12,7 +12,7 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/lmstudio/, ""),
       },
       "/comfy/": {
-        target: "https://t2.tun.uforge.online",
+        target: "https://t3.tun.uforge.online",
         changeOrigin: true,
         secure: true,
         rewrite: (path) => path.replace(/^\/comfy/, ""),

@@ -25,8 +25,22 @@ import type {
   PersonaRuntimeState,
 } from "./types";
 
-type PersonaInput = Omit<Persona, "id" | "createdAt" | "updatedAt" | "advanced"> & {
+type PersonaInput = Omit<
+  Persona,
+  | "id"
+  | "createdAt"
+  | "updatedAt"
+  | "advanced"
+  | "avatarImageId"
+  | "fullBodyImageId"
+  | "fullBodySideImageId"
+  | "fullBodyBackImageId"
+> & {
   advanced?: PersonaAdvancedProfile;
+  avatarImageId?: string;
+  fullBodyImageId?: string;
+  fullBodySideImageId?: string;
+  fullBodyBackImageId?: string;
   id?: string;
 };
 
@@ -182,6 +196,10 @@ export const useAppStore = create<AppState>((set, get) => ({
           fullBodyUrl: "",
           fullBodySideUrl: "",
           fullBodyBackUrl: "",
+          avatarImageId: "",
+          fullBodyImageId: "",
+          fullBodySideImageId: "",
+          fullBodyBackImageId: "",
           createdAt: ts,
           updatedAt: ts,
         };
@@ -276,6 +294,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         fullBodyUrl: input.fullBodyUrl.trim(),
         fullBodySideUrl: input.fullBodySideUrl.trim(),
         fullBodyBackUrl: input.fullBodyBackUrl.trim(),
+        avatarImageId: input.avatarImageId?.trim() ?? "",
+        fullBodyImageId: input.fullBodyImageId?.trim() ?? "",
+        fullBodySideImageId: input.fullBodySideImageId?.trim() ?? "",
+        fullBodyBackImageId: input.fullBodyBackImageId?.trim() ?? "",
+        imageMetaByUrl: input.imageMetaByUrl,
         createdAt: get().personas.find((personaItem) => personaItem.id === input.id)?.createdAt ?? ts,
         updatedAt: ts,
       };
@@ -560,6 +583,16 @@ export const useAppStore = create<AppState>((set, get) => ({
                   model: extractedMeta?.model ?? item.checkpointName,
                   flow: extractedMeta?.flow ?? item.flow,
                 };
+                await Promise.all(
+                  localizedChunk.map((localized) =>
+                    dbApi.saveImageAsset({
+                      id: crypto.randomUUID(),
+                      dataUrl: localized,
+                      meta,
+                      createdAt: nowIso(),
+                    }),
+                  ),
+                );
                 for (const localized of localizedChunk) {
                   if (!aggregatedLocalizedUrls.includes(localized)) {
                     aggregatedLocalizedUrls.push(localized);

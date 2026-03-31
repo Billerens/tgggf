@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { SendHorizontal, Trash2, ChevronDown, HeartHandshake, Brain, Database, Zap, Link2 } from "lucide-react";
 import { getMoodLabel } from "../personaProfiles";
+import { dbApi } from "../db";
 import type {
   ChatMessage,
   ChatSession,
@@ -142,7 +143,35 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
+  const [activePersonaAvatarSrc, setActivePersonaAvatarSrc] = useState("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      if (!activePersona) {
+        if (!cancelled) setActivePersonaAvatarSrc("");
+        return;
+      }
+      const imageId = activePersona.avatarImageId.trim();
+      if (imageId) {
+        const asset = await dbApi.getImageAsset(imageId);
+        if (cancelled) return;
+        if (asset?.dataUrl) {
+          setActivePersonaAvatarSrc(asset.dataUrl);
+          return;
+        }
+      }
+      const raw = activePersona.avatarUrl.trim();
+      if (!cancelled) {
+        setActivePersonaAvatarSrc(raw && !raw.startsWith("idb://") ? raw : "");
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [activePersona?.id, activePersona?.avatarImageId, activePersona?.avatarUrl]);
 
   useEffect(() => {
     const node = messagesEndRef.current;
@@ -197,8 +226,8 @@ export function ChatPane({
                 title="Сменить персону"
               >
                 <span className="chat-header-avatar" aria-hidden="true">
-                  {activePersona?.avatarUrl ? (
-                    <img src={activePersona.avatarUrl} alt="" loading="lazy" />
+                  {activePersonaAvatarSrc ? (
+                    <img src={activePersonaAvatarSrc} alt="" loading="lazy" />
                   ) : (
                     <span>{(activePersona?.name || "?").trim().charAt(0).toUpperCase()}</span>
                   )}

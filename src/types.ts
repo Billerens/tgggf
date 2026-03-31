@@ -96,6 +96,11 @@ export interface Persona {
   fullBodyUrl: string;
   fullBodySideUrl: string;
   fullBodyBackUrl: string;
+  avatarImageId: string;
+  fullBodyImageId: string;
+  fullBodySideImageId: string;
+  fullBodyBackImageId: string;
+  imageMetaByUrl?: Record<string, ImageGenerationMeta>;
   createdAt: string;
   updatedAt: string;
 }
@@ -131,6 +136,13 @@ export interface ImageGenerationMeta {
   prompt?: string;
   model?: string;
   flow?: "base" | "i2i";
+}
+
+export interface ImageAsset {
+  id: string;
+  dataUrl: string;
+  meta?: ImageGenerationMeta;
+  createdAt: string;
 }
 
 export interface GeneratorImageEntry {
