@@ -1,4 +1,4 @@
-const CACHE_NAME = "tg-gf-static-v1";
+const CACHE_NAME = "tg-gf-static-v2";
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/favicon.svg"];
 
 self.addEventListener("install", (event) => {

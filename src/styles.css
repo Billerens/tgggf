@@ -1116,20 +1116,46 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
 }
 .image-preview-dialog {
   position: relative;
+  width: min(96vw, 1400px);
   max-width: min(96vw, 1400px);
   max-height: 92vh;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   border-radius: 16px;
   overflow: hidden;
   border: 1px solid var(--border-light);
   background: rgba(0, 0, 0, 0.5);
 }
+.image-preview-media {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+.image-preview-media.zoomed {
+  cursor: grab;
+}
+.image-preview-media.zoomed.dragging {
+  cursor: grabbing;
+}
 .image-preview-img {
   display: block;
-  max-width: min(96vw, 1400px);
-  max-height: calc(92vh - 190px);
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
+  transform-origin: center center;
+  transition: transform 120ms ease-out;
+  will-change: transform;
+  pointer-events: none;
+}
+.image-preview-media.dragging .image-preview-img {
+  transition: none;
 }
 .image-preview-close {
   position: absolute;
@@ -1371,8 +1397,8 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
     grid-template-columns: 1fr;
     gap: 4px;
   }
-  .image-preview-img {
-    max-height: calc(100svh - 260px);
+  .image-preview-media {
+    padding: 4px;
   }
   .enhance-compare-stage {
     aspect-ratio: auto;

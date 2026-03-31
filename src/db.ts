@@ -218,6 +218,16 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 let dbPromise: Promise<IDBPDatabase<TgGfDb>> | null = null;
 
+function isVersionDowngradeError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    error.name === "VersionError" ||
+    message.includes("requested version") ||
+    message.includes("less than the existing version")
+  );
+}
+
 function getDb() {
   if (!dbPromise) {
     dbPromise = openDB<TgGfDb>(DB_NAME, DB_VERSION, {
@@ -266,6 +276,12 @@ function getDb() {
           imageAssets.createIndex("by-createdAt", "createdAt");
         }
       },
+    }).catch((error) => {
+      if (!isVersionDowngradeError(error)) {
+        throw error;
+      }
+      // Fallback: open at current on-disk version to keep app operational after stale bundle races.
+      return openDB<TgGfDb>(DB_NAME);
     });
   }
 

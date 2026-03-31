@@ -1,4 +1,5 @@
 import type { EndpointAuthConfig, ImageGenerationMeta } from "./types";
+import { dbApi } from "./db";
 
 interface ComfyNode {
   class_type?: string;
@@ -7,6 +8,7 @@ interface ComfyNode {
 }
 
 type ComfyWorkflow = Record<string, ComfyNode>;
+type WorkflowLink = [string, number];
 
 interface ComfyUiWorkflowNode {
   id: string;
@@ -486,6 +488,49 @@ function setBooleanInputByExactTitle(
   }
 }
 
+function getNodeEntryByExactTitle(workflow: ComfyWorkflow, title: string): [string, ComfyNode] | null {
+  const target = title.toLowerCase();
+  for (const [id, node] of Object.entries(workflow)) {
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle === target) return [id, node];
+  }
+  return null;
+}
+
+function toWorkflowLink(value: unknown): WorkflowLink | null {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const nodeId = typeof value[0] === "string" ? value[0] : null;
+  const rawOutputIndex = value[1];
+  const outputIndex =
+    typeof rawOutputIndex === "number"
+      ? rawOutputIndex
+      : typeof rawOutputIndex === "string" && rawOutputIndex.trim()
+        ? Number(rawOutputIndex)
+        : NaN;
+  if (!nodeId || !Number.isFinite(outputIndex)) return null;
+  return [nodeId, outputIndex];
+}
+
+function cloneWorkflowLink(link: WorkflowLink): WorkflowLink {
+  return [link[0], link[1]];
+}
+
+function setLinkInputByExactTitle(
+  workflow: ComfyWorkflow,
+  title: string,
+  inputName: string,
+  link?: WorkflowLink,
+) {
+  if (!link) return;
+  const target = title.toLowerCase();
+  for (const node of Object.values(workflow)) {
+    if (!node.inputs) continue;
+    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
+    if (nodeTitle !== target) continue;
+    node.inputs[inputName] = cloneWorkflowLink(link);
+  }
+}
+
 function setInputByExactTitle(
   workflow: ComfyWorkflow,
   title: string,
@@ -540,6 +585,95 @@ function setClipTextByExactTitle(
   }
 }
 
+function detectDetailerTargets(workflow: ComfyWorkflow) {
+  const targets = new Set<DetailTarget>();
+  for (const node of Object.values(workflow)) {
+    if (node.class_type !== "FaceDetailer") continue;
+    const title = node._meta?.title?.toLowerCase() ?? "";
+    if (!title) continue;
+    if (title.includes("hand")) targets.add("hands");
+    if (title.includes("eye")) targets.add("eyes");
+    if (title.includes("nose")) targets.add("nose");
+    if (title.includes("lip") || title.includes("mouth")) targets.add("lips");
+    if (title.includes("face")) targets.add("face");
+  }
+  return targets;
+}
+
+function applyDetailerVramSaver(workflow: ComfyWorkflow) {
+  for (const node of Object.values(workflow)) {
+    if (node.class_type !== "FaceDetailer" || !node.inputs) continue;
+    if (typeof node.inputs.tiled_encode === "boolean") {
+      node.inputs.tiled_encode = true;
+    }
+    if (typeof node.inputs.tiled_decode === "boolean") {
+      node.inputs.tiled_decode = true;
+    }
+    if (typeof node.inputs.max_size === "number") {
+      node.inputs.max_size = Math.min(node.inputs.max_size, 896);
+    }
+  }
+}
+
+type I2IDetailerTarget = DetailTarget | "nipples" | "vagina" | "penis";
+
+const I2I_DETAILER_CHAIN: Array<{
+  target: I2IDetailerTarget;
+  detailerTitle: string;
+  bypassTitle: string;
+}> = [
+  { target: "face", detailerTitle: "Face Detailer", bypassTitle: "Face bypass" },
+  { target: "eyes", detailerTitle: "Eyes Detailer", bypassTitle: "Eyes bypass" },
+  { target: "nose", detailerTitle: "Nose Detailer", bypassTitle: "Nose bypass" },
+  { target: "lips", detailerTitle: "Lips Detailer", bypassTitle: "Lips bypass" },
+  { target: "hands", detailerTitle: "Hands Detailer", bypassTitle: "Hands bypass" },
+  { target: "nipples", detailerTitle: "Nipples Detailer", bypassTitle: "Nipples bypass" },
+  { target: "vagina", detailerTitle: "Vagina Detailer", bypassTitle: "Vagina bypass" },
+  { target: "penis", detailerTitle: "Penis Detailer", bypassTitle: "Penis bypass" },
+];
+
+const I2I_FINAL_IMAGE_SWITCH_TITLE = "After Inpaint IMG";
+const I2I_FINAL_IMAGE_SWITCH_INPUT = "on_false";
+
+function isSelectableDetailTarget(target: I2IDetailerTarget): target is DetailTarget {
+  return target === "face" || target === "eyes" || target === "nose" || target === "lips" || target === "hands";
+}
+
+function rewireI2IDetailerChain(
+  workflow: ComfyWorkflow,
+  enabledTargets: Set<DetailTarget>,
+  flowConfig: ComfyFlowConfig,
+) {
+  const firstDetailer = getNodeEntryByExactTitle(workflow, I2I_DETAILER_CHAIN[0].detailerTitle);
+  const sourceLinkFromDetailer = firstDetailer ? toWorkflowLink(firstDetailer[1].inputs?.image) : null;
+  const fallbackSourceLink = flowConfig.imageListNodeId ? ([flowConfig.imageListNodeId, 0] as WorkflowLink) : null;
+  let activeImageLink = sourceLinkFromDetailer ?? fallbackSourceLink;
+  if (!activeImageLink) return;
+
+  for (const chainNode of I2I_DETAILER_CHAIN) {
+    const entry = getNodeEntryByExactTitle(workflow, chainNode.detailerTitle);
+    if (!entry) continue;
+    const [nodeId, node] = entry;
+    const enabled = isSelectableDetailTarget(chainNode.target) && enabledTargets.has(chainNode.target);
+    if (node.inputs) {
+      // Rewire detailers to consume the latest enabled image to avoid evaluating disabled branches.
+      node.inputs.image = cloneWorkflowLink(activeImageLink);
+    }
+    const bypassAnyLink: WorkflowLink = enabled ? [nodeId, 2] : cloneWorkflowLink(activeImageLink);
+    setLinkInputByExactTitle(workflow, chainNode.bypassTitle, "any", bypassAnyLink);
+    if (enabled) {
+      activeImageLink = [nodeId, 0];
+    }
+  }
+
+  setLinkInputByExactTitle(
+    workflow,
+    I2I_FINAL_IMAGE_SWITCH_TITLE,
+    I2I_FINAL_IMAGE_SWITCH_INPUT,
+    activeImageLink,
+  );
+}
+
 function applyDetailing(
   workflow: ComfyWorkflow,
   detailing?: ComfyGenerationItem["detailing"],
@@ -552,8 +686,7 @@ function applyDetailing(
 
   const hasInpaintSwitch = hasNodeByExactTitle(workflow, "Inpaint?");
   const isI2I = Boolean(flowConfig.requiresReferenceImage);
-
-  if (!detailing?.enabled || !detailing.level) {
+  const disableDetailing = () => {
     if (hasInpaintSwitch) {
       setBooleanByExactTitle(workflow, "Inpaint?", false);
     }
@@ -574,7 +707,12 @@ function applyDetailing(
       setBooleanInputByExactTitle(workflow, "Nipples bypass", "bypass", true);
       setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", true);
       setBooleanInputByExactTitle(workflow, "Penis bypass", "bypass", true);
+      rewireI2IDetailerChain(workflow, new Set<DetailTarget>(), flowConfig);
     }
+  };
+
+  if (!detailing?.enabled || !detailing.level) {
+    disableDetailing();
     return;
   }
 
@@ -593,10 +731,30 @@ function applyDetailing(
     strong: { face: 0.18, eyes: 0.18, nose: 0.22, lips: 0.24, hands: 0.28 },
   };
   const denoise = levelMap[detailing.level as DetailLevel];
-  const enabledTargets =
+  let enabledTargets =
     detailing.targets && detailing.targets.length > 0
       ? new Set<DetailTarget>(detailing.targets)
       : new Set<DetailTarget>(["face", "eyes", "nose", "lips", "hands"]);
+
+  if (isI2I) {
+    const supportedTargets = detectDetailerTargets(workflow);
+    if (supportedTargets.size > 0) {
+      enabledTargets = new Set(
+        Array.from(enabledTargets).filter((target) => supportedTargets.has(target)),
+      );
+      if (enabledTargets.size === 0) {
+        console.warn(
+          "[tg-gf][comfy][detailing] requested targets are not supported by i2i workflow detailers; disabling inpaint detailing for this run.",
+          {
+            requestedTargets: detailing.targets ?? [],
+            supportedTargets: Array.from(supportedTargets),
+          },
+        );
+        disableDetailing();
+        return;
+      }
+    }
+  }
 
   setEnableDetailer("Face", enabledTargets.has("face"));
   setEnableDetailer("Eyes", enabledTargets.has("eyes"));
@@ -624,6 +782,7 @@ function applyDetailing(
     setBooleanInputByExactTitle(workflow, "Nipples bypass", "bypass", true);
     setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", true);
     setBooleanInputByExactTitle(workflow, "Penis bypass", "bypass", true);
+    rewireI2IDetailerChain(workflow, enabledTargets, flowConfig);
   }
   const minDenoise = 0.01;
   setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : minDenoise);
@@ -795,7 +954,8 @@ function buildUiWorkflowForExtraPngInfo(workflow: ComfyWorkflow): ComfyUiWorkflo
       id: nodeId,
       type: node.class_type,
       title: node._meta?.title,
-      widgets_values: [],
+      // Impact Pack wildcard hook writes into widgets_values[1] and widgets_values[2].
+      widgets_values: [null, null, null],
     }),
   );
 
@@ -915,7 +1075,20 @@ function dataUrlToBlob(dataUrl: string) {
   return new Blob([bytes], { type: mimeType });
 }
 
+function parseImageAssetId(source: string) {
+  if (!source.startsWith("idb://")) return "";
+  return source.slice("idb://".length).trim();
+}
+
 async function sourceToBlob(source: string) {
+  const imageAssetId = parseImageAssetId(source);
+  if (imageAssetId) {
+    const imageAsset = await dbApi.getImageAsset(imageAssetId);
+    if (!imageAsset?.dataUrl) {
+      throw new Error(`Изображение ${imageAssetId} не найдено в локальном хранилище.`);
+    }
+    return dataUrlToBlob(imageAsset.dataUrl);
+  }
   if (source.startsWith("data:")) {
     return dataUrlToBlob(source);
   }
@@ -1396,6 +1569,7 @@ export async function generateComfyImages(
       }
       setBooleanByTitle(workflow, ["enable upscaler", "use hi-res fix"], item.enableUpscaler);
       setUpscaleFactorByTitle(workflow, item.upscaleFactor);
+      applyDetailerVramSaver(workflow);
       applyDetailing(workflow, item.detailing, flowConfig);
       setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", item.hiresFixDenoise);
       setSliderByExactTitle(workflow, "Color Fix Strength", item.colorFixStrength);

@@ -162,6 +162,9 @@ export default function App() {
     kind: "avatar" | "fullbody" | "side" | "back";
     beforeUrl: string;
     afterUrl: string;
+    beforePreviewUrl: string;
+    afterPreviewUrl: string;
+    afterMeta: ComfyImageGenerationMeta;
     afterImageId: string;
   } | null>(null);
 
@@ -555,27 +558,40 @@ export default function App() {
   };
 
   const startEditPersona = async (persona: Persona) => {
+    const avatarImageIdFromLink = parseImageAssetId(persona.avatarUrl);
+    const fullBodyImageIdFromLink = parseImageAssetId(persona.fullBodyUrl);
+    const sideImageIdFromLink = parseImageAssetId(persona.fullBodySideUrl);
+    const backImageIdFromLink = parseImageAssetId(persona.fullBodyBackUrl);
+
+    const initialAvatarImageId = persona.avatarImageId.trim() || avatarImageIdFromLink;
+    const initialFullBodyImageId = persona.fullBodyImageId.trim() || fullBodyImageIdFromLink;
+    const initialSideImageId = persona.fullBodySideImageId.trim() || sideImageIdFromLink;
+    const initialBackImageId = persona.fullBodyBackImageId.trim() || backImageIdFromLink;
+
     const imageAssets = await dbApi.getImageAssets([
-      persona.avatarImageId,
-      persona.fullBodyImageId,
-      persona.fullBodySideImageId,
-      persona.fullBodyBackImageId,
+      initialAvatarImageId,
+      initialFullBodyImageId,
+      initialSideImageId,
+      initialBackImageId,
     ]);
     const assetById = Object.fromEntries(imageAssets.map((asset) => [asset.id, asset]));
+    const personaMetaByUrl = Object.fromEntries(
+      Object.entries(persona.imageMetaByUrl ?? {}).map(([key, value]) => [key.trim(), value]),
+    ) as Record<string, ComfyImageGenerationMeta>;
     const resolvedAvatarUrl =
-      assetById[persona.avatarImageId]?.dataUrl ||
+      assetById[initialAvatarImageId]?.dataUrl ||
       (persona.avatarUrl.startsWith("idb://") ? "" : persona.avatarUrl) ||
       "";
     const resolvedFullBodyUrl =
-      assetById[persona.fullBodyImageId]?.dataUrl ||
+      assetById[initialFullBodyImageId]?.dataUrl ||
       (persona.fullBodyUrl.startsWith("idb://") ? "" : persona.fullBodyUrl) ||
       "";
     const resolvedSideUrl =
-      assetById[persona.fullBodySideImageId]?.dataUrl ||
+      assetById[initialSideImageId]?.dataUrl ||
       (persona.fullBodySideUrl.startsWith("idb://") ? "" : persona.fullBodySideUrl) ||
       "";
     const resolvedBackUrl =
-      assetById[persona.fullBodyBackImageId]?.dataUrl ||
+      assetById[initialBackImageId]?.dataUrl ||
       (persona.fullBodyBackUrl.startsWith("idb://") ? "" : persona.fullBodyBackUrl) ||
       "";
     const syncedLookMeta = synchronizeLookMetaWithUrls(persona.imageMetaByUrl, {
@@ -584,22 +600,65 @@ export default function App() {
       side: resolvedSideUrl,
       back: resolvedBackUrl,
     });
-    const avatarMeta = persona.avatarImageId ? assetById[persona.avatarImageId]?.meta : undefined;
+    const resolveLegacyLookMeta = (
+      kind: LookMetaKind,
+      resolvedUrl: string,
+      originalUrl: string,
+      imageId: string,
+      assetMeta?: ComfyImageGenerationMeta,
+    ) => {
+      if (assetMeta) return assetMeta;
+      const normalizedResolved = resolvedUrl.trim();
+      const normalizedOriginal = originalUrl.trim();
+      const normalizedImageId = imageId.trim();
+      const idbLink = normalizedImageId ? toImageAssetLink(normalizedImageId) : "";
+      return (
+        personaMetaByUrl[LOOK_META_SLOT_KEY[kind]] ??
+        (normalizedResolved ? personaMetaByUrl[normalizedResolved] : undefined) ??
+        (normalizedOriginal ? personaMetaByUrl[normalizedOriginal] : undefined) ??
+        (idbLink ? personaMetaByUrl[idbLink] : undefined)
+      );
+    };
+    const avatarMeta = resolveLegacyLookMeta(
+      "avatar",
+      resolvedAvatarUrl,
+      persona.avatarUrl,
+      initialAvatarImageId,
+      initialAvatarImageId ? assetById[initialAvatarImageId]?.meta : undefined,
+    );
     if (avatarMeta) {
       syncedLookMeta[LOOK_META_SLOT_KEY.avatar] = avatarMeta;
       if (resolvedAvatarUrl) syncedLookMeta[resolvedAvatarUrl] = avatarMeta;
     }
-    const fullBodyMeta = persona.fullBodyImageId ? assetById[persona.fullBodyImageId]?.meta : undefined;
+    const fullBodyMeta = resolveLegacyLookMeta(
+      "fullbody",
+      resolvedFullBodyUrl,
+      persona.fullBodyUrl,
+      initialFullBodyImageId,
+      initialFullBodyImageId ? assetById[initialFullBodyImageId]?.meta : undefined,
+    );
     if (fullBodyMeta) {
       syncedLookMeta[LOOK_META_SLOT_KEY.fullbody] = fullBodyMeta;
       if (resolvedFullBodyUrl) syncedLookMeta[resolvedFullBodyUrl] = fullBodyMeta;
     }
-    const sideMeta = persona.fullBodySideImageId ? assetById[persona.fullBodySideImageId]?.meta : undefined;
+    const sideMeta = resolveLegacyLookMeta(
+      "side",
+      resolvedSideUrl,
+      persona.fullBodySideUrl,
+      initialSideImageId,
+      initialSideImageId ? assetById[initialSideImageId]?.meta : undefined,
+    );
     if (sideMeta) {
       syncedLookMeta[LOOK_META_SLOT_KEY.side] = sideMeta;
       if (resolvedSideUrl) syncedLookMeta[resolvedSideUrl] = sideMeta;
     }
-    const backMeta = persona.fullBodyBackImageId ? assetById[persona.fullBodyBackImageId]?.meta : undefined;
+    const backMeta = resolveLegacyLookMeta(
+      "back",
+      resolvedBackUrl,
+      persona.fullBodyBackUrl,
+      initialBackImageId,
+      initialBackImageId ? assetById[initialBackImageId]?.meta : undefined,
+    );
     if (backMeta) {
       syncedLookMeta[LOOK_META_SLOT_KEY.back] = backMeta;
       if (resolvedBackUrl) syncedLookMeta[resolvedBackUrl] = backMeta;
@@ -617,10 +676,10 @@ export default function App() {
       return createLookAsset(normalizedUrl, buildLookSlotMeta(kind, syncedLookMeta, normalizedUrl));
     };
 
-    const avatarImageId = await ensureImageId("avatar", persona.avatarImageId, resolvedAvatarUrl);
-    const fullBodyImageId = await ensureImageId("fullbody", persona.fullBodyImageId, resolvedFullBodyUrl);
-    const fullBodySideImageId = await ensureImageId("side", persona.fullBodySideImageId, resolvedSideUrl);
-    const fullBodyBackImageId = await ensureImageId("back", persona.fullBodyBackImageId, resolvedBackUrl);
+    const avatarImageId = await ensureImageId("avatar", initialAvatarImageId, resolvedAvatarUrl);
+    const fullBodyImageId = await ensureImageId("fullbody", initialFullBodyImageId, resolvedFullBodyUrl);
+    const fullBodySideImageId = await ensureImageId("side", initialSideImageId, resolvedSideUrl);
+    const fullBodyBackImageId = await ensureImageId("back", initialBackImageId, resolvedBackUrl);
     setEditingPersonaId(persona.id);
     setGeneratedLookPacks([]);
     setLookImageMetaByUrl(syncedLookMeta);
@@ -1207,9 +1266,6 @@ export default function App() {
         }
         packs.push(readyPack);
         patchPack(readyPack);
-        if (packIndex === 0) {
-          applyLookPack(readyPack);
-        }
       }
 
       setGeneratedLookPacks(packs);
@@ -1297,87 +1353,137 @@ export default function App() {
         sourceMeta?.seed !== undefined
           ? sourceMeta.seed
           : stableSeedFromText(`${imageUrl}:${kind}`);
+      const requestedTarget = targetOverride ?? lookEnhanceTarget;
+      console.debug("[tg-gf][enhance][request]", {
+        ts: new Date().toISOString(),
+        packIndex,
+        kind,
+        targetOverride: targetOverride ?? null,
+        lookEnhanceTarget,
+        requestedTarget,
+      });
+      const isHandsEnhance = requestedTarget === "hands";
       const enhanceSeed = stableSeedFromText(
-        `${sourceSeed}:${imageUrl}:${kind}:${targetOverride ?? lookEnhanceTarget}:${Date.now()}`,
+        `${sourceSeed}:${imageUrl}:${kind}:${requestedTarget}:${Date.now()}`,
       );
       const enhancePrompt = mergePromptTags(sourcePrompt, [
         "same person",
         "same identity",
         "same outfit",
         "same framing",
-        "preserve composition",
         "highly detailed",
+        ...(isHandsEnhance
+          ? [
+              "focus on hands",
+              "detailed fingers",
+              "natural hand anatomy",
+              "correct finger count",
+              "no merged fingers",
+            ]
+          : ["preserve composition"]),
       ]);
-      const enhancedUrls = await generateComfyImages(
-        [
-          {
-            flow: "i2i",
-            prompt: enhancePrompt,
-            width: dims.width,
-            height: dims.height,
-            seed: enhanceSeed,
-            checkpointName: personaDraft.imageCheckpoint || undefined,
-            styleReferenceImage: imageUrl,
-            styleStrength: 1,
-            compositionStrength: 1,
-            forceHiResFix: true,
-            enableUpscaler: true,
-            upscaleFactor: 2,
-            hiresFixDenoise: 0.3,
-            colorFixStrength: 0.4,
-            saveComfyOutputs: settings.saveComfyOutputs,
-            outputNodeTitleIncludes: [
-              "Preview after Detailing",
-            ],
-            strictOutputNodeMatch: true,
-            pickLatestImageOnly: true,
-            detailing: {
-              enabled: true,
-              level: detailLevel,
-              targets: mapEnhanceTargetToDetailTargets(targetOverride ?? lookEnhanceTarget),
-              prompts: promptBundle.detailPrompts,
+
+      const runEnhancePass = async (
+        passSeed: number,
+        passPrompt: string,
+        options?: {
+          styleStrength?: number;
+          compositionStrength?: number;
+          hiresFixDenoise?: number;
+          colorFixStrength?: number;
+          detailLevel?: LookDetailLevel;
+          strictOutputNodeMatch?: boolean;
+        },
+      ) => {
+        const effectiveDetailLevel = options?.detailLevel ?? detailLevel;
+        const preferredOutputTitles = settings.saveComfyOutputs
+          ? ["Image Saver", "Preview after Upscale/HiRes Fix", "Preview after Detailing"]
+          : ["Preview after Upscale/HiRes Fix", "Preview after Detailing"];
+        return generateComfyImages(
+          [
+            {
+              flow: "i2i",
+              prompt: passPrompt,
+              width: dims.width,
+              height: dims.height,
+              seed: passSeed,
+              checkpointName: personaDraft.imageCheckpoint || undefined,
+              styleReferenceImage: imageUrl,
+              styleStrength: options?.styleStrength ?? (isHandsEnhance ? 0.9 : 1),
+              compositionStrength: options?.compositionStrength ?? (isHandsEnhance ? 0.7 : 1),
+              forceHiResFix: true,
+              enableUpscaler: true,
+              upscaleFactor: 2,
+              hiresFixDenoise: options?.hiresFixDenoise ?? (isHandsEnhance ? 0.4 : 0.3),
+              colorFixStrength: options?.colorFixStrength ?? (isHandsEnhance ? 0.5 : 0.4),
+              saveComfyOutputs: settings.saveComfyOutputs,
+              outputNodeTitleIncludes: preferredOutputTitles,
+              strictOutputNodeMatch: options?.strictOutputNodeMatch ?? false,
+              pickLatestImageOnly: true,
+              detailing: {
+                enabled: true,
+                level: effectiveDetailLevel === "off" ? "strong" : effectiveDetailLevel,
+                targets: mapEnhanceTargetToDetailTargets(requestedTarget),
+                prompts: promptBundle.detailPrompts,
+              },
             },
-          },
-        ],
-        settings.comfyBaseUrl,
-        settings.comfyAuth,
-        undefined,
-        abortController.signal,
-      );
+          ],
+          settings.comfyBaseUrl,
+          settings.comfyAuth,
+          undefined,
+          abortController.signal,
+        );
+      };
+
+      const enhancedUrls = await runEnhancePass(enhanceSeed, enhancePrompt);
       ensureEnhanceActive();
-      const localized = await localizeImageUrls(enhancedUrls);
+      let localized = await localizeImageUrls(enhancedUrls);
       ensureEnhanceActive();
+      let improvedSource = (localized[0] ?? "").trim();
+      let effectiveSeed = enhanceSeed;
+      if (isHandsEnhance && improvedSource && improvedSource === imageUrl.trim()) {
+        const retrySeed = stableSeedFromText(`${enhanceSeed}:hands-retry:${Date.now()}`);
+        const retryPrompt = mergePromptTags(enhancePrompt, [
+          "hands emphasized",
+          "clean hand pose",
+          "highly detailed hands",
+        ]);
+        const retryUrls = await runEnhancePass(retrySeed, retryPrompt, {
+          styleStrength: 0.86,
+          compositionStrength: 0.45,
+          hiresFixDenoise: 0.48,
+          colorFixStrength: 0.55,
+          detailLevel: "strong",
+          strictOutputNodeMatch: false,
+        });
+        ensureEnhanceActive();
+        const retryLocalized = await localizeImageUrls(retryUrls);
+        ensureEnhanceActive();
+        if (retryLocalized[0]) {
+          improvedSource = retryLocalized[0].trim();
+          effectiveSeed = retrySeed;
+          localized = retryLocalized;
+        }
+      }
       const enhanceMeta: ComfyImageGenerationMeta = {
-        seed: enhanceSeed,
-        prompt: sourcePrompt,
+        seed: effectiveSeed,
+        prompt: enhancePrompt,
         model: personaDraft.imageCheckpoint || undefined,
         flow: "i2i",
       };
-      const improvedSource = localized[0];
       const improvedAsset = improvedSource ? await saveLookImageAndGetRef(improvedSource, enhanceMeta) : null;
       const improved = improvedAsset?.imageUrl ?? "";
       if (!improved) {
         throw new Error("Не удалось получить улучшенное изображение.");
       }
-      setLookImageMetaByUrl((prev) =>
-        withLookMeta(prev, [
-          {
-            kind,
-            url: enhancedUrls[0],
-            meta: enhanceMeta,
-          },
-          {
-            kind,
-            url: improved,
-            meta: enhanceMeta,
-          },
-        ]),
-      );
       setEnhanceReview({
         packIndex,
         kind,
-        beforeUrl: imageUrl,
+        beforeUrl: resolveLookUrlForKind(packIndex, kind) || imageUrl,
         afterUrl: improved,
+        beforePreviewUrl: imageUrl,
+        afterPreviewUrl: improvedSource || improved,
+        afterMeta: enhanceMeta,
         afterImageId: improvedAsset?.imageId ?? "",
       });
     } catch (e) {
@@ -1435,6 +1541,24 @@ export default function App() {
             ? (afterImageId || prev.fullBodyBackImageId)
             : prev.fullBodyBackImageId,
       }));
+  };
+
+  const resolveLookUrlForKind = (
+    packIndex: number | null,
+    kind: "avatar" | "fullbody" | "side" | "back",
+  ) => {
+    if (packIndex === null) {
+      if (kind === "avatar") return personaDraft.avatarUrl;
+      if (kind === "side") return personaDraft.fullBodySideUrl;
+      if (kind === "back") return personaDraft.fullBodyBackUrl;
+      return personaDraft.fullBodyUrl;
+    }
+    const pack = generatedLookPacks[packIndex];
+    if (!pack) return "";
+    if (kind === "avatar") return pack.avatarUrl;
+    if (kind === "side") return pack.fullBodySideUrl;
+    if (kind === "back") return pack.fullBodyBackUrl;
+    return pack.fullBodyUrl;
   };
 
   const onSaveGenerated = async (draft: GeneratedPersonaDraft) => {
@@ -1845,12 +1969,21 @@ export default function App() {
         <ErrorToast error={error} onClose={clearError} />
         <EnhanceCompareModal
           open={Boolean(enhanceReview)}
-          beforeUrl={enhanceReview?.beforeUrl ?? ""}
-          afterUrl={enhanceReview?.afterUrl ?? ""}
+          beforeUrl={enhanceReview?.beforePreviewUrl ?? ""}
+          afterUrl={enhanceReview?.afterPreviewUrl ?? ""}
           onClose={() => setEnhanceReview(null)}
           onKeepOld={() => setEnhanceReview(null)}
           onAccept={() => {
             if (!enhanceReview) return;
+            setLookImageMetaByUrl((prev) =>
+              withLookMeta(prev, [
+                {
+                  kind: enhanceReview.kind,
+                  url: enhanceReview.afterUrl,
+                  meta: enhanceReview.afterMeta,
+                },
+              ]),
+            );
             applyEnhancedImage(
               enhanceReview.packIndex,
               enhanceReview.kind,
@@ -1864,7 +1997,11 @@ export default function App() {
             if (!enhanceReview) return;
             const next = enhanceReview;
             setEnhanceReview(null);
-            void enhanceLookImage(next.packIndex, next.kind, next.beforeUrl);
+            void enhanceLookImage(
+              next.packIndex,
+              next.kind,
+              next.beforePreviewUrl || next.beforeUrl,
+            );
           }}
         />
       </div>

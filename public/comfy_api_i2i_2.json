@@ -8,6 +8,51 @@
       "title": "Upscale Model"
     }
   },
+  "19": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 1099409761922869,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["491", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["745", 0],
+      "model": ["827", 0],
+      "clip": ["827", 1],
+      "vae": ["436", 2],
+      "positive": ["673:184", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["20", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["20", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Face Detailer"
+    }
+  },
   "20": {
     "inputs": {
       "model_name": "bbox/face_yolov8m.pt"
@@ -26,6 +71,51 @@
       "title": "Preview after Detailing | Preview after Inpaint"
     }
   },
+  "32": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 460539992591960,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["489", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5000000000000001,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.9300000000000002,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7000000000000002,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["19", 0],
+      "model": ["828", 0],
+      "clip": ["828", 1],
+      "vae": ["436", 2],
+      "positive": ["673:464", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["34", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["34", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Eyes Detailer"
+    }
+  },
   "34": {
     "inputs": {
       "model_name": "segm/Anzhc Eyes -seg-hd.pt"
@@ -35,18 +125,108 @@
       "title": "Eyes Ultralytics"
     }
   },
+  "35": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 266464999292510,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["493", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5000000000000001,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.9300000000000002,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["43", 0],
+      "model": ["830", 0],
+      "clip": ["830", 1],
+      "vae": ["436", 2],
+      "positive": ["673:192", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["37", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["37", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Lips Detailer"
+    }
+  },
   "37": {
     "inputs": {
-      "model_name": "segm/adetailer2dMouth_v10.pt"
+      "model_name": "segm/lips_v1.pt"
     },
     "class_type": "UltralyticsDetectorProvider",
     "_meta": {
       "title": "Lips Ultralytics"
     }
   },
+  "38": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 875802752889955,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["495", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["70", 0],
+      "model": ["832", 0],
+      "clip": ["832", 1],
+      "vae": ["436", 2],
+      "positive": ["673:195", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["40", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["40", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Nipples Detailer"
+    }
+  },
   "40": {
     "inputs": {
-      "model_name": "segm/Nipple-yoro11x_seg.pt"
+      "model_name": "segm/Anzhc Breasts Seg v1 1024s.pt"
     },
     "class_type": "UltralyticsDetectorProvider",
     "_meta": {
@@ -62,13 +242,103 @@
       "title": "Nose Ultalytics"
     }
   },
+  "43": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 421893960411605,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["492", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["32", 0],
+      "model": ["829", 0],
+      "clip": ["829", 1],
+      "vae": ["436", 2],
+      "positive": ["673:193", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["42", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["42", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Nose Detailer"
+    }
+  },
   "46": {
     "inputs": {
-      "model_name": "segm/ntd11_anime_nsfw_segm_v4_pussy.pt"
+      "model_name": "bbox/pussy_yolo11s_bbox_best.pt"
     },
     "class_type": "UltralyticsDetectorProvider",
     "_meta": {
       "title": "Vagina Ultralytics"
+    }
+  },
+  "47": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 862538197155841,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["496", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["38", 0],
+      "model": ["833", 0],
+      "clip": ["833", 1],
+      "vae": ["436", 2],
+      "positive": ["673:196", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["46", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["46", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Vagina Detailer"
     }
   },
   "68": {
@@ -85,7 +355,7 @@
       "guide_size": 512,
       "guide_size_for": true,
       "max_size": 1024,
-      "seed": 483714870706126,
+      "seed": 728099464879498,
       "steps": ["509", 0],
       "cfg": ["508", 0],
       "sampler_name": ["507", 0],
@@ -110,7 +380,7 @@
       "noise_mask_feather": 20,
       "tiled_encode": false,
       "tiled_decode": false,
-      "image": ["745", 0],
+      "image": ["35", 0],
       "model": ["831", 0],
       "clip": ["831", 1],
       "vae": ["436", 2],
@@ -125,9 +395,54 @@
       "title": "Hands Detailer"
     }
   },
+  "75": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": 1024,
+      "seed": 66594818328528,
+      "steps": ["509", 0],
+      "cfg": ["508", 0],
+      "sampler_name": ["507", 0],
+      "scheduler": ["684:514", 0],
+      "denoise": ["497", 0],
+      "feather": 5,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.5,
+      "bbox_dilation": 10,
+      "bbox_crop_factor": 3,
+      "sam_detection_hint": "center-1",
+      "sam_dilation": 0,
+      "sam_threshold": 0.93,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 10,
+      "wildcard": "",
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 20,
+      "tiled_encode": false,
+      "tiled_decode": false,
+      "image": ["47", 0],
+      "model": ["834", 0],
+      "clip": ["834", 1],
+      "vae": ["436", 2],
+      "positive": ["673:197", 0],
+      "negative": ["684:261", 0],
+      "bbox_detector": ["76", 0],
+      "sam_model_opt": ["684:21", 0],
+      "segm_detector_opt": ["76", 1]
+    },
+    "class_type": "FaceDetailer",
+    "_meta": {
+      "title": "Penis Detailer"
+    }
+  },
   "76": {
     "inputs": {
-      "model_name": "segm/ntd11_anime_nsfw_segm_v4_penis.pt"
+      "model_name": "segm/pussy_yolo11s_seg_last.pt"
     },
     "class_type": "UltralyticsDetectorProvider",
     "_meta": {
@@ -407,6 +722,7 @@
   },
   "498": {
     "inputs": {
+      "text_0": "blue deep eyes, long eyelashes, expressive gaze",
       "text": ["673:465", 0]
     },
     "class_type": "ShowText|pysssss",
@@ -447,7 +763,7 @@
   },
   "522": {
     "inputs": {
-      "seed": 439352874888668
+      "seed": 3568673478
     },
     "class_type": "easy seed",
     "_meta": {
@@ -571,7 +887,7 @@
   "745": {
     "inputs": {
       "Select images": null,
-      "selected_paths": "[\"IMG2IMG_ADetailer_2026-03-27-151159.webp\"]",
+      "selected_paths": "[\"Без названия (1).webp\"]",
       "fail_if_empty": true,
       "filename_handling": "full filename"
     },
@@ -805,7 +1121,7 @@
   "897": {
     "inputs": {
       "bypass": ["953", 0],
-      "any": ["745", 0]
+      "any": ["19", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -815,7 +1131,7 @@
   "898": {
     "inputs": {
       "bypass": ["953", 0],
-      "any": ["70", 0]
+      "any": ["38", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -825,7 +1141,7 @@
   "899": {
     "inputs": {
       "bypass": ["953", 0],
-      "any": ["70", 0]
+      "any": ["47", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -896,7 +1212,7 @@
   "907": {
     "inputs": {
       "bypass": ["953", 0],
-      "any": ["745", 0]
+      "any": ["32", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -906,7 +1222,7 @@
   "908": {
     "inputs": {
       "bypass": ["953", 0],
-      "any": ["745", 0]
+      "any": ["35", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -916,7 +1232,7 @@
   "909": {
     "inputs": {
       "bypass": ["953", 0],
-      "any": ["70", 0]
+      "any": ["75", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -926,7 +1242,7 @@
   "910": {
     "inputs": {
       "bypass": ["953", 0],
-      "any": ["745", 0]
+      "any": ["43", 2]
     },
     "class_type": "vsLinx_BypassOnBool",
     "_meta": {
@@ -1242,7 +1558,7 @@
   },
   "954": {
     "inputs": {
-      "seed": 752434650794025
+      "seed": 116962452910259
     },
     "class_type": "easy seed",
     "_meta": {
@@ -1258,13 +1574,76 @@
       "title": "Negative prompt"
     }
   },
+  "971": {
+    "inputs": {
+      "value": "high cheekbones, plump lips, smooth skin, symmetrical face"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Face prompt"
+    }
+  },
+  "972": {
+    "inputs": {
+      "value": "blue deep eyes, long eyelashes, expressive gaze"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Eyes prompt"
+    }
+  },
+  "973": {
+    "inputs": {
+      "value": "straight nose, narrow nostrils, small tip, "
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Nose prompt"
+    }
+  },
+  "974": {
+    "inputs": {
+      "value": "plump lips, glossy finish, natural contour"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Lips prompt"
+    }
+  },
   "975": {
     "inputs": {
-      "value": "fingernails, "
+      "value": "fingernails, accurate hands"
     },
     "class_type": "PrimitiveStringMultiline",
     "_meta": {
       "title": "Hands prompt"
+    }
+  },
+  "976": {
+    "inputs": {
+      "value": "nipples, small pink nipples, small areolas, "
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Nipples prompt"
+    }
+  },
+  "977": {
+    "inputs": {
+      "value": "pussy, "
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Vagina prompt"
+    }
+  },
+  "978": {
+    "inputs": {
+      "value": "penis, "
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Penis prompt"
     }
   },
   "981": {
@@ -1355,8 +1734,8 @@
   },
   "1050": {
     "inputs": {
-      "image": "IMG2IMG_ADetailer_2026-03-27-161716.png [output]",
-      "select_image": "IMG2IMG_ADetailer_2026-03-27-161716.png",
+      "image": "IMG2IMG_ADetailer_2026-03-31-180453.png [output]",
+      "select_image": "IMG2IMG_ADetailer_2026-03-31-180453.png",
       "auto_refresh": true,
       "Refresh": null,
       "Choose file to upload": null
@@ -1411,24 +1790,6 @@
       "title": "Upscale Factor"
     }
   },
-  "692:1015": {
-    "inputs": {
-      "cnet": "noobAI\\noobaiXLControlnet_epsCanny.safetensors"
-    },
-    "class_type": "ACN_ControlNetLoaderAdvanced",
-    "_meta": {
-      "title": "ControlNet Model"
-    }
-  },
-  "692:1016": {
-    "inputs": {
-      "preprocessor": "Manga2Anime_LineArt_Preprocessor"
-    },
-    "class_type": "ControlNetPreprocessorSelector",
-    "_meta": {
-      "title": "ControlNet - Preprocessor Selector"
-    }
-  },
   "689:1013": {
     "inputs": {
       "clip_name": "CLIP-ViT-bigG-14-laion2B-39B-b160k.safetensors"
@@ -1445,6 +1806,24 @@
     "class_type": "IPAdapterModelLoader",
     "_meta": {
       "title": "IPAdapter - Model Loader"
+    }
+  },
+  "692:1015": {
+    "inputs": {
+      "cnet": "noobAI\\noobaiXLControlnet_epsCanny.safetensors"
+    },
+    "class_type": "ACN_ControlNetLoaderAdvanced",
+    "_meta": {
+      "title": "ControlNet Model"
+    }
+  },
+  "692:1016": {
+    "inputs": {
+      "preprocessor": "none"
+    },
+    "class_type": "ControlNetPreprocessorSelector",
+    "_meta": {
+      "title": "ControlNet - Preprocessor Selector"
     }
   },
   "906:706": {
@@ -1515,7 +1894,8 @@
   },
   "673:471": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["971", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1524,7 +1904,8 @@
   },
   "673:475": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["973", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1553,7 +1934,8 @@
   },
   "673:465": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["972", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1562,7 +1944,8 @@
   },
   "673:483": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["977", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1591,7 +1974,8 @@
   },
   "673:482": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["976", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1620,7 +2004,8 @@
   },
   "673:484": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["978", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1639,7 +2024,8 @@
   },
   "673:478": {
     "inputs": {
-      "separator": ""
+      "separator": "",
+      "text2": ["974", 0]
     },
     "class_type": "CR Text Concatenate",
     "_meta": {
@@ -1691,7 +2077,7 @@
       "wildcard_text": "",
       "populated_text": "",
       "mode": "populate",
-      "seed": 860151428026590,
+      "seed": 533749951668259,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -1820,7 +2206,7 @@
       "wildcard_text": "",
       "populated_text": ["970", 0],
       "mode": "populate",
-      "seed": 870633316475127,
+      "seed": 194182204054065,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -1917,7 +2303,7 @@
   "922:674": {
     "inputs": {
       "switch": ["953", 0],
-      "on_false": ["70", 0],
+      "on_false": ["75", 0],
       "on_true": ["923:850", 0]
     },
     "class_type": "LazySwitchKJ",
@@ -2198,7 +2584,7 @@
       "wildcard_text": "",
       "populated_text": ["984", 0],
       "mode": "populate",
-      "seed": 368154881459213,
+      "seed": 368154881459198,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
@@ -2211,7 +2597,7 @@
       "wildcard_text": "",
       "populated_text": ["985", 0],
       "mode": "populate",
-      "seed": 41997569973898,
+      "seed": 991467034814181,
       "Select to add Wildcard": "Select the Wildcard to add to the text"
     },
     "class_type": "ImpactWildcardProcessor",
