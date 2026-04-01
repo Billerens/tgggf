@@ -172,7 +172,7 @@
   },
   "37": {
     "inputs": {
-      "model_name": "segm/lips_v1.pt"
+      "model_name": "segm/adetailer2dMouth_v10.pt"
     },
     "class_type": "UltralyticsDetectorProvider",
     "_meta": {

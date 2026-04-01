@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Sparkles, Trash2, UserRound, X } from "lucide-react";
+import { RefreshCw, Sparkles, Trash2, UserRound, X } from "lucide-react";
 import type { GeneratedPersonaDraft } from "../lmstudio";
 import { dbApi } from "../db";
 import type { ImageGenerationMeta, Persona } from "../types";
@@ -45,11 +45,17 @@ interface PersonaModalProps {
   lookEnhanceTarget: LookEnhanceTarget;
   setLookEnhanceTarget: (value: LookEnhanceTarget) => void;
   enhancingLookImageKey: string | null;
+  regeneratingLookImageKey: string | null;
   onEnhanceLookImage: (
     packIndex: number | null,
     kind: "avatar" | "fullbody" | "side" | "back",
     imageUrl: string,
     targetOverride?: LookEnhanceTarget,
+  ) => void;
+  onRegenerateLookImage: (
+    packIndex: number,
+    kind: "avatar" | "fullbody" | "side" | "back",
+    imageUrl: string,
   ) => void;
   onStopLookEnhancement: () => void;
   generatedLookPacks: PersonaLookPack[];
@@ -89,6 +95,11 @@ const ENHANCE_TARGET_OPTIONS: Array<{ value: LookEnhanceTarget; label: string }>
 interface EnhanceOverlayButtonProps {
   busy: boolean;
   onEnhance: (targetOverride?: LookEnhanceTarget) => void;
+}
+
+interface RegenerateOverlayButtonProps {
+  busy: boolean;
+  onRegenerate: () => void;
 }
 
 function EnhanceOverlayButton({ busy, onEnhance }: EnhanceOverlayButtonProps) {
@@ -170,6 +181,24 @@ function EnhanceOverlayButton({ busy, onEnhance }: EnhanceOverlayButtonProps) {
   );
 }
 
+function RegenerateOverlayButton({ busy, onRegenerate }: RegenerateOverlayButtonProps) {
+  return (
+    <button
+      type="button"
+      className={`persona-look-regenerate-btn ${busy ? "busy" : ""}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        onRegenerate();
+      }}
+      disabled={busy}
+      title="Перегенерировать изображение"
+    >
+      <RefreshCw size={12} />
+      {busy ? "..." : "↻"}
+    </button>
+  );
+}
+
 function SliderField({ label, value, onChange }: SliderFieldProps) {
   return (
     <label className="slider-field">
@@ -213,7 +242,9 @@ export function PersonaModal({
   lookEnhanceTarget,
   setLookEnhanceTarget,
   enhancingLookImageKey,
+  regeneratingLookImageKey,
   onEnhanceLookImage,
+  onRegenerateLookImage,
   onStopLookEnhancement,
   generatedLookPacks,
   onApplyLookPack,
@@ -880,6 +911,18 @@ export function PersonaModal({
                           const packFullBodySrc = resolveImageSrc(pack.fullBodyUrl, pack.fullBodyImageId);
                           const packSideSrc = resolveImageSrc(pack.fullBodySideUrl, pack.fullBodySideImageId);
                           const packBackSrc = resolveImageSrc(pack.fullBodyBackUrl, pack.fullBodyBackImageId);
+                          const avatarKey = `${index}:avatar`;
+                          const fullBodyKey = `${index}:fullbody`;
+                          const sideKey = `${index}:side`;
+                          const backKey = `${index}:back`;
+                          const avatarBusy =
+                            enhancingLookImageKey === avatarKey || regeneratingLookImageKey === avatarKey;
+                          const fullBodyBusy =
+                            enhancingLookImageKey === fullBodyKey || regeneratingLookImageKey === fullBodyKey;
+                          const sideBusy =
+                            enhancingLookImageKey === sideKey || regeneratingLookImageKey === sideKey;
+                          const backBusy =
+                            enhancingLookImageKey === backKey || regeneratingLookImageKey === backKey;
                           return (
                             <>
                         <strong>
@@ -903,8 +946,14 @@ export function PersonaModal({
                                 >
                                   <img src={packAvatarSrc} alt={`look-pack-${index + 1}-avatar`} loading="lazy" />
                                 </button>
+                                <RegenerateOverlayButton
+                                  busy={regeneratingLookImageKey === avatarKey}
+                                  onRegenerate={() =>
+                                    onRegenerateLookImage(index, "avatar", pack.avatarUrl || packAvatarSrc)
+                                  }
+                                />
                                 <EnhanceOverlayButton
-                                  busy={enhancingLookImageKey === `${index}:avatar`}
+                                  busy={avatarBusy}
                                   onEnhance={(targetOverride) =>
                                     handleEnhanceRequest(index, "avatar", packAvatarSrc, targetOverride)
                                   }
@@ -931,8 +980,14 @@ export function PersonaModal({
                                 >
                                   <img src={packFullBodySrc} alt={`look-pack-${index + 1}-fullbody`} loading="lazy" />
                                 </button>
+                                <RegenerateOverlayButton
+                                  busy={regeneratingLookImageKey === fullBodyKey}
+                                  onRegenerate={() =>
+                                    onRegenerateLookImage(index, "fullbody", pack.fullBodyUrl || packFullBodySrc)
+                                  }
+                                />
                                 <EnhanceOverlayButton
-                                  busy={enhancingLookImageKey === `${index}:fullbody`}
+                                  busy={fullBodyBusy}
                                   onEnhance={(targetOverride) =>
                                     handleEnhanceRequest(index, "fullbody", packFullBodySrc, targetOverride)
                                   }
@@ -964,8 +1019,14 @@ export function PersonaModal({
                                       loading="lazy"
                                     />
                                   </button>
+                                  <RegenerateOverlayButton
+                                    busy={regeneratingLookImageKey === sideKey}
+                                    onRegenerate={() =>
+                                      onRegenerateLookImage(index, "side", pack.fullBodySideUrl || packSideSrc)
+                                    }
+                                  />
                                   <EnhanceOverlayButton
-                                    busy={enhancingLookImageKey === `${index}:side`}
+                                    busy={sideBusy}
                                     onEnhance={(targetOverride) =>
                                       handleEnhanceRequest(index, "side", packSideSrc, targetOverride)
                                     }
@@ -998,8 +1059,14 @@ export function PersonaModal({
                                       loading="lazy"
                                     />
                                   </button>
+                                  <RegenerateOverlayButton
+                                    busy={regeneratingLookImageKey === backKey}
+                                    onRegenerate={() =>
+                                      onRegenerateLookImage(index, "back", pack.fullBodyBackUrl || packBackSrc)
+                                    }
+                                  />
                                   <EnhanceOverlayButton
-                                    busy={enhancingLookImageKey === `${index}:back`}
+                                    busy={backBusy}
                                     onEnhance={(targetOverride) =>
                                       handleEnhanceRequest(index, "back", packBackSrc, targetOverride)
                                     }

@@ -101,8 +101,8 @@ const BASE_OUTPUT_TITLE_PREFERENCES = [
   "Preview after Inpaint",
 ];
 const I2I_OUTPUT_TITLE_PREFERENCES = [
-  "Preview after Upscale/HiRes Fix",
   "Preview after Detailing",
+  "Preview after Upscale/HiRes Fix",
 ];
 const WEBP_QUALITY = 82;
 const HISTORY_TIMEOUT_MS = 600000;
@@ -469,6 +469,33 @@ function setBooleanByExactTitle(workflow: ComfyWorkflow, title: string, value?: 
   }
 }
 
+function setI2IBaseResolution(workflow: ComfyWorkflow, width?: number, height?: number) {
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+  const targetWidth = Math.max(64, Math.round(Number(width)));
+  const targetHeight = Math.max(64, Math.round(Number(height)));
+  for (const node of Object.values(workflow)) {
+    if (node.class_type !== "InpaintCropImproved" || !node.inputs) continue;
+    if (typeof node.inputs.preresize === "boolean") {
+      node.inputs.preresize = true;
+    }
+    if (typeof node.inputs.preresize_min_width === "number") {
+      node.inputs.preresize_min_width = targetWidth;
+    }
+    if (typeof node.inputs.preresize_min_height === "number") {
+      node.inputs.preresize_min_height = targetHeight;
+    }
+    if (typeof node.inputs.preresize_max_width === "number") {
+      node.inputs.preresize_max_width = Math.max(node.inputs.preresize_max_width, targetWidth);
+    }
+    if (typeof node.inputs.preresize_max_height === "number") {
+      node.inputs.preresize_max_height = Math.max(node.inputs.preresize_max_height, targetHeight);
+    }
+    node.inputs.output_resize_to_target_size = true;
+    node.inputs.output_target_width = targetWidth;
+    node.inputs.output_target_height = targetHeight;
+  }
+}
+
 function setBooleanInputByExactTitle(
   workflow: ComfyWorkflow,
   title: string,
@@ -544,15 +571,6 @@ function setInputByExactTitle(
     if (nodeTitle !== target) continue;
     node.inputs[inputName] = value;
   }
-}
-
-function hasNodeByExactTitle(workflow: ComfyWorkflow, title: string) {
-  const target = title.toLowerCase();
-  for (const node of Object.values(workflow)) {
-    const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
-    if (nodeTitle === target) return true;
-  }
-  return false;
 }
 
 function setSliderByExactTitle(workflow: ComfyWorkflow, title: string, value?: number) {
@@ -634,9 +652,29 @@ const I2I_DETAILER_CHAIN: Array<{
 
 const I2I_FINAL_IMAGE_SWITCH_TITLE = "After Inpaint IMG";
 const I2I_FINAL_IMAGE_SWITCH_INPUT = "on_false";
+const I2I_HIRES_SWITCH_TITLE = "Hires Fix Switch";
+const I2I_UPSCALE_CLASS = "vsLinx_UpscaleByFactorWithModel";
+const I2I_UPSCALE_TITLE_TOKEN = "upscaling";
 
 function isSelectableDetailTarget(target: I2IDetailerTarget): target is DetailTarget {
   return target === "face" || target === "eyes" || target === "nose" || target === "lips" || target === "hands";
+}
+
+function resolvePrimaryI2IUpscaleNodeId(workflow: ComfyWorkflow) {
+  let fallbackNodeId: string | null = null;
+  for (const [nodeId, node] of Object.entries(workflow)) {
+    if (node.class_type !== I2I_UPSCALE_CLASS) continue;
+    const title = node._meta?.title?.toLowerCase() ?? "";
+    if (!title.includes(I2I_UPSCALE_TITLE_TOKEN)) continue;
+    if (!fallbackNodeId) fallbackNodeId = nodeId;
+    const sourceImageLink = toWorkflowLink(node.inputs?.image);
+    if (!sourceImageLink) continue;
+    const sourceTitle = workflow[sourceImageLink[0]]?._meta?.title?.toLowerCase() ?? "";
+    if (sourceTitle.includes("vae decode")) {
+      return nodeId;
+    }
+  }
+  return fallbackNodeId;
 }
 
 function rewireI2IDetailerChain(
@@ -644,11 +682,40 @@ function rewireI2IDetailerChain(
   enabledTargets: Set<DetailTarget>,
   flowConfig: ComfyFlowConfig,
 ) {
+  const hiresSwitchEntry = getNodeEntryByExactTitle(workflow, I2I_HIRES_SWITCH_TITLE);
+  const hiresSwitchSourceLink = hiresSwitchEntry
+    ? toWorkflowLink(hiresSwitchEntry[1].inputs?.on_false)
+    : null;
   const firstDetailer = getNodeEntryByExactTitle(workflow, I2I_DETAILER_CHAIN[0].detailerTitle);
   const sourceLinkFromDetailer = firstDetailer ? toWorkflowLink(firstDetailer[1].inputs?.image) : null;
   const fallbackSourceLink = flowConfig.imageListNodeId ? ([flowConfig.imageListNodeId, 0] as WorkflowLink) : null;
-  let activeImageLink = sourceLinkFromDetailer ?? fallbackSourceLink;
-  if (!activeImageLink) return;
+  const sourceImageLink = hiresSwitchSourceLink ?? sourceLinkFromDetailer ?? fallbackSourceLink;
+  if (!sourceImageLink) return;
+
+  let activeImageLink = cloneWorkflowLink(sourceImageLink);
+  if (hiresSwitchEntry) {
+    const [hiresSwitchNodeId, hiresSwitchNode] = hiresSwitchEntry;
+    if (hiresSwitchNode.inputs) {
+      hiresSwitchNode.inputs.on_false = cloneWorkflowLink(sourceImageLink);
+      const upscaleNodeId = resolvePrimaryI2IUpscaleNodeId(workflow);
+      if (upscaleNodeId) {
+        const upscaleNode = workflow[upscaleNodeId];
+        if (upscaleNode?.inputs) {
+          upscaleNode.inputs.image = cloneWorkflowLink(sourceImageLink);
+        }
+      }
+    }
+    activeImageLink = [hiresSwitchNodeId, 0];
+  } else {
+    const upscaleNodeId = resolvePrimaryI2IUpscaleNodeId(workflow);
+    if (upscaleNodeId) {
+      const upscaleNode = workflow[upscaleNodeId];
+      if (upscaleNode?.inputs) {
+        upscaleNode.inputs.image = cloneWorkflowLink(sourceImageLink);
+      }
+      activeImageLink = [upscaleNodeId, 0];
+    }
+  }
 
   for (const chainNode of I2I_DETAILER_CHAIN) {
     const entry = getNodeEntryByExactTitle(workflow, chainNode.detailerTitle);
@@ -684,12 +751,10 @@ function applyDetailing(
     setBooleanByExactTitle(workflow, `Enable ${part} prompt`, enabled);
   };
 
-  const hasInpaintSwitch = hasNodeByExactTitle(workflow, "Inpaint?");
   const isI2I = Boolean(flowConfig.requiresReferenceImage);
+  // Persona enhancement no longer uses the inpaint branch.
+  setBooleanByExactTitle(workflow, "Inpaint?", false);
   const disableDetailing = () => {
-    if (hasInpaintSwitch) {
-      setBooleanByExactTitle(workflow, "Inpaint?", false);
-    }
     // Prevent Impact Pack from executing with zero denoise on disabled paths.
     for (const part of ["Face", "Eyes", "Nose", "Lips", "Hands", "Nipples", "Vagina", "Penis"]) {
       setEnableDetailer(part, false);
@@ -765,9 +830,6 @@ function applyDetailing(
   setEnableDetailer("Vagina", false);
   setEnableDetailer("Penis", false);
 
-  if (hasInpaintSwitch) {
-    setBooleanByExactTitle(workflow, "Inpaint?", true);
-  }
   if (isI2I) {
     const i2iDenoise = i2iDenoiseMap[detailing.level as DetailLevel];
     setSliderByExactTitle(workflow, "Denoise", i2iDenoise.base);
@@ -912,16 +974,27 @@ function resolveOutputNodeGroups(
   workflow: ComfyWorkflow,
   outputTitlePreferences: string[],
 ) {
-  const preview: string[] = [];
   const saverNodes: string[] = [];
+  const previewCandidates: Array<{ nodeId: string; title: string }> = [];
   for (const [nodeId, node] of Object.entries(workflow)) {
     if (node.class_type === "Image Saver") {
       saverNodes.push(nodeId);
     }
-    const title = node._meta?.title ?? "";
+    const title = node._meta?.title?.toLowerCase() ?? "";
     if (!title) continue;
-    if (outputTitlePreferences.some((token) => title.includes(token))) {
-      preview.push(nodeId);
+    if (outputTitlePreferences.some((token) => title.includes(token.toLowerCase()))) {
+      previewCandidates.push({ nodeId, title });
+    }
+  }
+
+  const preview: string[] = [];
+  const seen = new Set<string>();
+  for (const token of outputTitlePreferences.map((value) => value.toLowerCase())) {
+    for (const candidate of previewCandidates) {
+      if (!candidate.title.includes(token)) continue;
+      if (seen.has(candidate.nodeId)) continue;
+      seen.add(candidate.nodeId);
+      preview.push(candidate.nodeId);
     }
   }
   return { saver: saverNodes, preview };
@@ -937,12 +1010,22 @@ function resolvePreferredOutputNodes(
     .filter(Boolean);
   if (tokens.length === 0) return [];
 
-  const preferred: string[] = [];
+  const candidates: Array<{ nodeId: string; title: string }> = [];
   for (const [nodeId, node] of Object.entries(workflow)) {
     const title = node._meta?.title?.toLowerCase() ?? "";
     if (!title) continue;
     if (tokens.some((token) => title.includes(token))) {
-      preferred.push(nodeId);
+      candidates.push({ nodeId, title });
+    }
+  }
+  const preferred: string[] = [];
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    for (const candidate of candidates) {
+      if (!candidate.title.includes(token)) continue;
+      if (seen.has(candidate.nodeId)) continue;
+      seen.add(candidate.nodeId);
+      preferred.push(candidate.nodeId);
     }
   }
   return preferred;
@@ -1550,6 +1633,9 @@ export async function generateComfyImages(
       if (flowConfig.sizeNodeId) {
         setSize(workflow, item.width, item.height, flowConfig.sizeNodeId);
       }
+      if (flowConfig.requiresReferenceImage) {
+        setI2IBaseResolution(workflow, item.width, item.height);
+      }
       if (flowConfig.seedNodeId) {
         setSeed(workflow, item.seed, flowConfig.seedNodeId);
       }
@@ -1567,7 +1653,13 @@ export async function generateComfyImages(
       if (flowConfig.hiresFixNodeId) {
         setBooleanValue(workflow, flowConfig.hiresFixNodeId, item.forceHiResFix);
       }
-      setBooleanByTitle(workflow, ["enable upscaler", "use hi-res fix"], item.enableUpscaler);
+      const shouldEnableUpscaler = typeof item.enableUpscaler === "boolean" ? item.enableUpscaler : undefined;
+      const shouldEnableHiResFix =
+        typeof shouldEnableUpscaler === "boolean"
+          ? (shouldEnableUpscaler ? true : item.forceHiResFix)
+          : item.forceHiResFix;
+      setBooleanByTitle(workflow, ["enable upscaler"], shouldEnableUpscaler);
+      setBooleanByTitle(workflow, ["use hi-res fix"], shouldEnableHiResFix);
       setUpscaleFactorByTitle(workflow, item.upscaleFactor);
       applyDetailerVramSaver(workflow);
       applyDetailing(workflow, item.detailing, flowConfig);

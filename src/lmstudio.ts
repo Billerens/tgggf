@@ -1125,6 +1125,7 @@ export async function generatePersonaLookPrompts(
     "detailPrompts.* также только comma-separated English tags.",
     "identityLocks.* также comma-separated English tags (короткие, конкретные).",
     "Каждый тег СТРОГО короткий (1-2 слова), конкретный и визуальный.",
+    "Каждый тег должен быть самодостаточным и содержать объект признака (например eyes/hair/lips/skin/outfit); запрещены обрывки вроде 'large almond shaped' или 'blue-violet color'.",
     "КРИТИЧНО: избегай длинных перегруженных промптов и повторов.",
     "Жёстко запрещены дубликаты тегов и перефразированные дубликаты (например short bob haircut и bob haircut to shoulders одновременно без необходимости).",
     "Если тег уже передаёт признак, не добавляй второй тег с тем же смыслом.",

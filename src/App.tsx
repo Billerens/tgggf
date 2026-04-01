@@ -34,7 +34,9 @@ import {
   type SidebarTab,
 } from "./ui/types";
 
-type PersonaLookPromptBundle = Awaited<ReturnType<typeof generatePersonaLookPrompts>>;
+type PersonaLookPromptBundle = Awaited<
+  ReturnType<typeof generatePersonaLookPrompts>
+>;
 type PwaInstallStatus = "installed" | "available" | "unavailable";
 type LookMetaKind = "avatar" | "fullbody" | "side" | "back";
 
@@ -78,6 +80,58 @@ function mergePromptTags(basePrompt: string, additionalTags: string[]) {
   return merged.join(", ");
 }
 
+function readImageArea(url: string, timeoutMs = 2500) {
+  return new Promise<number>((resolve) => {
+    const image = new Image();
+    let settled = false;
+    const finish = (area: number) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      image.onload = null;
+      image.onerror = null;
+      resolve(area);
+    };
+    const timeoutId = window.setTimeout(() => finish(0), timeoutMs);
+    image.onload = () =>
+      finish(
+        Math.max(0, image.naturalWidth) * Math.max(0, image.naturalHeight),
+      );
+    image.onerror = () => finish(0);
+    image.decoding = "async";
+    image.src = url;
+  });
+}
+
+async function pickPreferredEnhancedUrl(
+  candidates: string[],
+  sourceUrl: string,
+) {
+  const source = sourceUrl.trim();
+  const normalizedCandidates = Array.from(
+    new Set(candidates.map((candidate) => candidate.trim()).filter(Boolean)),
+  );
+  if (normalizedCandidates.length === 0) return "";
+  const nonSourceCandidates = source
+    ? normalizedCandidates.filter((candidate) => candidate !== source)
+    : normalizedCandidates;
+  const pool =
+    nonSourceCandidates.length > 0 ? nonSourceCandidates : normalizedCandidates;
+  if (pool.length === 1) return pool[0];
+
+  const ranked = await Promise.all(
+    pool.map(async (url, index) => ({
+      url,
+      index,
+      area: await readImageArea(url),
+    })),
+  );
+  ranked.sort(
+    (left, right) => right.area - left.area || left.index - right.index,
+  );
+  return ranked[0]?.url ?? pool[0];
+}
+
 const LOOK_META_SLOT_KEY: Record<LookMetaKind, string> = {
   avatar: "__slot__:avatar",
   fullbody: "__slot__:fullbody",
@@ -87,7 +141,11 @@ const LOOK_META_SLOT_KEY: Record<LookMetaKind, string> = {
 
 function withLookMeta(
   prev: Record<string, ComfyImageGenerationMeta>,
-  updates: Array<{ kind: LookMetaKind; url?: string; meta: ComfyImageGenerationMeta }>,
+  updates: Array<{
+    kind: LookMetaKind;
+    url?: string;
+    meta: ComfyImageGenerationMeta;
+  }>,
 ) {
   const next = { ...prev };
   for (const update of updates) {
@@ -103,7 +161,9 @@ function synchronizeLookMetaWithUrls(
   metaByUrl: Record<string, ComfyImageGenerationMeta> | undefined,
   urls: Partial<Record<LookMetaKind, string>>,
 ) {
-  const next: Record<string, ComfyImageGenerationMeta> = { ...(metaByUrl ?? {}) };
+  const next: Record<string, ComfyImageGenerationMeta> = {
+    ...(metaByUrl ?? {}),
+  };
   for (const kind of Object.keys(LOOK_META_SLOT_KEY) as LookMetaKind[]) {
     const slotKey = LOOK_META_SLOT_KEY[kind];
     const url = (urls[kind] ?? "").trim();
@@ -197,7 +257,8 @@ export default function App() {
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const [showChatDetailsModal, setShowChatDetailsModal] = useState(false);
-  const [personaModalTab, setPersonaModalTab] = useState<PersonaModalTab>("editor");
+  const [personaModalTab, setPersonaModalTab] =
+    useState<PersonaModalTab>("editor");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const [personaDraft, setPersonaDraft] = useState(createEmptyPersonaDraft);
@@ -211,18 +272,31 @@ export default function App() {
 
   const [generationTheme, setGenerationTheme] = useState("");
   const [generationCount, setGenerationCount] = useState(3);
-  const [generatedDrafts, setGeneratedDrafts] = useState<GeneratedPersonaDraft[]>([]);
+  const [generatedDrafts, setGeneratedDrafts] = useState<
+    GeneratedPersonaDraft[]
+  >([]);
   const [generationLoading, setGenerationLoading] = useState(false);
   const [lookGenerationLoading, setLookGenerationLoading] = useState(false);
   const [generateSideView, setGenerateSideView] = useState(false);
   const [generateBackView, setGenerateBackView] = useState(false);
   const [lookPackageCount, setLookPackageCount] = useState(1);
-  const [lookDetailLevel, setLookDetailLevel] = useState<LookDetailLevel>("off");
-  const [lookEnhanceTarget, setLookEnhanceTarget] = useState<LookEnhanceTarget>("all");
+  const [lookDetailLevel, setLookDetailLevel] =
+    useState<LookDetailLevel>("off");
+  const [lookEnhanceTarget, setLookEnhanceTarget] =
+    useState<LookEnhanceTarget>("all");
   const [lookFastMode, setLookFastMode] = useState(false);
-  const [enhancingLookImageKey, setEnhancingLookImageKey] = useState<string | null>(null);
-  const [lookImageMetaByUrl, setLookImageMetaByUrl] = useState<Record<string, ComfyImageGenerationMeta>>({});
-  const [generatedLookPacks, setGeneratedLookPacks] = useState<PersonaLookPack[]>([]);
+  const [enhancingLookImageKey, setEnhancingLookImageKey] = useState<
+    string | null
+  >(null);
+  const [regeneratingLookImageKey, setRegeneratingLookImageKey] = useState<
+    string | null
+  >(null);
+  const [lookImageMetaByUrl, setLookImageMetaByUrl] = useState<
+    Record<string, ComfyImageGenerationMeta>
+  >({});
+  const [generatedLookPacks, setGeneratedLookPacks] = useState<
+    PersonaLookPack[]
+  >([]);
   const [generationPersonaId, setGenerationPersonaId] = useState("");
   const [generationTopic, setGenerationTopic] = useState("");
   const [generationInfinite, setGenerationInfinite] = useState(false);
@@ -230,16 +304,23 @@ export default function App() {
   const [generationDelaySeconds, setGenerationDelaySeconds] = useState(2);
   const [generationIsRunning, setGenerationIsRunning] = useState(false);
   const [generationCompletedCount, setGenerationCompletedCount] = useState(0);
-  const [generationPendingImageCount, setGenerationPendingImageCount] = useState(0);
-  const [generationSessions, setGenerationSessions] = useState<GeneratorSession[]>([]);
+  const [generationPendingImageCount, setGenerationPendingImageCount] =
+    useState(0);
+  const [generationSessions, setGenerationSessions] = useState<
+    GeneratorSession[]
+  >([]);
   const [generationSessionId, setGenerationSessionId] = useState("");
-  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [pwaInstallStatus, setPwaInstallStatus] = useState<PwaInstallStatus>("unavailable");
+  const [deferredInstallPrompt, setDeferredInstallPrompt] =
+    useState<BeforeInstallPromptEvent | null>(null);
+  const [pwaInstallStatus, setPwaInstallStatus] =
+    useState<PwaInstallStatus>("unavailable");
   const generationRunRef = useRef(0);
   const lookGenerationRunRef = useRef(0);
   const lookGenerationAbortRef = useRef<AbortController | null>(null);
   const lookEnhanceRunRef = useRef(0);
   const lookEnhanceAbortRef = useRef<AbortController | null>(null);
+  const lookRegenerateRunRef = useRef(0);
+  const lookRegenerateAbortRef = useRef<AbortController | null>(null);
   const lookSessionAssetIdsRef = useRef<Set<string>>(new Set());
   const lookPromptBundleCacheRef = useRef<{
     key: string;
@@ -286,7 +367,8 @@ export default function App() {
   useEffect(() => {
     const isStandalone =
       window.matchMedia?.("(display-mode: standalone)")?.matches ||
-      ((window.navigator as Navigator & { standalone?: boolean }).standalone === true);
+      (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+        true;
     if (isStandalone) {
       setPwaInstallStatus("installed");
       return;
@@ -322,7 +404,8 @@ export default function App() {
     setDeferredInstallPrompt(null);
     const isStandalone =
       window.matchMedia?.("(display-mode: standalone)")?.matches ||
-      ((window.navigator as Navigator & { standalone?: boolean }).standalone === true);
+      (window.navigator as Navigator & { standalone?: boolean }).standalone ===
+        true;
     setPwaInstallStatus(isStandalone ? "installed" : "unavailable");
   };
 
@@ -369,7 +452,10 @@ export default function App() {
   const loadComfyCheckpoints = async (comfyBaseUrl: string) => {
     setCheckpointsLoading(true);
     try {
-      const next = await listComfyCheckpoints(comfyBaseUrl, settingsDraft.comfyAuth);
+      const next = await listComfyCheckpoints(
+        comfyBaseUrl,
+        settingsDraft.comfyAuth,
+      );
       setComfyCheckpoints(next);
     } catch (e) {
       setComfyCheckpoints([]);
@@ -397,7 +483,10 @@ export default function App() {
   );
 
   const generationSession = useMemo(
-    () => generationSessions.find((session) => session.id === generationSessionId) ?? null,
+    () =>
+      generationSessions.find(
+        (session) => session.id === generationSessionId,
+      ) ?? null,
     [generationSessionId, generationSessions],
   );
 
@@ -447,7 +536,8 @@ export default function App() {
           return;
         }
         setGenerationSessionId((prev) => {
-          if (prev && sessions.some((session) => session.id === prev)) return prev;
+          if (prev && sessions.some((session) => session.id === prev))
+            return prev;
           return sessions[0].id;
         });
       } catch (error) {
@@ -477,9 +567,12 @@ export default function App() {
   }, [generationIsRunning, generationSession]);
 
   const createGenerationSession = async () => {
-    const fallbackPersonaId = generationPersonaId || activePersonaId || personas[0]?.id || "";
+    const fallbackPersonaId =
+      generationPersonaId || activePersonaId || personas[0]?.id || "";
     if (!fallbackPersonaId) {
-      useAppStore.setState({ error: "Нет доступной персоны для создания сессии генератора." });
+      useAppStore.setState({
+        error: "Нет доступной персоны для создания сессии генератора.",
+      });
       return;
     }
     if (fallbackPersonaId !== generationPersonaId) {
@@ -492,7 +585,9 @@ export default function App() {
       personaId: fallbackPersonaId,
       topic: generationTopic.trim() || "Новая сессия",
       isInfinite: generationInfinite,
-      requestedCount: generationInfinite ? null : Math.max(1, Math.floor(generationCountLimit)),
+      requestedCount: generationInfinite
+        ? null
+        : Math.max(1, Math.floor(generationCountLimit)),
       delaySeconds: Math.max(0, generationDelaySeconds),
       status: "stopped",
       completedCount: 0,
@@ -515,7 +610,9 @@ export default function App() {
       nextSessionId = filtered[0]?.id ?? "";
       return filtered;
     });
-    setGenerationSessionId((prev) => (prev === sessionId ? nextSessionId : prev));
+    setGenerationSessionId((prev) =>
+      prev === sessionId ? nextSessionId : prev,
+    );
   };
 
   const buildLookSlotMeta = (
@@ -524,7 +621,8 @@ export default function App() {
     url: string,
   ) => {
     const normalizedUrl = url.trim();
-    if (normalizedUrl && syncedLookMeta[normalizedUrl]) return syncedLookMeta[normalizedUrl];
+    if (normalizedUrl && syncedLookMeta[normalizedUrl])
+      return syncedLookMeta[normalizedUrl];
     return syncedLookMeta[LOOK_META_SLOT_KEY[kind]];
   };
 
@@ -576,10 +674,14 @@ export default function App() {
     const sideImageIdFromLink = parseImageAssetId(persona.fullBodySideUrl);
     const backImageIdFromLink = parseImageAssetId(persona.fullBodyBackUrl);
 
-    const initialAvatarImageId = persona.avatarImageId.trim() || avatarImageIdFromLink;
-    const initialFullBodyImageId = persona.fullBodyImageId.trim() || fullBodyImageIdFromLink;
-    const initialSideImageId = persona.fullBodySideImageId.trim() || sideImageIdFromLink;
-    const initialBackImageId = persona.fullBodyBackImageId.trim() || backImageIdFromLink;
+    const initialAvatarImageId =
+      persona.avatarImageId.trim() || avatarImageIdFromLink;
+    const initialFullBodyImageId =
+      persona.fullBodyImageId.trim() || fullBodyImageIdFromLink;
+    const initialSideImageId =
+      persona.fullBodySideImageId.trim() || sideImageIdFromLink;
+    const initialBackImageId =
+      persona.fullBodyBackImageId.trim() || backImageIdFromLink;
 
     const imageAssets = await dbApi.getImageAssets([
       initialAvatarImageId,
@@ -587,9 +689,14 @@ export default function App() {
       initialSideImageId,
       initialBackImageId,
     ]);
-    const assetById = Object.fromEntries(imageAssets.map((asset) => [asset.id, asset]));
+    const assetById = Object.fromEntries(
+      imageAssets.map((asset) => [asset.id, asset]),
+    );
     const personaMetaByUrl = Object.fromEntries(
-      Object.entries(persona.imageMetaByUrl ?? {}).map(([key, value]) => [key.trim(), value]),
+      Object.entries(persona.imageMetaByUrl ?? {}).map(([key, value]) => [
+        key.trim(),
+        value,
+      ]),
     ) as Record<string, ComfyImageGenerationMeta>;
     const resolvedAvatarUrl =
       assetById[initialAvatarImageId]?.dataUrl ||
@@ -601,11 +708,15 @@ export default function App() {
       "";
     const resolvedSideUrl =
       assetById[initialSideImageId]?.dataUrl ||
-      (persona.fullBodySideUrl.startsWith("idb://") ? "" : persona.fullBodySideUrl) ||
+      (persona.fullBodySideUrl.startsWith("idb://")
+        ? ""
+        : persona.fullBodySideUrl) ||
       "";
     const resolvedBackUrl =
       assetById[initialBackImageId]?.dataUrl ||
-      (persona.fullBodyBackUrl.startsWith("idb://") ? "" : persona.fullBodyBackUrl) ||
+      (persona.fullBodyBackUrl.startsWith("idb://")
+        ? ""
+        : persona.fullBodyBackUrl) ||
       "";
     const syncedLookMeta = synchronizeLookMetaWithUrls(persona.imageMetaByUrl, {
       avatar: resolvedAvatarUrl,
@@ -624,11 +735,17 @@ export default function App() {
       const normalizedResolved = resolvedUrl.trim();
       const normalizedOriginal = originalUrl.trim();
       const normalizedImageId = imageId.trim();
-      const idbLink = normalizedImageId ? toImageAssetLink(normalizedImageId) : "";
+      const idbLink = normalizedImageId
+        ? toImageAssetLink(normalizedImageId)
+        : "";
       return (
         personaMetaByUrl[LOOK_META_SLOT_KEY[kind]] ??
-        (normalizedResolved ? personaMetaByUrl[normalizedResolved] : undefined) ??
-        (normalizedOriginal ? personaMetaByUrl[normalizedOriginal] : undefined) ??
+        (normalizedResolved
+          ? personaMetaByUrl[normalizedResolved]
+          : undefined) ??
+        (normalizedOriginal
+          ? personaMetaByUrl[normalizedOriginal]
+          : undefined) ??
         (idbLink ? personaMetaByUrl[idbLink] : undefined)
       );
     };
@@ -648,11 +765,14 @@ export default function App() {
       resolvedFullBodyUrl,
       persona.fullBodyUrl,
       initialFullBodyImageId,
-      initialFullBodyImageId ? assetById[initialFullBodyImageId]?.meta : undefined,
+      initialFullBodyImageId
+        ? assetById[initialFullBodyImageId]?.meta
+        : undefined,
     );
     if (fullBodyMeta) {
       syncedLookMeta[LOOK_META_SLOT_KEY.fullbody] = fullBodyMeta;
-      if (resolvedFullBodyUrl) syncedLookMeta[resolvedFullBodyUrl] = fullBodyMeta;
+      if (resolvedFullBodyUrl)
+        syncedLookMeta[resolvedFullBodyUrl] = fullBodyMeta;
     }
     const sideMeta = resolveLegacyLookMeta(
       "side",
@@ -686,13 +806,32 @@ export default function App() {
       if (normalizedExisting) return normalizedExisting;
       const normalizedUrl = resolvedUrl.trim();
       if (!normalizedUrl || normalizedUrl.startsWith("idb://")) return "";
-      return createLookAsset(normalizedUrl, buildLookSlotMeta(kind, syncedLookMeta, normalizedUrl));
+      return createLookAsset(
+        normalizedUrl,
+        buildLookSlotMeta(kind, syncedLookMeta, normalizedUrl),
+      );
     };
 
-    const avatarImageId = await ensureImageId("avatar", initialAvatarImageId, resolvedAvatarUrl);
-    const fullBodyImageId = await ensureImageId("fullbody", initialFullBodyImageId, resolvedFullBodyUrl);
-    const fullBodySideImageId = await ensureImageId("side", initialSideImageId, resolvedSideUrl);
-    const fullBodyBackImageId = await ensureImageId("back", initialBackImageId, resolvedBackUrl);
+    const avatarImageId = await ensureImageId(
+      "avatar",
+      initialAvatarImageId,
+      resolvedAvatarUrl,
+    );
+    const fullBodyImageId = await ensureImageId(
+      "fullbody",
+      initialFullBodyImageId,
+      resolvedFullBodyUrl,
+    );
+    const fullBodySideImageId = await ensureImageId(
+      "side",
+      initialSideImageId,
+      resolvedSideUrl,
+    );
+    const fullBodyBackImageId = await ensureImageId(
+      "back",
+      initialBackImageId,
+      resolvedBackUrl,
+    );
     setEditingPersonaId(persona.id);
     setGeneratedLookPacks([]);
     setLookImageMetaByUrl(syncedLookMeta);
@@ -703,10 +842,18 @@ export default function App() {
       appearance: persona.appearance,
       imageCheckpoint: persona.imageCheckpoint,
       advanced: persona.advanced,
-      avatarUrl: avatarImageId ? toImageAssetLink(avatarImageId) : resolvedAvatarUrl,
-      fullBodyUrl: fullBodyImageId ? toImageAssetLink(fullBodyImageId) : resolvedFullBodyUrl,
-      fullBodySideUrl: fullBodySideImageId ? toImageAssetLink(fullBodySideImageId) : resolvedSideUrl,
-      fullBodyBackUrl: fullBodyBackImageId ? toImageAssetLink(fullBodyBackImageId) : resolvedBackUrl,
+      avatarUrl: avatarImageId
+        ? toImageAssetLink(avatarImageId)
+        : resolvedAvatarUrl,
+      fullBodyUrl: fullBodyImageId
+        ? toImageAssetLink(fullBodyImageId)
+        : resolvedFullBodyUrl,
+      fullBodySideUrl: fullBodySideImageId
+        ? toImageAssetLink(fullBodySideImageId)
+        : resolvedSideUrl,
+      fullBodyBackUrl: fullBodyBackImageId
+        ? toImageAssetLink(fullBodyBackImageId)
+        : resolvedBackUrl,
       avatarImageId,
       fullBodyImageId,
       fullBodySideImageId,
@@ -755,7 +902,12 @@ export default function App() {
       fullBodyBackImageId,
       id: editingPersonaId ?? undefined,
     });
-    for (const retainedId of [avatarImageId, fullBodyImageId, fullBodySideImageId, fullBodyBackImageId]) {
+    for (const retainedId of [
+      avatarImageId,
+      fullBodyImageId,
+      fullBodySideImageId,
+      fullBodyBackImageId,
+    ]) {
       if (retainedId) {
         lookSessionAssetIdsRef.current.delete(retainedId);
       }
@@ -788,15 +940,19 @@ export default function App() {
       fullBodySideUrl: pack.fullBodySideUrl,
       fullBodyBackUrl: pack.fullBodyBackUrl,
       avatarImageId: pack.avatarImageId ?? parseImageAssetId(pack.avatarUrl),
-      fullBodyImageId: pack.fullBodyImageId ?? parseImageAssetId(pack.fullBodyUrl),
-      fullBodySideImageId: pack.fullBodySideImageId ?? parseImageAssetId(pack.fullBodySideUrl),
-      fullBodyBackImageId: pack.fullBodyBackImageId ?? parseImageAssetId(pack.fullBodyBackUrl),
+      fullBodyImageId:
+        pack.fullBodyImageId ?? parseImageAssetId(pack.fullBodyUrl),
+      fullBodySideImageId:
+        pack.fullBodySideImageId ?? parseImageAssetId(pack.fullBodySideUrl),
+      fullBodyBackImageId:
+        pack.fullBodyBackImageId ?? parseImageAssetId(pack.fullBodyBackUrl),
     }));
   };
 
   const closePersonaModal = async () => {
     stopPersonaLookGeneration();
     stopLookEnhancement();
+    stopLookRegeneration();
     const referencedIds = new Set(
       personas.flatMap((persona) =>
         [
@@ -809,7 +965,9 @@ export default function App() {
           .filter(Boolean),
       ),
     );
-    const orphans = Array.from(lookSessionAssetIdsRef.current).filter((id) => !referencedIds.has(id));
+    const orphans = Array.from(lookSessionAssetIdsRef.current).filter(
+      (id) => !referencedIds.has(id),
+    );
     if (orphans.length > 0) {
       await dbApi.deleteImageAssets(orphans);
     }
@@ -861,7 +1019,10 @@ export default function App() {
     const abortController = new AbortController();
     lookGenerationAbortRef.current = abortController;
     const ensureActive = () => {
-      if (lookGenerationRunRef.current !== runId || abortController.signal.aborted) {
+      if (
+        lookGenerationRunRef.current !== runId ||
+        abortController.signal.aborted
+      ) {
         throw new DOMException("Generation aborted", "AbortError");
       }
     };
@@ -917,13 +1078,16 @@ export default function App() {
         const patchPack = (patch: Partial<PersonaLookPack>) => {
           if (lookGenerationRunRef.current !== runId) return;
           setGeneratedLookPacks((prev) =>
-            prev.map((pack, idx) => (idx === packIndex ? { ...pack, ...patch } : pack)),
+            prev.map((pack, idx) =>
+              idx === packIndex ? { ...pack, ...patch } : pack,
+            ),
           );
         };
         const fullBodyPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-          "head-to-toe framing",
-          "whole person in frame",
+          "head-to-toe framing:1.3",
+          "whole person in frame:1.3",
           "long shot",
+          "one person:1.3",
           "neutral standing pose",
           "clean background",
           "no environment",
@@ -961,7 +1125,9 @@ export default function App() {
         ensureActive();
         const fullBodySource = localizedFullBody[0];
         if (!fullBodySource) {
-          throw new Error(`Не удалось сгенерировать fullbody reference для пакета #${packIndex + 1}.`);
+          throw new Error(
+            `Не удалось сгенерировать fullbody reference для пакета #${packIndex + 1}.`,
+          );
         }
         const fullBodyMeta: ComfyImageGenerationMeta = {
           seed: packSeed,
@@ -969,7 +1135,10 @@ export default function App() {
           model: personaDraft.imageCheckpoint || undefined,
           flow: "base",
         };
-        const fullBodyAsset = await saveLookImageAndGetRef(fullBodySource, fullBodyMeta);
+        const fullBodyAsset = await saveLookImageAndGetRef(
+          fullBodySource,
+          fullBodyMeta,
+        );
         const fullBodyRef = fullBodyAsset.imageUrl;
         setLookImageMetaByUrl((prev) =>
           withLookMeta(prev, [
@@ -985,20 +1154,39 @@ export default function App() {
             },
           ]),
         );
-        patchPack({ fullBodyUrl: fullBodyRef, fullBodyImageId: fullBodyAsset.imageId });
+        patchPack({
+          fullBodyUrl: fullBodyRef,
+          fullBodyImageId: fullBodyAsset.imageId,
+        });
 
         let sideRef = "";
         if (generateSideView) {
           const sideSeed = packSeed + 101;
-          const sideReferenceStrength = 0.72;
-          const sideCompositionStrength = 0.22;
+          const sideReferenceStrength = 1;
+          const sideCompositionStrength = 0.08;
           const sidePrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-            "head-to-toe framing",
-            "whole person in frame",
+            "same person as reference:1.4",
+            "same character identity:1.4",
+            "same face and body features",
+            "same hairstyle and hair color",
+            "same outfit and accessories:1.4",
+            "preserve clothing design and colors:1.3",
+            "do not change gender",
+            "do not remove clothes",
+            "head-to-toe framing:1.3",
+            "whole person in frame:1.3",
             "long shot",
-            "strict side profile",
-            "exact 90 degree side view",
+            "one person:1.3",
+            "strict side profile:1.4",
+            "exact 90 degree side view:1.4",
+            "side view only",
+            "from left side",
+            "face turned 90 degrees away from camera",
+            "no frontal pose",
+            "no back pose",
             "profile silhouette",
+            "camera at eye level",
+            "orthographic side framing",
             "clean background",
             "no environment",
           ]);
@@ -1018,13 +1206,7 @@ export default function App() {
                 enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
                 saveComfyOutputs: settings.saveComfyOutputs,
-                detailing: resolveDetailLevel("side")
-                  ? {
-                      enabled: true,
-                      level: resolveDetailLevel("side") ?? undefined,
-                      prompts: detailPrompts,
-                    }
-                  : undefined,
+                detailing: undefined,
               },
             ],
             settings.comfyBaseUrl,
@@ -1040,9 +1222,11 @@ export default function App() {
             seed: sideSeed,
             prompt: sidePrompt,
             model: personaDraft.imageCheckpoint || undefined,
-            flow: "i2i",
+            flow: "base",
           };
-          const sideAsset = sideSource ? await saveLookImageAndGetRef(sideSource, sideMeta) : null;
+          const sideAsset = sideSource
+            ? await saveLookImageAndGetRef(sideSource, sideMeta)
+            : null;
           sideRef = sideAsset?.imageUrl ?? "";
           if (sideRef) {
             setLookImageMetaByUrl((prev) =>
@@ -1059,22 +1243,41 @@ export default function App() {
                 },
               ]),
             );
-            patchPack({ fullBodySideUrl: sideRef, fullBodySideImageId: sideAsset?.imageId });
+            patchPack({
+              fullBodySideUrl: sideRef,
+              fullBodySideImageId: sideAsset?.imageId,
+            });
           }
         }
 
         let backRef = "";
         if (generateBackView) {
           const backSeed = packSeed + 211;
-          const backReferenceStrength = 0.72;
-          const backCompositionStrength = 0.22;
+          const backReferenceStrength = 1;
+          const backCompositionStrength = 0.08;
           const backPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-            "head-to-toe framing",
-            "whole person in frame",
+            "same person as reference:1.4",
+            "same character identity:1.4",
+            "same face and body features",
+            "same hairstyle and hair color",
+            "same outfit and accessories:1.4",
+            "preserve clothing design and colors:1.3",
+            "do not change gender",
+            "do not remove clothes",
+            "head-to-toe framing:1.3",
+            "whole person in frame:1.3",
             "long shot",
-            "strict back view",
-            "exactly from behind",
-            "back facing camera",
+            "one person:1.3",
+            "strict back view:1.4",
+            "exactly from behind:1.4",
+            "back facing camera:1.4",
+            "back view only",
+            "subject facing away from camera",
+            "back of head visible",
+            "no frontal pose",
+            "no side pose",
+            "camera at eye level",
+            "orthographic rear framing",
             "clean background",
             "no environment",
           ]);
@@ -1094,13 +1297,7 @@ export default function App() {
                 enableUpscaler: useUpscaler,
                 upscaleFactor: 1.5,
                 saveComfyOutputs: settings.saveComfyOutputs,
-                detailing: resolveDetailLevel("back")
-                  ? {
-                      enabled: true,
-                      level: resolveDetailLevel("back") ?? undefined,
-                      prompts: detailPrompts,
-                    }
-                  : undefined,
+                detailing: undefined,
               },
             ],
             settings.comfyBaseUrl,
@@ -1116,9 +1313,11 @@ export default function App() {
             seed: backSeed,
             prompt: backPrompt,
             model: personaDraft.imageCheckpoint || undefined,
-            flow: "i2i",
+            flow: "base",
           };
-          const backAsset = backSource ? await saveLookImageAndGetRef(backSource, backMeta) : null;
+          const backAsset = backSource
+            ? await saveLookImageAndGetRef(backSource, backMeta)
+            : null;
           backRef = backAsset?.imageUrl ?? "";
           if (backRef) {
             setLookImageMetaByUrl((prev) =>
@@ -1135,7 +1334,10 @@ export default function App() {
                 },
               ]),
             );
-            patchPack({ fullBodyBackUrl: backRef, fullBodyBackImageId: backAsset?.imageId });
+            patchPack({
+              fullBodyBackUrl: backRef,
+              fullBodyBackImageId: backAsset?.imageId,
+            });
           }
         }
 
@@ -1153,12 +1355,13 @@ export default function App() {
         const avatarUrls = await generateComfyImages(
           [
             {
+              flow: "base",
               prompt: avatarPrompt,
               width: avatarSize,
               height: avatarSize,
               seed: packSeed,
               checkpointName: personaDraft.imageCheckpoint || undefined,
-                styleReferenceImage: fullBodySource,
+              styleReferenceImage: fullBodySource,
               styleStrength: 1,
               compositionStrength: 0,
               saveComfyOutputs: settings.saveComfyOutputs,
@@ -1184,12 +1387,16 @@ export default function App() {
           seed: packSeed,
           prompt: avatarPrompt,
           model: personaDraft.imageCheckpoint || undefined,
-          flow: "i2i",
+          flow: "base",
         };
-        const avatarAsset = avatarSource ? await saveLookImageAndGetRef(avatarSource, avatarMeta) : null;
+        const avatarAsset = avatarSource
+          ? await saveLookImageAndGetRef(avatarSource, avatarMeta)
+          : null;
         const avatarRef = avatarAsset?.imageUrl ?? "";
         if (!avatarRef) {
-          throw new Error(`Не удалось сгенерировать avatar для пакета #${packIndex + 1}.`);
+          throw new Error(
+            `Не удалось сгенерировать avatar для пакета #${packIndex + 1}.`,
+          );
         }
         setLookImageMetaByUrl((prev) =>
           withLookMeta(prev, [
@@ -1205,7 +1412,10 @@ export default function App() {
             },
           ]),
         );
-        patchPack({ avatarUrl: avatarRef, avatarImageId: avatarAsset?.imageId });
+        patchPack({
+          avatarUrl: avatarRef,
+          avatarImageId: avatarAsset?.imageId,
+        });
 
         const readyPack: PersonaLookPack = {
           status: "ready",
@@ -1241,6 +1451,334 @@ export default function App() {
     }
   };
 
+  const regenerateLookImage = async (
+    packIndex: number,
+    kind: "avatar" | "fullbody" | "side" | "back",
+    imageUrl: string,
+  ) => {
+    const normalizedImageUrl = imageUrl.trim();
+    if (!normalizedImageUrl) return;
+    const pack = generatedLookPacks[packIndex];
+    if (!pack || pack.status !== "ready") return;
+
+    const key = `${packIndex}:${kind}`;
+    if (lookGenerationLoading) return;
+    if (enhancingLookImageKey) return;
+    if (regeneratingLookImageKey && regeneratingLookImageKey !== key) return;
+
+    const runId = lookRegenerateRunRef.current + 1;
+    lookRegenerateRunRef.current = runId;
+    lookRegenerateAbortRef.current?.abort();
+    const abortController = new AbortController();
+    lookRegenerateAbortRef.current = abortController;
+    const ensureActive = () => {
+      if (
+        lookRegenerateRunRef.current !== runId ||
+        abortController.signal.aborted
+      ) {
+        throw new DOMException("Regeneration aborted", "AbortError");
+      }
+    };
+    setRegeneratingLookImageKey(key);
+
+    const patchPack = (patch: Partial<PersonaLookPack>) => {
+      if (lookRegenerateRunRef.current !== runId) return;
+      setGeneratedLookPacks((prev) =>
+        prev.map((candidate, index) =>
+          index === packIndex ? { ...candidate, ...patch } : candidate,
+        ),
+      );
+    };
+
+    try {
+      const promptBundle = await getCachedLookPromptBundle();
+      ensureActive();
+      const detailPrompts = promptBundle.detailPrompts;
+      const fullBodyWidth = lookFastMode ? 704 : 832;
+      const fullBodyHeight = lookFastMode ? 1024 : 1216;
+      const avatarSize = lookFastMode ? 768 : 1024;
+      const useHiResFix = !lookFastMode;
+      const useUpscaler = !lookFastMode;
+      const useDetailing = !lookFastMode;
+      const resolveDetailLevel = (
+        view: "front" | "side" | "back",
+      ): "soft" | "medium" | "strong" | null => {
+        if (!useDetailing) return null;
+        if (lookDetailLevel === "off") return null;
+        if (view === "front") return lookDetailLevel;
+        if (lookDetailLevel === "strong") return "medium";
+        return "soft";
+      };
+      const detailLevelForKind =
+        kind === "side"
+          ? resolveDetailLevel("side")
+          : kind === "back"
+            ? resolveDetailLevel("back")
+            : resolveDetailLevel("front");
+
+      const fullBodyReference = pack.fullBodyUrl.trim();
+      if (
+        (kind === "avatar" || kind === "side" || kind === "back") &&
+        !fullBodyReference
+      ) {
+        throw new Error(
+          "Для перегенерации avatar/side/back нужен fullbody в пакете.",
+        );
+      }
+
+      const currentSlotUrl =
+        kind === "avatar"
+          ? pack.avatarUrl
+          : kind === "fullbody"
+            ? pack.fullBodyUrl
+            : kind === "side"
+              ? pack.fullBodySideUrl
+              : pack.fullBodyBackUrl;
+      const sourceMeta =
+        lookImageMetaByUrl[currentSlotUrl] ??
+        lookImageMetaByUrl[normalizedImageUrl] ??
+        lookImageMetaByUrl[LOOK_META_SLOT_KEY[kind]] ??
+        null;
+      const sourceSeed =
+        typeof sourceMeta?.seed === "number" && Number.isFinite(sourceMeta.seed)
+          ? sourceMeta.seed
+          : stableSeedFromText(
+              `${personaDraft.name}:${personaDraft.stylePrompt}:${packIndex}:${kind}`,
+            );
+      const nextSeed = stableSeedFromText(
+        `${sourceSeed}:${kind}:regenerate:${Date.now()}`,
+      );
+
+      const fallbackPrompt =
+        kind === "avatar"
+          ? mergePromptTags(promptBundle.avatarPrompt, [
+              "close-up",
+              "face focus",
+              "looking at viewer",
+              "solo",
+              "single subject",
+              "one person",
+              "detailed background",
+              "environmental context",
+              "realistic location",
+            ])
+          : kind === "side"
+            ? mergePromptTags(promptBundle.fullBodyPrompt, [
+                "same person as reference",
+                "same character identity",
+                "same face and body features",
+                "same hairstyle and hair color",
+                "same outfit and accessories",
+                "preserve clothing design and colors",
+                "do not change gender",
+                "do not remove clothes",
+                "head-to-toe framing",
+                "whole person in frame",
+                "long shot",
+                "one person",
+                "strict side profile",
+                "exact 90 degree side view",
+                "side view only",
+                "from left side",
+                "face turned 90 degrees away from camera",
+                "no frontal pose",
+                "no back pose",
+                "profile silhouette",
+                "camera at eye level",
+                "orthographic side framing",
+                "clean background",
+                "no environment",
+              ])
+            : kind === "back"
+              ? mergePromptTags(promptBundle.fullBodyPrompt, [
+                  "same person as reference",
+                  "same character identity",
+                  "same face and body features",
+                  "same hairstyle and hair color",
+                  "same outfit and accessories",
+                  "preserve clothing design and colors",
+                  "do not change gender",
+                  "do not remove clothes",
+                  "head-to-toe framing",
+                  "whole person in frame",
+                  "long shot",
+                  "one person",
+                  "strict back view",
+                  "exactly from behind",
+                  "back facing camera",
+                  "back view only",
+                  "subject facing away from camera",
+                  "back of head visible",
+                  "no frontal pose",
+                  "no side pose",
+                  "camera at eye level",
+                  "orthographic rear framing",
+                  "clean background",
+                  "no environment",
+                ])
+              : mergePromptTags(promptBundle.fullBodyPrompt, [
+                  "head-to-toe framing",
+                  "whole person in frame",
+                  "long shot",
+                  "one person",
+                  "neutral standing pose",
+                  "clean background",
+                  "no environment",
+                ]);
+      const prompt =
+        kind === "side" || kind === "back"
+          ? fallbackPrompt
+          : sourceMeta?.prompt?.trim() || fallbackPrompt;
+      const checkpointName = personaDraft.imageCheckpoint || undefined;
+
+      const detailConfig = detailLevelForKind
+        ? {
+            enabled: true,
+            level: detailLevelForKind,
+            prompts: detailPrompts,
+          }
+        : undefined;
+
+      const generationItem =
+        kind === "avatar"
+          ? {
+              flow: "base" as const,
+              prompt,
+              width: avatarSize,
+              height: avatarSize,
+              seed: nextSeed,
+              checkpointName,
+              styleReferenceImage: fullBodyReference,
+              styleStrength: 1,
+              compositionStrength: 0,
+              saveComfyOutputs: settings.saveComfyOutputs,
+              detailing: detailConfig,
+            }
+          : kind === "side"
+            ? {
+                flow: "base" as const,
+                prompt,
+                width: fullBodyWidth,
+                height: fullBodyHeight,
+                seed: nextSeed,
+                checkpointName,
+                styleReferenceImage: fullBodyReference,
+                styleStrength: 1,
+                compositionStrength: 0.08,
+                forceHiResFix: useHiResFix,
+                enableUpscaler: useUpscaler,
+                upscaleFactor: 1.5,
+                saveComfyOutputs: settings.saveComfyOutputs,
+                detailing: undefined,
+              }
+            : kind === "back"
+              ? {
+                  flow: "base" as const,
+                  prompt,
+                  width: fullBodyWidth,
+                  height: fullBodyHeight,
+                  seed: nextSeed,
+                  checkpointName,
+                  styleReferenceImage: fullBodyReference,
+                  styleStrength: 1,
+                  compositionStrength: 0.08,
+                  forceHiResFix: useHiResFix,
+                  enableUpscaler: useUpscaler,
+                  upscaleFactor: 1.5,
+                  saveComfyOutputs: settings.saveComfyOutputs,
+                  detailing: undefined,
+                }
+              : {
+                  flow: "base" as const,
+                  prompt,
+                  width: fullBodyWidth,
+                  height: fullBodyHeight,
+                  seed: nextSeed,
+                  checkpointName,
+                  styleStrength: 0,
+                  compositionStrength: 0,
+                  forceHiResFix: useHiResFix,
+                  enableUpscaler: useUpscaler,
+                  upscaleFactor: 1.5,
+                  saveComfyOutputs: settings.saveComfyOutputs,
+                  detailing: detailConfig,
+                };
+
+      const generatedUrls = await generateComfyImages(
+        [generationItem],
+        settings.comfyBaseUrl,
+        settings.comfyAuth,
+        undefined,
+        abortController.signal,
+      );
+      ensureActive();
+      const localized = await localizeImageUrls(generatedUrls);
+      ensureActive();
+      const nextSource = localized[0] ?? "";
+      if (!nextSource) {
+        throw new Error("Не удалось перегенерировать изображение.");
+      }
+
+      const nextMeta: ComfyImageGenerationMeta = {
+        seed: nextSeed,
+        prompt,
+        model: checkpointName,
+        flow: generationItem.flow,
+      };
+      const nextAsset = await saveLookImageAndGetRef(nextSource, nextMeta);
+      const nextRef = nextAsset.imageUrl;
+      if (!nextRef) {
+        throw new Error("Не удалось сохранить перегенерированное изображение.");
+      }
+
+      setLookImageMetaByUrl((prev) =>
+        withLookMeta(prev, [
+          {
+            kind,
+            url: generatedUrls[0],
+            meta: nextMeta,
+          },
+          {
+            kind,
+            url: nextRef,
+            meta: nextMeta,
+          },
+        ]),
+      );
+
+      if (kind === "avatar") {
+        patchPack({
+          avatarUrl: nextRef,
+          avatarImageId: nextAsset.imageId,
+        });
+      } else if (kind === "side") {
+        patchPack({
+          fullBodySideUrl: nextRef,
+          fullBodySideImageId: nextAsset.imageId,
+        });
+      } else if (kind === "back") {
+        patchPack({
+          fullBodyBackUrl: nextRef,
+          fullBodyBackImageId: nextAsset.imageId,
+        });
+      } else {
+        patchPack({
+          fullBodyUrl: nextRef,
+          fullBodyImageId: nextAsset.imageId,
+        });
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        useAppStore.setState({ error: (error as Error).message });
+      }
+    } finally {
+      if (lookRegenerateRunRef.current === runId) {
+        setRegeneratingLookImageKey((prev) => (prev === key ? null : prev));
+        lookRegenerateAbortRef.current = null;
+      }
+    }
+  };
+
   const stopPersonaLookGeneration = () => {
     lookGenerationRunRef.current += 1;
     lookGenerationAbortRef.current?.abort();
@@ -1253,6 +1791,13 @@ export default function App() {
     lookEnhanceAbortRef.current?.abort();
     lookEnhanceAbortRef.current = null;
     setEnhancingLookImageKey(null);
+  };
+
+  const stopLookRegeneration = () => {
+    lookRegenerateRunRef.current += 1;
+    lookRegenerateAbortRef.current?.abort();
+    lookRegenerateAbortRef.current = null;
+    setRegeneratingLookImageKey(null);
   };
 
   const enhanceLookImage = async (
@@ -1271,7 +1816,10 @@ export default function App() {
     const abortController = new AbortController();
     lookEnhanceAbortRef.current = abortController;
     const ensureEnhanceActive = () => {
-      if (lookEnhanceRunRef.current !== runId || abortController.signal.aborted) {
+      if (
+        lookEnhanceRunRef.current !== runId ||
+        abortController.signal.aborted
+      ) {
         throw new DOMException("Aborted", "AbortError");
       }
     };
@@ -1286,15 +1834,16 @@ export default function App() {
         kind === "avatar"
           ? { width: avatarSize, height: avatarSize }
           : { width: fullBodyWidth, height: fullBodyHeight };
-      const detailLevel = lookDetailLevel === "off" ? "medium" : lookDetailLevel;
+      const detailLevel =
+        lookDetailLevel === "off" ? "medium" : lookDetailLevel;
       const basePrompt =
         kind === "avatar"
           ? `${promptBundle.avatarPrompt}, close-up, close face, headshot, face focus, looking at viewer`
           : kind === "side"
             ? `head-to-toe framing, whole person in frame, side view, profile view, ${promptBundle.fullBodyPrompt}`
             : kind === "back"
-            ? `head-to-toe framing, whole person in frame, back view, from behind, ${promptBundle.fullBodyPrompt}`
-            : `head-to-toe framing, whole person in frame, neutral standing pose, ${promptBundle.fullBodyPrompt}`;
+              ? `head-to-toe framing, whole person in frame, back view, from behind, ${promptBundle.fullBodyPrompt}`
+              : `head-to-toe framing, whole person in frame, neutral standing pose, ${promptBundle.fullBodyPrompt}`;
       const metaFromCache = lookImageMetaByUrl[imageUrl];
       const metaFromSource = metaFromCache
         ? null
@@ -1354,9 +1903,10 @@ export default function App() {
         },
       ) => {
         const effectiveDetailLevel = options?.detailLevel ?? detailLevel;
-        const preferredOutputTitles = settings.saveComfyOutputs
-          ? ["Image Saver", "Preview after Upscale/HiRes Fix", "Preview after Detailing"]
-          : ["Preview after Upscale/HiRes Fix", "Preview after Detailing"];
+        const preferredOutputTitles = [
+          "Preview after Detailing",
+          "Preview after Upscale/HiRes Fix",
+        ];
         return generateComfyImages(
           [
             {
@@ -1367,20 +1917,27 @@ export default function App() {
               seed: passSeed,
               checkpointName: personaDraft.imageCheckpoint || undefined,
               styleReferenceImage: imageUrl,
-              styleStrength: options?.styleStrength ?? (isHandsEnhance ? 0.9 : 1),
-              compositionStrength: options?.compositionStrength ?? (isHandsEnhance ? 0.7 : 1),
+              styleStrength:
+                options?.styleStrength ?? (isHandsEnhance ? 0.9 : 1),
+              compositionStrength:
+                options?.compositionStrength ?? (isHandsEnhance ? 0.7 : 1),
               forceHiResFix: true,
               enableUpscaler: true,
-              upscaleFactor: 2,
-              hiresFixDenoise: options?.hiresFixDenoise ?? (isHandsEnhance ? 0.4 : 0.3),
-              colorFixStrength: options?.colorFixStrength ?? (isHandsEnhance ? 0.5 : 0.4),
+              upscaleFactor: 1.4,
+              hiresFixDenoise:
+                options?.hiresFixDenoise ?? (isHandsEnhance ? 0.45 : 0.36),
+              colorFixStrength:
+                options?.colorFixStrength ?? (isHandsEnhance ? 0.5 : 0.4),
               saveComfyOutputs: settings.saveComfyOutputs,
               outputNodeTitleIncludes: preferredOutputTitles,
               strictOutputNodeMatch: options?.strictOutputNodeMatch ?? false,
-              pickLatestImageOnly: true,
+              pickLatestImageOnly: false,
               detailing: {
                 enabled: true,
-                level: effectiveDetailLevel === "off" ? "strong" : effectiveDetailLevel,
+                level:
+                  effectiveDetailLevel === "off"
+                    ? "strong"
+                    : effectiveDetailLevel,
                 targets: mapEnhanceTargetToDetailTargets(requestedTarget),
                 prompts: promptBundle.detailPrompts,
               },
@@ -1397,28 +1954,40 @@ export default function App() {
       ensureEnhanceActive();
       let localized = await localizeImageUrls(enhancedUrls);
       ensureEnhanceActive();
-      let improvedSource = (localized[0] ?? "").trim();
+      let improvedSource = await pickPreferredEnhancedUrl(localized, imageUrl);
       let effectiveSeed = enhanceSeed;
-      if (isHandsEnhance && improvedSource && improvedSource === imageUrl.trim()) {
-        const retrySeed = stableSeedFromText(`${enhanceSeed}:hands-retry:${Date.now()}`);
+      const noVisibleChange =
+        improvedSource && improvedSource === imageUrl.trim();
+      if (noVisibleChange) {
+        const retrySeed = stableSeedFromText(
+          `${enhanceSeed}:nochange-retry:${Date.now()}`,
+        );
         const retryPrompt = mergePromptTags(enhancePrompt, [
-          "hands emphasized",
-          "clean hand pose",
-          "highly detailed hands",
+          ...(isHandsEnhance
+            ? ["hands emphasized", "clean hand pose", "highly detailed hands"]
+            : [
+                "face emphasized",
+                "sharper facial details",
+                "improve skin and eyes clarity",
+              ]),
         ]);
         const retryUrls = await runEnhancePass(retrySeed, retryPrompt, {
-          styleStrength: 0.86,
-          compositionStrength: 0.45,
-          hiresFixDenoise: 0.48,
-          colorFixStrength: 0.55,
+          styleStrength: isHandsEnhance ? 0.86 : 0.92,
+          compositionStrength: isHandsEnhance ? 0.45 : 0.6,
+          hiresFixDenoise: isHandsEnhance ? 0.52 : 0.45,
+          colorFixStrength: isHandsEnhance ? 0.55 : 0.48,
           detailLevel: "strong",
           strictOutputNodeMatch: false,
         });
         ensureEnhanceActive();
         const retryLocalized = await localizeImageUrls(retryUrls);
         ensureEnhanceActive();
-        if (retryLocalized[0]) {
-          improvedSource = retryLocalized[0].trim();
+        const retryBest = await pickPreferredEnhancedUrl(
+          retryLocalized,
+          imageUrl,
+        );
+        if (retryBest) {
+          improvedSource = retryBest;
           effectiveSeed = retrySeed;
           localized = retryLocalized;
         }
@@ -1429,7 +1998,9 @@ export default function App() {
         model: personaDraft.imageCheckpoint || undefined,
         flow: "i2i",
       };
-      const improvedAsset = improvedSource ? await saveLookImageAndGetRef(improvedSource, enhanceMeta) : null;
+      const improvedAsset = improvedSource
+        ? await saveLookImageAndGetRef(improvedSource, enhanceMeta)
+        : null;
       const improved = improvedAsset?.imageUrl ?? "";
       if (!improved) {
         throw new Error("Не удалось получить улучшенное изображение.");
@@ -1467,38 +2038,69 @@ export default function App() {
   ) => {
     if (packIndex !== null) {
       setGeneratedLookPacks((prev) =>
-          prev.map((pack, idx) => {
-            if (idx !== packIndex) return pack;
-            if (kind === "avatar") return { ...pack, avatarUrl: afterUrl, avatarImageId: afterImageId };
-            if (kind === "side") return { ...pack, fullBodySideUrl: afterUrl, fullBodySideImageId: afterImageId };
-            if (kind === "back") return { ...pack, fullBodyBackUrl: afterUrl, fullBodyBackImageId: afterImageId };
-            return { ...pack, fullBodyUrl: afterUrl, fullBodyImageId: afterImageId };
-          }),
-        );
-      }
-      setPersonaDraft((prev) => ({
-        ...prev,
-        avatarUrl: kind === "avatar" && prev.avatarUrl === beforeUrl ? afterUrl : prev.avatarUrl,
-        fullBodyUrl: kind === "fullbody" && prev.fullBodyUrl === beforeUrl ? afterUrl : prev.fullBodyUrl,
-        fullBodySideUrl: kind === "side" && prev.fullBodySideUrl === beforeUrl ? afterUrl : prev.fullBodySideUrl,
-        fullBodyBackUrl: kind === "back" && prev.fullBodyBackUrl === beforeUrl ? afterUrl : prev.fullBodyBackUrl,
-        avatarImageId:
-          kind === "avatar" && prev.avatarUrl === beforeUrl
-            ? (afterImageId || prev.avatarImageId)
-            : prev.avatarImageId,
-        fullBodyImageId:
-          kind === "fullbody" && prev.fullBodyUrl === beforeUrl
-            ? (afterImageId || prev.fullBodyImageId)
-            : prev.fullBodyImageId,
-        fullBodySideImageId:
-          kind === "side" && prev.fullBodySideUrl === beforeUrl
-            ? (afterImageId || prev.fullBodySideImageId)
-            : prev.fullBodySideImageId,
-        fullBodyBackImageId:
-          kind === "back" && prev.fullBodyBackUrl === beforeUrl
-            ? (afterImageId || prev.fullBodyBackImageId)
-            : prev.fullBodyBackImageId,
-      }));
+        prev.map((pack, idx) => {
+          if (idx !== packIndex) return pack;
+          if (kind === "avatar")
+            return {
+              ...pack,
+              avatarUrl: afterUrl,
+              avatarImageId: afterImageId,
+            };
+          if (kind === "side")
+            return {
+              ...pack,
+              fullBodySideUrl: afterUrl,
+              fullBodySideImageId: afterImageId,
+            };
+          if (kind === "back")
+            return {
+              ...pack,
+              fullBodyBackUrl: afterUrl,
+              fullBodyBackImageId: afterImageId,
+            };
+          return {
+            ...pack,
+            fullBodyUrl: afterUrl,
+            fullBodyImageId: afterImageId,
+          };
+        }),
+      );
+    }
+    setPersonaDraft((prev) => ({
+      ...prev,
+      avatarUrl:
+        kind === "avatar" && prev.avatarUrl === beforeUrl
+          ? afterUrl
+          : prev.avatarUrl,
+      fullBodyUrl:
+        kind === "fullbody" && prev.fullBodyUrl === beforeUrl
+          ? afterUrl
+          : prev.fullBodyUrl,
+      fullBodySideUrl:
+        kind === "side" && prev.fullBodySideUrl === beforeUrl
+          ? afterUrl
+          : prev.fullBodySideUrl,
+      fullBodyBackUrl:
+        kind === "back" && prev.fullBodyBackUrl === beforeUrl
+          ? afterUrl
+          : prev.fullBodyBackUrl,
+      avatarImageId:
+        kind === "avatar" && prev.avatarUrl === beforeUrl
+          ? afterImageId || prev.avatarImageId
+          : prev.avatarImageId,
+      fullBodyImageId:
+        kind === "fullbody" && prev.fullBodyUrl === beforeUrl
+          ? afterImageId || prev.fullBodyImageId
+          : prev.fullBodyImageId,
+      fullBodySideImageId:
+        kind === "side" && prev.fullBodySideUrl === beforeUrl
+          ? afterImageId || prev.fullBodySideImageId
+          : prev.fullBodySideImageId,
+      fullBodyBackImageId:
+        kind === "back" && prev.fullBodyBackUrl === beforeUrl
+          ? afterImageId || prev.fullBodyBackImageId
+          : prev.fullBodyBackImageId,
+    }));
   };
 
   const resolveLookUrlForKind = (
@@ -1520,7 +2122,10 @@ export default function App() {
   };
 
   const onSaveGenerated = async (draft: GeneratedPersonaDraft) => {
-    const avatarImageId = await createLookAsset(draft.avatarUrl || "", undefined);
+    const avatarImageId = await createLookAsset(
+      draft.avatarUrl || "",
+      undefined,
+    );
     await savePersona({
       name: draft.name,
       personalityPrompt: draft.personalityPrompt,
@@ -1583,7 +2188,9 @@ export default function App() {
       };
       void dbApi.saveGeneratorSession(nextSession);
       setGenerationSessions((prev) =>
-        prev.map((session) => (session.id === nextSession.id ? nextSession : session)),
+        prev.map((session) =>
+          session.id === nextSession.id ? nextSession : session,
+        ),
       );
     }
   };
@@ -1598,11 +2205,15 @@ export default function App() {
       return;
     }
     if (!generationSessionId) {
-      useAppStore.setState({ error: "Создайте сессию генератора в меню слева." });
+      useAppStore.setState({
+        error: "Создайте сессию генератора в меню слева.",
+      });
       return;
     }
 
-    const total = generationInfinite ? null : Math.max(1, Math.floor(generationCountLimit));
+    const total = generationInfinite
+      ? null
+      : Math.max(1, Math.floor(generationCountLimit));
     const delayMs = Math.max(0, Math.floor(generationDelaySeconds * 1000));
     const runId = generationRunRef.current + 1;
     const persona = personas.find((item) => item.id === generationPersonaId);
@@ -1612,7 +2223,9 @@ export default function App() {
     }
 
     const now = new Date().toISOString();
-    const selected = generationSessions.find((candidate) => candidate.id === generationSessionId);
+    const selected = generationSessions.find(
+      (candidate) => candidate.id === generationSessionId,
+    );
     if (!selected) {
       useAppStore.setState({ error: "Активная сессия генератора не найдена." });
       return;
@@ -1629,7 +2242,9 @@ export default function App() {
 
     await dbApi.saveGeneratorSession(session);
     setGenerationSessions((prev) => {
-      return prev.map((candidate) => (candidate.id === session.id ? session : candidate));
+      return prev.map((candidate) =>
+        candidate.id === session.id ? session : candidate,
+      );
     });
     setGenerationSessionId(session.id);
     generationRunRef.current = runId;
@@ -1655,7 +2270,9 @@ export default function App() {
         let localized: string[] = [];
         let localizedMetaByUrl: Record<string, ComfyImageGenerationMeta> = {};
         try {
-          const seed = stableSeedFromText(`${session.id}:${iteration}:${generationTopic}`);
+          const seed = stableSeedFromText(
+            `${session.id}:${iteration}:${generationTopic}`,
+          );
           const styleReferenceImage =
             persona.avatarUrl.trim() || persona.fullBodyUrl.trim() || undefined;
           const generationItem = {
@@ -1664,25 +2281,24 @@ export default function App() {
             checkpointName: persona.imageCheckpoint || undefined,
             seed,
             styleReferenceImage,
-            styleStrength: styleReferenceImage ? settings.chatStyleStrength : undefined,
+            styleStrength: styleReferenceImage
+              ? settings.chatStyleStrength
+              : undefined,
             compositionStrength: 0,
             saveComfyOutputs: settings.saveComfyOutputs,
           };
           const imageUrls = await generateComfyImages(
-            [
-              generationItem,
-            ],
+            [generationItem],
             settings.comfyBaseUrl,
             settings.comfyAuth,
           );
-          const extractedMeta =
-            imageUrls[0]
-              ? await readComfyImageGenerationMeta(
-                  imageUrls[0],
-                  settings.comfyBaseUrl,
-                  settings.comfyAuth,
-                )
-              : null;
+          const extractedMeta = imageUrls[0]
+            ? await readComfyImageGenerationMeta(
+                imageUrls[0],
+                settings.comfyBaseUrl,
+                settings.comfyAuth,
+              )
+            : null;
           localized = await localizeImageUrls(imageUrls);
           const meta: ComfyImageGenerationMeta = {
             prompt: extractedMeta?.prompt ?? generationItem.prompt,
@@ -1724,7 +2340,9 @@ export default function App() {
         };
         await dbApi.saveGeneratorSession(mutableSession);
         setGenerationSessions((prev) =>
-          prev.map((candidate) => (candidate.id === mutableSession.id ? mutableSession : candidate)),
+          prev.map((candidate) =>
+            candidate.id === mutableSession.id ? mutableSession : candidate,
+          ),
         );
 
         if (generationRunRef.current !== runId) break;
@@ -1737,7 +2355,9 @@ export default function App() {
       };
       await dbApi.saveGeneratorSession(mutableSession);
       setGenerationSessions((prev) =>
-        prev.map((candidate) => (candidate.id === mutableSession.id ? mutableSession : candidate)),
+        prev.map((candidate) =>
+          candidate.id === mutableSession.id ? mutableSession : candidate,
+        ),
       );
     } catch (error) {
       mutableSession = {
@@ -1747,7 +2367,9 @@ export default function App() {
       };
       await dbApi.saveGeneratorSession(mutableSession);
       setGenerationSessions((prev) =>
-        prev.map((candidate) => (candidate.id === mutableSession.id ? mutableSession : candidate)),
+        prev.map((candidate) =>
+          candidate.id === mutableSession.id ? mutableSession : candidate,
+        ),
       );
       useAppStore.setState({ error: (error as Error).message });
     } finally {
@@ -1776,7 +2398,9 @@ export default function App() {
           onOpenSettings={() => setShowSettingsModal(true)}
           onCreateChat={() => void createChat()}
           onCreateGenerationSession={() => void createGenerationSession()}
-          onDeleteGenerationSession={(sessionId) => void deleteGenerationSession(sessionId)}
+          onDeleteGenerationSession={(sessionId) =>
+            void deleteGenerationSession(sessionId)
+          }
           onSelectChat={(chatId) => void selectChat(chatId)}
           onSelectGenerationSession={setGenerationSessionId}
           onSelectPersona={(personaId) => void selectPersona(personaId)}
@@ -1795,10 +2419,14 @@ export default function App() {
             onInfiniteChange={setGenerationInfinite}
             countLimit={generationCountLimit}
             onCountLimitChange={(value) =>
-              setGenerationCountLimit(Math.max(1, Math.min(100000, Math.floor(value || 1))))
+              setGenerationCountLimit(
+                Math.max(1, Math.min(100000, Math.floor(value || 1))),
+              )
             }
             delaySeconds={generationDelaySeconds}
-            onDelaySecondsChange={(value) => setGenerationDelaySeconds(Math.max(0, Math.min(120, value || 0)))}
+            onDelaySecondsChange={(value) =>
+              setGenerationDelaySeconds(Math.max(0, Math.min(120, value || 0)))
+            }
             isRunning={generationIsRunning}
             completedCount={generationCompletedCount}
             generatedImageUrls={generatedImageUrls}
@@ -1814,7 +2442,9 @@ export default function App() {
             activeChatId={activeChatId}
             messages={messages}
             imageMetaByUrl={Object.fromEntries(
-              messages.flatMap((message) => Object.entries(message.imageMetaByUrl ?? {})),
+              messages.flatMap((message) =>
+                Object.entries(message.imageMetaByUrl ?? {}),
+              ),
             )}
             messageInput={messageInput}
             setMessageInput={setMessageInput}
@@ -1842,7 +2472,9 @@ export default function App() {
           persona={activePersona}
           messages={messages}
           imageMetaByUrl={Object.fromEntries(
-            messages.flatMap((message) => Object.entries(message.imageMetaByUrl ?? {})),
+            messages.flatMap((message) =>
+              Object.entries(message.imageMetaByUrl ?? {}),
+            ),
           )}
           memories={activeMemories}
           runtimeState={activePersonaState}
@@ -1908,7 +2540,9 @@ export default function App() {
           lookFastMode={lookFastMode}
           setLookFastMode={setLookFastMode}
           enhancingLookImageKey={enhancingLookImageKey}
+          regeneratingLookImageKey={regeneratingLookImageKey}
           onEnhanceLookImage={enhanceLookImage}
+          onRegenerateLookImage={regenerateLookImage}
           onStopLookEnhancement={stopLookEnhancement}
           generatedLookPacks={generatedLookPacks}
           onApplyLookPack={(pack) => {
@@ -1920,16 +2554,24 @@ export default function App() {
           setGenerateBackView={setGenerateBackView}
           comfyCheckpoints={comfyCheckpoints}
           checkpointsLoading={checkpointsLoading}
-          onRefreshCheckpoints={() => void loadComfyCheckpoints(settingsDraft.comfyBaseUrl)}
+          onRefreshCheckpoints={() =>
+            void loadComfyCheckpoints(settingsDraft.comfyBaseUrl)
+          }
           imageMetaByUrl={lookImageMetaByUrl}
           imagePromptModel={settingsDraft.imagePromptModel}
           personaGenerationModel={settingsDraft.personaGenerationModel}
           availableModels={availableModels}
           onImagePromptModelChange={(nextModel) =>
-            setSettingsDraft((prev) => ({ ...prev, imagePromptModel: nextModel }))
+            setSettingsDraft((prev) => ({
+              ...prev,
+              imagePromptModel: nextModel,
+            }))
           }
           onPersonaGenerationModelChange={(nextModel) =>
-            setSettingsDraft((prev) => ({ ...prev, personaGenerationModel: nextModel }))
+            setSettingsDraft((prev) => ({
+              ...prev,
+              personaGenerationModel: nextModel,
+            }))
           }
         />
 
