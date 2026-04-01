@@ -262,7 +262,10 @@ export function ChatDetailsModal({
 
               <div className="status-card">
                 <h4>Флаги</h4>
-                <p>Показывать ComfyUI: {settings.showSystemImageBlock ? "да" : "нет"}</p>
+                <p>
+                  Показывать системный блок изображения:{" "}
+                  {settings.showSystemImageBlock ? "да" : "нет"}
+                </p>
                 <p>Показывать изменения статуса: {settings.showStatusChangeDetails ? "да" : "нет"}</p>
               </div>
 

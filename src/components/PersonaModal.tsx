@@ -64,6 +64,11 @@ interface PersonaModalProps {
   checkpointsLoading: boolean;
   onRefreshCheckpoints: () => void;
   imageMetaByUrl: Record<string, ImageGenerationMeta>;
+  imagePromptModel: string;
+  personaGenerationModel: string;
+  availableModels: string[];
+  onImagePromptModelChange: (model: string) => void;
+  onPersonaGenerationModelChange: (model: string) => void;
 }
 
 interface SliderFieldProps {
@@ -222,6 +227,11 @@ export function PersonaModal({
   checkpointsLoading,
   onRefreshCheckpoints,
   imageMetaByUrl,
+  imagePromptModel,
+  personaGenerationModel,
+  availableModels,
+  onImagePromptModelChange,
+  onPersonaGenerationModelChange,
 }: PersonaModalProps) {
   const [imageSrcById, setImageSrcById] = useState<Record<string, string>>({});
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -622,6 +632,18 @@ export function PersonaModal({
                       {checkpointsLoading ? "..." : "Обновить"}
                     </button>
                   </div>
+                </label>
+                <label>
+                  Модель генерации промптов изображений
+                  <Dropdown
+                    value={imagePromptModel}
+                    onChange={onImagePromptModelChange}
+                    options={
+                      availableModels.length > 0
+                        ? availableModels.map((modelName) => ({ value: modelName, label: modelName }))
+                        : [{ value: imagePromptModel, label: imagePromptModel || "Модель не найдена" }]
+                    }
+                  />
                 </label>
                 <input
                   placeholder="URL аватара"
@@ -1494,6 +1516,23 @@ export function PersonaModal({
                 onChange={(event) => setGenerationTheme(event.target.value)}
                 rows={4}
               />
+              <label>
+                Модель генерации персон
+                <Dropdown
+                  value={personaGenerationModel}
+                  onChange={onPersonaGenerationModelChange}
+                  options={
+                    availableModels.length > 0
+                      ? availableModels.map((modelName) => ({ value: modelName, label: modelName }))
+                      : [
+                          {
+                            value: personaGenerationModel,
+                            label: personaGenerationModel || "Модель не найдена",
+                          },
+                        ]
+                  }
+                />
+              </label>
               <label>
                 Количество
                 <input

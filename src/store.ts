@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { DEFAULT_SETTINGS, dbApi } from "./db";
-import { requestChatCompletion } from "./lmstudio";
+import {
+  generateComfyPromptFromImageDescription,
+  requestChatCompletion,
+} from "./lmstudio";
 import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
 import { localizeImageUrls } from "./imageStorage";
 import {
@@ -505,17 +508,30 @@ export const useAppStore = create<AppState>((set, get) => ({
         content: answer.content,
         comfyPrompt: answer.comfyPrompt,
         comfyPrompts: answer.comfyPrompts,
+        comfyImageDescription: answer.comfyImageDescription,
+        comfyImageDescriptions: answer.comfyImageDescriptions,
         imageGenerationPending: false,
         personaControlRaw: answer.personaControl ? JSON.stringify(answer.personaControl) : undefined,
         createdAt: nowIso(),
       };
 
-      const promptsForGeneration = assistantMessage.comfyPrompts ?? (assistantMessage.comfyPrompt ? [assistantMessage.comfyPrompt] : []);
-      if (promptsForGeneration.length > 0) {
+      const promptBlocks =
+        assistantMessage.comfyPrompts ??
+        (assistantMessage.comfyPrompt ? [assistantMessage.comfyPrompt] : []);
+      const imageDescriptionBlocks =
+        assistantMessage.comfyImageDescriptions ??
+        (assistantMessage.comfyImageDescription
+          ? [assistantMessage.comfyImageDescription]
+          : []);
+      const requestedImageCount =
+        imageDescriptionBlocks.length > 0
+          ? imageDescriptionBlocks.length
+          : promptBlocks.length;
+      if (requestedImageCount > 0) {
         assistantMessage = {
           ...assistantMessage,
           imageGenerationPending: true,
-          imageGenerationExpected: promptsForGeneration.length,
+          imageGenerationExpected: requestedImageCount,
           imageGenerationCompleted: 0,
         };
       }
@@ -538,17 +554,65 @@ export const useAppStore = create<AppState>((set, get) => ({
         }));
       };
 
-      if (promptsForGeneration.length > 0) {
+      if (requestedImageCount > 0) {
         void (async () => {
           const aggregatedLocalizedUrls: string[] = [];
           const aggregatedMetaByUrl: Record<string, ImageGenerationMeta> = {};
           let completedCount = 0;
+          let expectedGenerationCount = requestedImageCount;
           const styleReferenceImage =
             activePersona.avatarUrl.trim() || activePersona.fullBodyUrl.trim() || undefined;
           const chatStyleStrength =
             typeof activeChat?.chatStyleStrength === "number"
               ? activeChat.chatStyleStrength
               : get().settings.chatStyleStrength;
+          let promptsForGeneration = [...promptBlocks];
+
+          try {
+            if (imageDescriptionBlocks.length > 0) {
+              const generatedPrompts = await Promise.all(
+                imageDescriptionBlocks.map((description, index) =>
+                  generateComfyPromptFromImageDescription(
+                    get().settings,
+                    activePersona,
+                    description,
+                    index + 1,
+                  ),
+                ),
+              );
+              promptsForGeneration = generatedPrompts
+                .map((value) => value.trim())
+                .filter(Boolean);
+              expectedGenerationCount = promptsForGeneration.length;
+              await patchAssistantMessage({
+                comfyPrompt: promptsForGeneration[0],
+                comfyPrompts:
+                  promptsForGeneration.length > 0
+                    ? promptsForGeneration
+                    : undefined,
+                imageGenerationPending: promptsForGeneration.length > 0,
+                imageGenerationExpected: expectedGenerationCount,
+                imageGenerationCompleted: 0,
+              });
+            }
+          } catch {
+            await patchAssistantMessage({
+              imageGenerationPending: false,
+              imageGenerationExpected: requestedImageCount,
+              imageGenerationCompleted: 0,
+            });
+            return;
+          }
+
+          if (promptsForGeneration.length === 0) {
+            await patchAssistantMessage({
+              imageGenerationPending: false,
+              imageGenerationExpected: requestedImageCount,
+              imageGenerationCompleted: 0,
+            });
+            return;
+          }
+
           const comfyItems = promptsForGeneration.map((prompt) => ({
             flow: "base" as const,
             prompt,
@@ -609,8 +673,8 @@ export const useAppStore = create<AppState>((set, get) => ({
                   imageUrls: [...aggregatedLocalizedUrls],
                   imageMetaByUrl: { ...aggregatedMetaByUrl },
                   imageGenerationPending:
-                    completedCount < promptsForGeneration.length,
-                  imageGenerationExpected: promptsForGeneration.length,
+                    completedCount < expectedGenerationCount,
+                  imageGenerationExpected: expectedGenerationCount,
                   imageGenerationCompleted: completedCount,
                 });
               },
@@ -619,13 +683,13 @@ export const useAppStore = create<AppState>((set, get) => ({
               imageUrls: [...aggregatedLocalizedUrls],
               imageMetaByUrl: { ...aggregatedMetaByUrl },
               imageGenerationPending: false,
-              imageGenerationExpected: promptsForGeneration.length,
-              imageGenerationCompleted: promptsForGeneration.length,
+              imageGenerationExpected: expectedGenerationCount,
+              imageGenerationCompleted: expectedGenerationCount,
             });
           } catch {
             await patchAssistantMessage({
               imageGenerationPending: false,
-              imageGenerationExpected: promptsForGeneration.length,
+              imageGenerationExpected: expectedGenerationCount,
               imageGenerationCompleted: completedCount,
             });
           }

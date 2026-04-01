@@ -228,17 +228,18 @@ export function buildSystemPrompt(
     "После отправки изображения выдерживай минимум 3 текстовых ответа до следующего изображения, если нет явного запроса пользователя.",
     "Проактивные изображения разрешены редко, чтобы разбавить диалог (примерно 1 раз на 7-10 ответов): уместны селфи, обстановка, ситуация и тому подобное.",
     "Проактивное изображение отправляй только если это естественно по контексту и действительно повышает вовлеченность.",
-    "Если отказываешь в фото, не добавляй <comfyui_prompt> в этом ответе.",
-    "Если изображения нужны, добавь по одному блоку <comfyui_prompt>...</comfyui_prompt> для каждого изображения (если их несколько) или один (если изображение нужно одно):",
-    "<comfyui_prompt>",
-    'ultra detailed comma-separated tags in English (1-2 words per tag), e.g. "1girl, blonde hair, long hair, blue eyes, white dress, soft lighting, looking at viewer, close-up"',
-    "describe as much of details (clothes, no clothes, expressions, poses, background, lighting, camera angle, etc.) as possible",
-    "</comfyui_prompt>",
+    "Если отказываешь в фото, не добавляй <comfyui_image_description> в этом ответе.",
+    "Если изображения нужны, добавь по одному блоку <comfyui_image_description>...</comfyui_image_description> для каждого изображения (если их несколько) или один (если изображение нужно одно):",
+    "<comfyui_image_description>",
+    "Подробное описание желаемого кадра: кто в кадре, поза, выражение, одежда/материалы, фон, свет, ракурс, композиция, настроение, важные визуальные ограничения.",
+    "</comfyui_image_description>",
     "",
-    "Формат ComfyUI prompt: только теги через запятую, без предложений и без пояснений.",
-    "Каждый тег должен быть коротким (обычно 1-2 слова), конкретным и визуально наблюдаемым.",
-    "Добавляй много деталей: субъект, поза, ракурс, композиция, свет, фон, стиль, материалы, эмоция, качество.",
-    "Для консистентности внешности в каждом comfyui_prompt обязательно повторяй стабильные признаки персонажа из поля «Внешность» (волосы, цвет волос, глаза, возрастной тип, телосложение, отличительные детали).",
+    "Внутри comfyui_image_description используй только полезные для изображения детали, без мета-комментариев и без markdown.",
+    "Используй только наблюдаемые визуальные факты, без психологических ярлыков и мотиваций (например: narcissistic, exhibitionist, self-promotion, casual language, slang).",
+    "Не добавляй детали, которых нет в запросе пользователя или в описании внешности персонажа.",
+    "КРИТИЧНО: сохраняй консистентность важных деталей между запросом и описанием кадра: ключевые черты внешности, эмоция/выражение, одежда и материалы, окружение, условия сцены (время суток/погода/свет).",
+    "Если пользователь задал конкретные детали, не заменяй их синонимами с другим смыслом и не ослабляй их важность.",
+    "Для консистентности внешности в каждом comfyui_image_description обязательно повторяй стабильные признаки персонажа из поля «Внешность» (волосы, цвет волос, глаза, возрастной тип, телосложение, отличительные детали).",
     "Не меняй базовую внешность между сообщениями без явной просьбы пользователя.",
     "Не добавляй взаимоисключающие теги (например одновременно blonde hair и black hair).",
     "Без markdown-оберток вокруг этого блока.",
@@ -329,6 +330,8 @@ interface NativeChatResult {
   content: string;
   comfyPrompt?: string;
   comfyPrompts?: string[];
+  comfyImageDescription?: string;
+  comfyImageDescriptions?: string[];
   personaControl?: PersonaControlPayload;
   responseId?: string;
 }
@@ -377,8 +380,14 @@ export async function requestChatCompletion(
     .map((item) => item.content?.trim() ?? "")
     .filter(Boolean);
   const rawContent = messageChunks.join("\n\n");
-  const { visibleText, comfyPrompt, comfyPrompts, personaControl } =
-    splitAssistantContent(rawContent);
+  const {
+    visibleText,
+    comfyPrompt,
+    comfyPrompts,
+    comfyImageDescription,
+    comfyImageDescriptions,
+    personaControl,
+  } = splitAssistantContent(rawContent);
   const sanitizedContent = sanitizeAssistantText(visibleText);
   const sanitizedComfyPrompts =
     comfyPrompts && comfyPrompts.length > 0
@@ -386,18 +395,36 @@ export async function requestChatCompletion(
       : comfyPrompt
         ? [comfyPrompt]
         : [];
+  const sanitizedImageDescriptions =
+    comfyImageDescriptions && comfyImageDescriptions.length > 0
+      ? comfyImageDescriptions
+      : comfyImageDescription
+        ? [comfyImageDescription]
+        : [];
   const sanitizedComfyPrompt = sanitizedComfyPrompts[0];
+  const sanitizedImageDescription = sanitizedImageDescriptions[0];
   const filteredImageOnlyResponse =
     !sanitizedContent &&
     sanitizedComfyPrompts.length === 0 &&
+    sanitizedImageDescriptions.length === 0 &&
     !personaControl &&
-    Boolean(comfyPrompt || (comfyPrompts && comfyPrompts.length > 0));
+    Boolean(
+      comfyPrompt ||
+        (comfyPrompts && comfyPrompts.length > 0) ||
+        comfyImageDescription ||
+        (comfyImageDescriptions && comfyImageDescriptions.length > 0),
+    );
   const fallbackContent = filteredImageOnlyResponse
     ? "Могу отправить изображение по явному запросу. Опиши, что именно нужно сгенерировать."
     : "";
   const finalContent = sanitizedContent || fallbackContent;
 
-  if (!finalContent && sanitizedComfyPrompts.length === 0 && !personaControl) {
+  if (
+    !finalContent &&
+    sanitizedComfyPrompts.length === 0 &&
+    sanitizedImageDescriptions.length === 0 &&
+    !personaControl
+  ) {
     throw new Error("LMStudio returned an empty response.");
   }
 
@@ -406,6 +433,11 @@ export async function requestChatCompletion(
     comfyPrompt: sanitizedComfyPrompt,
     comfyPrompts:
       sanitizedComfyPrompts.length > 0 ? sanitizedComfyPrompts : undefined,
+    comfyImageDescription: sanitizedImageDescription,
+    comfyImageDescriptions:
+      sanitizedImageDescriptions.length > 0
+        ? sanitizedImageDescriptions
+        : undefined,
     personaControl,
     responseId: data.response_id,
   };
@@ -472,11 +504,15 @@ export async function generateThemedComfyPrompt(
     "В блоке <theme_tags> верни 8-12 кратких comma-separated English tags, которые напрямую описывают тему/контекст кадра.",
     "theme_tags должны быть конкретными (локация, роль, действие, атмосфера) и не противоречить теме.",
     "Внутри ОБОИХ блоков разрешены ТОЛЬКО comma-separated English tags.",
-    "Каждый тег: 1-4 слова, lowercase, без точки в конце.",
+    "Формат внутри блоков: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
+    "Каждый тег: строго 1-2 слова, в редких случаях допускается 3; lowercase, без точки в конце.",
     "ЗАПРЕЩЕНО: полные предложения, художественные описания, markdown, двоеточия с пояснениями, нумерация, буллеты, кавычки.",
     "ЗАПРЕЩЕНО: конструкции типа 'a woman standing...', 'she is...', 'this scene shows...'.",
+    "ЗАПРЕЩЕНО добавлять теги, которых нет в теме/внешности (никаких выдуманных тату, пирсингов, фетиш-элементов, ролей).",
+    "ЗАПРЕЩЕНО: психологические/мотивационные ярлыки (exhibitionist, narcissistic, voyeuristic, self-promotion).",
     "Правильный стиль: 'solo, one person, upper body, soft rim light, city street at night'.",
-    "Описывай строго одного человека (solo, single subject, one person).",
+    "Определяй количество действующих лиц из тематики.",
+    "Описывай строго одного человека (solo, single subject, one person) или нескольких если описание (тематика) этого требует.",
     "Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
     "Все теги из <theme_tags> ОБЯЗАТЕЛЬНО должны присутствовать в <comfyui_prompt> без потери смысла.",
     "Используй уместную одежду, если тема не требует специального костюма.",
@@ -499,7 +535,7 @@ export async function generateThemedComfyPrompt(
     method: "POST",
     headers,
     body: JSON.stringify({
-      model: settings.model,
+      model: resolveImagePromptModel(settings),
       input,
       system_prompt: systemPrompt,
       max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
@@ -527,7 +563,7 @@ export async function generateThemedComfyPrompt(
   }
 
   const parsed = splitAssistantContent(text);
-  const prompt = (parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt ?? "").trim();
+  const prompt = toTrimmedString(parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt);
   const themeTags = extractThemeTags(text, topic);
   if (prompt) {
     return mergeRequiredTags(prompt, themeTags);
@@ -541,6 +577,110 @@ export async function generateThemedComfyPrompt(
   return mergeRequiredTags(fallbackPrompt, themeTags);
 }
 
+export async function generateComfyPromptFromImageDescription(
+  settings: AppSettings,
+  persona: Pick<
+    Persona,
+    "name" | "appearance" | "stylePrompt" | "personalityPrompt"
+  >,
+  imageDescription: string,
+  iteration: number,
+): Promise<string> {
+  const description = toTrimmedString(imageDescription);
+  if (!description) {
+    throw new Error("Пустое описание изображения для генерации ComfyUI prompt.");
+  }
+
+  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
+  const endpoint = `${baseUrl}/api/v1/chat`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+  };
+
+  const systemPrompt = [
+    "Ты конвертер описания сцены в один ComfyUI prompt.",
+    "Верни только один блок <comfyui_prompt>...</comfyui_prompt> без markdown и пояснений.",
+    "Внутри блока только comma-separated English tags (никаких предложений).",
+    "Формат внутри блока: строго ОДНА строка, разделитель строго ', ' (запятая + пробел), без переносов и без лишних пробелов.",
+    "Длина prompt: 30-46 тегов.",
+    "Каждый тег: строго 2-3 слова, в редких случаях допускается 4; тег должен быть визуально наблюдаемым.",
+    "Порядок тегов: quality -> subject identity -> emotion/expression -> clothing/materials -> pose/framing -> camera -> lighting -> background -> technical cleanup.",
+    "CONSISTENCY LOCKS (обязательны): key appearance traits, emotion/expression, outfit/materials, environment, scene conditions (time/weather/lighting).",
+    "Все lock-детали из Image description должны перейти в prompt без потери смысла, но не перегружай prompt.",
+    "Не подменяй lock-детали похожими, но другими по смыслу формулировками.",
+    "Для персонажа используй ТОЛЬКО детали из Image description + Appearance.",
+    "Одежда должна соответствовать ситуации!",
+    "При конфликте: scene-specific детали (эмоция, одежда, окружение, условия) берутся из Image description; стабильная идентичность (волосы/глаза/возрастной тип/телосложение) — из Appearance.",
+    "Не добавляй детали, которых нет в исходном описании (например пирсинг/тату/аксессуары/фетиш-атрибуты, если они не указаны).",
+    "ВАЖНО: Старайся покрыть тегами переданный Image description по максимуму, но без противоречий, чтобы передать все описанные детали! При этом - не выходи за общие лимиты!",
+    "Запрещено добавлять любые role/biography теги, которых нет в описании сцены (student, office worker, nurse и т.п.).",
+    "Запрещены психологические/поведенческие/мотивационные ярлыки: narcissistic, exhibitionist, self-promotion, slang, casual language и т.п.",
+    "Запрещены мета-теги платформ, намерений и нарратива.",
+    "Запрещен quality spam: не более 4 quality/technical тегов суммарно.",
+    "Избегай противоречий в кадрировании: не ставь одновременно full body и close-up.",
+    "Если это selfie и не указан mirror full body, предпочитай upper body/waist-up framing.",
+    "По описанию определяй сколько лиц участвует в сцене.",
+    "Описывай одного человека (solo, single subject, one person), или сразу нескольких если описание этого требует.",
+    "Удали дубли и семантические дубли тегов.",
+    "Запрещены взаимоисключающие теги (например black hair и blonde hair вместе).",
+    "Если есть сомнение, лучше пропусти тег, не выдумывай.",
+    "Перед ответом сделай self-check: format delimiter, word count per tag, no duplicates, no contradictions, no banned tags, все ключевые детали из Image description покрыты.",
+  ].join("\n");
+
+  const input = [
+    `Character name: ${persona.name || "Unknown"}`,
+    `Appearance: ${formatAppearanceProfile(persona.appearance)}`,
+    `Style: ${persona.stylePrompt || "-"}`,
+    `Personality: ${persona.personalityPrompt || "-"}`,
+    `Image description: ${description}`,
+    `Iteration: ${iteration}`,
+  ].join("\n");
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: resolveImagePromptModel(settings),
+      input,
+      system_prompt: systemPrompt,
+      max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
+      temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
+      store: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      `Ошибка конвертации описания в comfy prompt (${response.status}): ${body}`,
+    );
+  }
+
+  const data = (await response.json()) as NativeChatResponse;
+  const text = data.output
+    .filter((item) => item.type === "message")
+    .map((item) => item.content ?? "")
+    .join("\n")
+    .trim();
+  if (!text) {
+    throw new Error("Модель вернула пустой comfy prompt из описания.");
+  }
+
+  const parsed = splitAssistantContent(text);
+  const prompt = toTrimmedString(parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt);
+  if (prompt) return prompt;
+
+  const fallbackPrompt = text
+    .replace(/<\/?comfyui_prompt>/gi, "")
+    .replace(/<\/?comfyui_image_description>/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (fallbackPrompt) return fallbackPrompt;
+
+  throw new Error("Не удалось извлечь ComfyUI prompt из ответа модели.");
+}
+
 function extractThemeTags(text: string, topic: string): string[] {
   const direct = extractTaggedBlock(text, "theme_tags");
   const parsedDirect = splitTags(direct || "");
@@ -551,7 +691,7 @@ function extractThemeTags(text: string, topic: string): string[] {
 function extractTaggedBlock(text: string, tag: string): string {
   const pattern = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
   const match = text.match(pattern);
-  return (match?.[1] ?? "").trim();
+  return toTrimmedString(match?.[1]);
 }
 
 function fallbackThemeTags(topic: string): string[] {
@@ -575,6 +715,22 @@ function fallbackThemeTags(topic: string): string[] {
 
 function normalizeBaseUrl(url: string) {
   return url.replace(/\/+$/, "");
+}
+
+function toTrimmedString(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value).trim();
+  }
+  return "";
+}
+
+function resolveImagePromptModel(settings: AppSettings) {
+  return toTrimmedString(settings.imagePromptModel) || toTrimmedString(settings.model);
+}
+
+function resolvePersonaGenerationModel(settings: AppSettings) {
+  return toTrimmedString(settings.personaGenerationModel) || toTrimmedString(settings.model);
 }
 
 function encodeBase64(value: string) {
@@ -722,21 +878,19 @@ function normalizeGeneratedPersonas(data: unknown): GeneratedPersonaDraft[] {
           ? (rec.appearance as Partial<PersonaAppearanceProfile>)
           : undefined;
       const appearance: PersonaAppearanceProfile = {
-        faceDescription: (
-          appearanceRaw?.faceDescription ??
-          appearancePrompt ??
-          ""
-        ).trim(),
-        height: (appearanceRaw?.height ?? "").trim(),
-        eyes: (appearanceRaw?.eyes ?? "").trim(),
-        lips: (appearanceRaw?.lips ?? "").trim(),
-        hair: (appearanceRaw?.hair ?? "").trim(),
-        ageType: (appearanceRaw?.ageType ?? "").trim(),
-        bodyType: (appearanceRaw?.bodyType ?? "").trim(),
-        markers: (appearanceRaw?.markers ?? "").trim(),
-        accessories: (appearanceRaw?.accessories ?? "").trim(),
-        clothingStyle: (appearanceRaw?.clothingStyle ?? "").trim(),
-        skin: (appearanceRaw?.skin ?? "").trim(),
+        faceDescription: toTrimmedString(
+          appearanceRaw?.faceDescription ?? appearancePrompt,
+        ),
+        height: toTrimmedString(appearanceRaw?.height),
+        eyes: toTrimmedString(appearanceRaw?.eyes),
+        lips: toTrimmedString(appearanceRaw?.lips),
+        hair: toTrimmedString(appearanceRaw?.hair),
+        ageType: toTrimmedString(appearanceRaw?.ageType),
+        bodyType: toTrimmedString(appearanceRaw?.bodyType),
+        markers: toTrimmedString(appearanceRaw?.markers),
+        accessories: toTrimmedString(appearanceRaw?.accessories),
+        clothingStyle: toTrimmedString(appearanceRaw?.clothingStyle),
+        skin: toTrimmedString(appearanceRaw?.skin),
       };
       const advancedRaw =
         rec.advanced && typeof rec.advanced === "object"
@@ -779,7 +933,7 @@ export async function generatePersonaDrafts(
   const systemPrompt = [
     "Ты генератор карточек персонажей для ролевого AI-чата.",
     "Верни ТОЛЬКО JSON-массив без markdown и пояснений.",
-    "Формат каждого элемента:",
+    "Формат каждого элемента СТРОГО:",
     '{"name":"...","personalityPrompt":"...","stylePrompt":"...","avatarUrl":"","appearance":{"faceDescription":"...","height":"...","eyes":"...","lips":"...","hair":"...","ageType":"...","bodyType":"...","markers":"...","accessories":"...","clothingStyle":"...","skin":"..."},"advanced":{"core":{"archetype":"...","backstory":"...","goals":"...","values":"...","boundaries":"...","expertise":"...","selfGender":"auto|female|male|neutral"},"voice":{"tone":"...","lexicalStyle":"...","sentenceLength":"short|balanced|long","formality":0,"expressiveness":0,"emoji":0},"behavior":{"initiative":0,"empathy":0,"directness":0,"curiosity":0,"challenge":0,"creativity":0},"emotion":{"baselineMood":"calm|warm|playful|focused|analytical|inspired|annoyed|upset|angry","warmth":0,"stability":0,"positiveTriggers":"...","negativeTriggers":"..."},"memory":{"rememberFacts":true,"rememberPreferences":true,"rememberGoals":true,"rememberEvents":true,"maxMemories":24,"decayDays":30}}}',
     "Все числовые поля в диапазоне 0..100 (кроме maxMemories и decayDays).",
     "maxMemories: 4..120, decayDays: 1..365.",
@@ -797,7 +951,7 @@ export async function generatePersonaDrafts(
     method: "POST",
     headers,
     body: JSON.stringify({
-      model: settings.model,
+      model: resolvePersonaGenerationModel(settings),
       input,
       system_prompt: systemPrompt,
       max_output_tokens: Math.max(settings.maxTokens, 500),
@@ -839,6 +993,29 @@ function splitTags(value: string) {
     .filter(Boolean);
 }
 
+function normalizeAmbiguousShotTags(prompt: string) {
+  const tags = splitTags(prompt);
+  const normalized: string[] = [];
+  let replacedFullBodyTag = false;
+
+  for (const tag of tags) {
+    const key = tag.toLowerCase().replace(/\s+/g, " ").trim();
+    if (key === "full body" || key === "fullbody" || key === "full-body") {
+      replacedFullBodyTag = true;
+      continue;
+    }
+    normalized.push(tag);
+  }
+
+  if (!replacedFullBodyTag) return normalized.join(", ");
+
+  return mergeRequiredTags(normalized.join(", "), [
+    "head-to-toe framing",
+    "whole person in frame",
+    "long shot",
+  ]);
+}
+
 function mergeRequiredTags(basePrompt: string, requiredTags: string[]) {
   const existing = splitTags(basePrompt);
   const existingLower = new Set(existing.map((tag) => tag.toLowerCase()));
@@ -862,8 +1039,8 @@ function parseLookPromptJson(
       : trimmed;
   const parsed = JSON.parse(chunk) as Partial<PersonaLookPromptResponse>;
 
-  let avatarPrompt = (parsed.avatarPrompt ?? "").trim();
-  let fullBodyPrompt = (parsed.fullBodyPrompt ?? "").trim();
+  let avatarPrompt = toTrimmedString(parsed.avatarPrompt);
+  let fullBodyPrompt = toTrimmedString(parsed.fullBodyPrompt);
   const detailPromptsRaw =
     parsed.detailPrompts && typeof parsed.detailPrompts === "object"
       ? (parsed.detailPrompts as Partial<PersonaLookDetailPrompts>)
@@ -875,11 +1052,11 @@ function parseLookPromptJson(
           .identityLocks as PersonaLookIdentityLocks)
       : {};
   const identityLocks = {
-    face: (identityLocksRaw.face ?? "").trim(),
-    eyes: (identityLocksRaw.eyes ?? "").trim(),
-    hair: (identityLocksRaw.hair ?? "").trim(),
-    body: (identityLocksRaw.body ?? "").trim(),
-    outfit: (identityLocksRaw.outfit ?? "").trim(),
+    face: toTrimmedString(identityLocksRaw.face),
+    eyes: toTrimmedString(identityLocksRaw.eyes),
+    hair: toTrimmedString(identityLocksRaw.hair),
+    body: toTrimmedString(identityLocksRaw.body),
+    outfit: toTrimmedString(identityLocksRaw.outfit),
   };
 
   if (payload) {
@@ -895,21 +1072,24 @@ function parseLookPromptJson(
     avatarPrompt = mergeRequiredTags(avatarPrompt, mustKeep);
     fullBodyPrompt = mergeRequiredTags(fullBodyPrompt, mustKeepFullBody);
   }
+
+  fullBodyPrompt = normalizeAmbiguousShotTags(fullBodyPrompt);
+
   const detailPrompts: PersonaLookDetailPrompts = {
     face:
-      (detailPromptsRaw.face ?? "").trim() ||
+      toTrimmedString(detailPromptsRaw.face) ||
       "natural skin texture, clean facial symmetry, fine pores, realistic complexion, sharp facial details",
     eyes:
-      (detailPromptsRaw.eyes ?? "").trim() ||
+      toTrimmedString(detailPromptsRaw.eyes) ||
       "detailed iris, crisp eyelashes, balanced eyelids, clear sclera, natural eye highlights",
     nose:
-      (detailPromptsRaw.nose ?? "").trim() ||
+      toTrimmedString(detailPromptsRaw.nose) ||
       "defined nose bridge, natural nostrils, smooth nose contour, realistic nose tip",
     lips:
-      (detailPromptsRaw.lips ?? "").trim() ||
+      toTrimmedString(detailPromptsRaw.lips) ||
       "clean lip contour, soft lip texture, natural lip shading, detailed cupid bow",
     hands:
-      (detailPromptsRaw.hands ?? "").trim() ||
+      toTrimmedString(detailPromptsRaw.hands) ||
       "anatomically correct hands, five fingers, clean nails, natural finger proportions, realistic knuckles",
   };
 
@@ -944,7 +1124,7 @@ export async function generatePersonaLookPrompts(
     "Оба промпта должны быть только comma-separated English tags.",
     "detailPrompts.* также только comma-separated English tags.",
     "identityLocks.* также comma-separated English tags (короткие, конкретные).",
-    "Каждый тег короткий (1-2 слова), конкретный и визуальный.",
+    "Каждый тег СТРОГО короткий (1-2 слова), конкретный и визуальный.",
     "КРИТИЧНО: избегай длинных перегруженных промптов и повторов.",
     "Жёстко запрещены дубликаты тегов и перефразированные дубликаты (например short bob haircut и bob haircut to shoulders одновременно без необходимости).",
     "Если тег уже передаёт признак, не добавляй второй тег с тем же смыслом.",
@@ -973,7 +1153,8 @@ export async function generatePersonaLookPrompts(
     "Hair-теги должны идти в начале обоих prompt (после quality-тегов), чтобы модель не теряла прическу.",
     "Если вход содержит конкретные черты лица/глаз/волос/роста/маркеров — они обязательны в обоих prompt.",
     "Рост добавляй аккуратно как нейтральный дескриптор пропорций (без фантазий).",
-    "Разница между полями: avatarPrompt = close face portrait/headshot (лицо крупно в кадре); fullBodyPrompt = full body.",
+    "Разница между полями: avatarPrompt = close face portrait/headshot (лицо крупно в кадре); fullBodyPrompt = head-to-toe framing (whole person in frame).",
+    "Не используй теги full body/fullbody/full-body — они неоднозначны и могут смещать телосложение.",
     "Для fullBodyPrompt всегда указывай clean/plain background (solid studio backdrop, no environment).",
     "Для fullBodyPrompt задавай спокойную нейтральную позу (neutral standing pose, relaxed posture, arms relaxed).",
     "Для avatarPrompt обязательно указывай внятный фон/окружение (например street, home interior, room, cafe, park), не оставляй пустой фон.",
@@ -985,7 +1166,7 @@ export async function generatePersonaLookPrompts(
     "В detailPrompts не добавляй сексуализированных тегов и NSFW.",
     "Без противоречащих тегов и без описаний предложениями.",
     "Запрещено добавлять новые яркие атрибуты, которых нет во входе (например необычный цвет глаз/волос, специфический фетиш-гардероб, экстремальные черты).",
-    "Перед ответом сделай self-check: убрать дубли, убрать противоречия, оставить только самые информативные теги.",
+    "Перед ответом сделай self-check: убрать дубли, убрать противоречия, оставить только самые информативные теги, никакой наготы в этих промптах (обязательно добавь тег).",
   ].join("\n");
 
   const input = [
@@ -1014,7 +1195,7 @@ export async function generatePersonaLookPrompts(
     method: "POST",
     headers,
     body: JSON.stringify({
-      model: settings.model,
+      model: resolveImagePromptModel(settings),
       input,
       system_prompt: systemPrompt,
       max_output_tokens: Math.max(220, Math.min(700, settings.maxTokens)),

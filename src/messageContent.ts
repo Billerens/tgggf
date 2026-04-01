@@ -1,7 +1,9 @@
 import type { PersonaControlPayload } from "./personaDynamics";
 
-const COMFY_UI_PROMPT_BLOCK_REGEX = /<comfyui_prompt>([\s\S]*?)<\/comfyui_prompt>/gi;
-const PERSONA_CONTROL_BLOCK_REGEX = /<persona_control>([\s\S]*?)<\/persona_control>/gi;
+const COMFY_UI_PROMPT_BLOCK_REGEX = /<comfyui_prompt\b[^>]*>([\s\S]*?)<\/comfyui_prompt>/gi;
+const COMFY_UI_IMAGE_DESCRIPTION_BLOCK_REGEX =
+  /<comfyui_image_description\b[^>]*>([\s\S]*?)<\/comfyui_image_description>/gi;
+const PERSONA_CONTROL_BLOCK_REGEX = /<persona_control\b[^>]*>([\s\S]*?)<\/persona_control>/gi;
 
 type ControlStateDelta = NonNullable<PersonaControlPayload["state_delta"]>;
 type ControlMemoryAddItem = NonNullable<PersonaControlPayload["memory_add"]>[number];
@@ -11,6 +13,8 @@ export interface AssistantContentParts {
   visibleText: string;
   comfyPrompt?: string;
   comfyPrompts?: string[];
+  comfyImageDescription?: string;
+  comfyImageDescriptions?: string[];
   personaControl?: PersonaControlPayload;
 }
 
@@ -293,12 +297,20 @@ function normalizePersonaControl(input: unknown): PersonaControlPayload | undefi
 
 export function splitAssistantContent(rawContent: string): AssistantContentParts {
   const comfyPrompts: string[] = [];
+  const comfyImageDescriptions: string[] = [];
   let personaControl: PersonaControlPayload | undefined;
   const visibleText = rawContent
     .replace(COMFY_UI_PROMPT_BLOCK_REGEX, (_, inner: string) => {
       const candidate = inner.trim();
       if (candidate) {
         comfyPrompts.push(candidate);
+      }
+      return "";
+    })
+    .replace(COMFY_UI_IMAGE_DESCRIPTION_BLOCK_REGEX, (_, inner: string) => {
+      const candidate = inner.trim();
+      if (candidate) {
+        comfyImageDescriptions.push(candidate);
       }
       return "";
     })
@@ -316,6 +328,9 @@ export function splitAssistantContent(rawContent: string): AssistantContentParts
     visibleText,
     comfyPrompt: comfyPrompts[0],
     comfyPrompts: comfyPrompts.length > 0 ? comfyPrompts : undefined,
+    comfyImageDescription: comfyImageDescriptions[0],
+    comfyImageDescriptions:
+      comfyImageDescriptions.length > 0 ? comfyImageDescriptions : undefined,
     personaControl,
   };
 }

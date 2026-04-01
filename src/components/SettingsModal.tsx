@@ -225,6 +225,25 @@ export function SettingsModal({
                 </div>
               </label>
               <label>
+                Модель генерации промптов изображений
+                <Dropdown
+                  value={settingsDraft.imagePromptModel}
+                  onChange={(nextModel) =>
+                    setSettingsDraft((v) => ({ ...v, imagePromptModel: nextModel }))
+                  }
+                  options={
+                    availableModels.length > 0
+                      ? availableModels.map((modelName) => ({ value: modelName, label: modelName }))
+                      : [
+                          {
+                            value: settingsDraft.imagePromptModel,
+                            label: settingsDraft.imagePromptModel || "Модель не найдена",
+                          },
+                        ]
+                  }
+                />
+              </label>
+              <label>
                 Температура
                 <input
                   type="number"
@@ -328,7 +347,7 @@ export function SettingsModal({
                     setSettingsDraft((v) => ({ ...v, showSystemImageBlock: e.target.checked }))
                   }
                 />
-                Отображать системный блок генерации изображения
+                Отображать системный блок изображения (description/prompt)
               </label>
               <label className="checkbox-row">
                 <input

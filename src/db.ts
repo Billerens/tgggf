@@ -65,6 +65,14 @@ const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
 
+function toTrimmedString(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value).trim();
+  }
+  return "";
+}
+
 function normalizeAuthConfig(
   current: Partial<EndpointAuthConfig> | undefined,
   fallback: EndpointAuthConfig,
@@ -72,17 +80,17 @@ function normalizeAuthConfig(
   const merged: EndpointAuthConfig = { ...fallback, ...(current ?? {}) };
 
   merged.mode = AUTH_MODES.includes(merged.mode) ? merged.mode : fallback.mode;
-  merged.token = merged.token.trim();
-  merged.username = merged.username.trim();
-  merged.password = merged.password.trim();
-  merged.headerName = merged.headerName.trim() || fallback.headerName;
-  merged.headerPrefix = merged.headerPrefix.trim();
+  merged.token = toTrimmedString(merged.token);
+  merged.username = toTrimmedString(merged.username);
+  merged.password = toTrimmedString(merged.password);
+  merged.headerName = toTrimmedString(merged.headerName) || fallback.headerName;
+  merged.headerPrefix = toTrimmedString(merged.headerPrefix);
 
   return merged;
 }
 
 function resolveDefaultBaseUrl() {
-  const fromEnv = import.meta.env.VITE_LM_BASE_URL?.trim();
+  const fromEnv = toTrimmedString(import.meta.env.VITE_LM_BASE_URL);
   if (fromEnv) return fromEnv;
   return import.meta.env.DEV ? DEV_PROXY_BASE_URL : FALLBACK_PROD_BASE_URL;
 }
@@ -90,7 +98,7 @@ function resolveDefaultBaseUrl() {
 function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettings {
   const merged: AppSettings = { ...DEFAULT_SETTINGS, ...(current ?? {}) };
 
-  const trimmedBaseUrl = merged.lmBaseUrl.trim();
+  const trimmedBaseUrl = toTrimmedString(merged.lmBaseUrl);
   if (!trimmedBaseUrl) {
     merged.lmBaseUrl = DEFAULT_SETTINGS.lmBaseUrl;
   } else if (!import.meta.env.DEV && trimmedBaseUrl === DEV_PROXY_BASE_URL) {
@@ -100,14 +108,18 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
     merged.lmBaseUrl = trimmedBaseUrl;
   }
 
-  merged.model = merged.model.trim() || DEFAULT_SETTINGS.model;
-  merged.comfyBaseUrl = merged.comfyBaseUrl.trim() || DEFAULT_SETTINGS.comfyBaseUrl;
+  merged.model = toTrimmedString(merged.model) || DEFAULT_SETTINGS.model;
+  merged.imagePromptModel =
+    toTrimmedString(merged.imagePromptModel) || merged.model || DEFAULT_SETTINGS.model;
+  merged.personaGenerationModel =
+    toTrimmedString(merged.personaGenerationModel) || merged.model || DEFAULT_SETTINGS.model;
+  merged.comfyBaseUrl = toTrimmedString(merged.comfyBaseUrl) || DEFAULT_SETTINGS.comfyBaseUrl;
   merged.saveComfyOutputs = Boolean(merged.saveComfyOutputs);
   if (!Number.isFinite(merged.chatStyleStrength)) {
     merged.chatStyleStrength = DEFAULT_SETTINGS.chatStyleStrength;
   }
   merged.chatStyleStrength = Math.max(0, Math.min(1, Number(merged.chatStyleStrength)));
-  merged.apiKey = merged.apiKey.trim();
+  merged.apiKey = toTrimmedString(merged.apiKey);
   merged.lmAuth = normalizeAuthConfig(merged.lmAuth, DEFAULT_SETTINGS.lmAuth);
   merged.comfyAuth = normalizeAuthConfig(
     merged.comfyAuth,
@@ -191,6 +203,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
   saveComfyOutputs: false,
   model: "local-model",
+  imagePromptModel: "local-model",
+  personaGenerationModel: "local-model",
   temperature: 0.7,
   maxTokens: 600,
   chatStyleStrength: 0.9,

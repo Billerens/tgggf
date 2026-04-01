@@ -122,6 +122,8 @@ export interface ChatMessage {
   content: string;
   comfyPrompt?: string;
   comfyPrompts?: string[];
+  comfyImageDescription?: string;
+  comfyImageDescriptions?: string[];
   imageUrls?: string[];
   imageGenerationPending?: boolean;
   imageGenerationExpected?: number;
@@ -204,6 +206,8 @@ export interface AppSettings {
   comfyBaseUrl: string;
   saveComfyOutputs: boolean;
   model: string;
+  imagePromptModel: string;
+  personaGenerationModel: string;
   temperature: number;
   maxTokens: number;
   chatStyleStrength: number;

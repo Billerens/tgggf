@@ -73,7 +73,7 @@ function mergePromptTags(basePrompt: string, additionalTags: string[]) {
     const key = tag.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    merged.push(tag);
+    merged.unshift(tag);
   }
   return merged.join(", ");
 }
@@ -335,8 +335,21 @@ export default function App() {
     try {
       const models = await listModels({ lmBaseUrl: baseUrl, apiKey, lmAuth });
       setAvailableModels(models);
-      if (!models.includes(settingsDraft.model) && models.length > 0) {
-        setSettingsDraft((v) => ({ ...v, model: models[0] }));
+      if (models.length > 0) {
+        setSettingsDraft((v) => ({
+          ...v,
+          model: models.includes(v.model) ? v.model : models[0],
+          imagePromptModel: models.includes(v.imagePromptModel)
+            ? v.imagePromptModel
+            : models.includes(v.model)
+              ? v.model
+              : models[0],
+          personaGenerationModel: models.includes(v.personaGenerationModel)
+            ? v.personaGenerationModel
+            : models.includes(v.model)
+              ? v.model
+              : models[0],
+        }));
       }
     } catch (e) {
       setAvailableModels([]);
@@ -822,7 +835,11 @@ export default function App() {
     event.preventDefault();
     setGenerationLoading(true);
     try {
-      const drafts = await generatePersonaDrafts(settings, generationTheme, generationCount);
+      const drafts = await generatePersonaDrafts(
+        settingsDraft,
+        generationTheme,
+        generationCount,
+      );
       setGeneratedDrafts(drafts);
     } catch (e) {
       useAppStore.setState({ error: (e as Error).message });
@@ -904,24 +921,10 @@ export default function App() {
           );
         };
         const fullBodyPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-          "full body",
+          "head-to-toe framing",
+          "whole person in frame",
+          "long shot",
           "neutral standing pose",
-          "calm pose",
-          "relaxed posture",
-          "hands at sides",
-          "arms relaxed",
-          "solo",
-          "single subject",
-          "exactly one person",
-          "no other people",
-          "no crowd",
-          "no duplicate body",
-          "no extra limbs",
-          "no collage",
-          "plain background",
-          "solid background",
-          "studio backdrop",
-          "isolated subject",
           "clean background",
           "no environment",
         ]);
@@ -990,33 +993,12 @@ export default function App() {
           const sideReferenceStrength = 0.72;
           const sideCompositionStrength = 0.22;
           const sidePrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-            "full body",
+            "head-to-toe framing",
+            "whole person in frame",
+            "long shot",
             "strict side profile",
             "exact 90 degree side view",
-            "body fully rotated sideways",
             "profile silhouette",
-            "single eye visible",
-            "single cheek visible",
-            "shoulder line in profile",
-            "hips in profile",
-            "no frontal pose",
-            "no three-quarter pose",
-            "no back pose",
-            "neutral standing pose",
-            "relaxed posture",
-            "arms relaxed",
-            "solo",
-            "single subject",
-            "exactly one person",
-            "no other people",
-            "no crowd",
-            "no duplicate body",
-            "no extra limbs",
-            "no collage",
-            "plain background",
-            "solid background",
-            "studio backdrop",
-            "isolated subject",
             "clean background",
             "no environment",
           ]);
@@ -1087,32 +1069,12 @@ export default function App() {
           const backReferenceStrength = 0.72;
           const backCompositionStrength = 0.22;
           const backPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-            "full body",
+            "head-to-toe framing",
+            "whole person in frame",
+            "long shot",
             "strict back view",
-            "rear view",
             "exactly from behind",
             "back facing camera",
-            "face not visible",
-            "no frontal pose",
-            "no side pose",
-            "no three-quarter pose",
-            "shoulder blades visible from behind",
-            "back silhouette centered",
-            "neutral standing pose",
-            "relaxed posture",
-            "arms relaxed",
-            "solo",
-            "single subject",
-            "exactly one person",
-            "no other people",
-            "no crowd",
-            "no duplicate body",
-            "no extra limbs",
-            "no collage",
-            "plain background",
-            "solid background",
-            "studio backdrop",
-            "isolated subject",
             "clean background",
             "no environment",
           ]);
@@ -1179,15 +1141,11 @@ export default function App() {
 
         const avatarPrompt = mergePromptTags(promptBundle.avatarPrompt, [
           "close-up",
-          "close face",
-          "headshot",
           "face focus",
           "looking at viewer",
           "solo",
           "single subject",
           "one person",
-          "no other people",
-          "no crowd",
           "detailed background",
           "environmental context",
           "realistic location",
@@ -1333,10 +1291,10 @@ export default function App() {
         kind === "avatar"
           ? `${promptBundle.avatarPrompt}, close-up, close face, headshot, face focus, looking at viewer`
           : kind === "side"
-            ? `${promptBundle.fullBodyPrompt}, full body, side view, profile view`
+            ? `head-to-toe framing, whole person in frame, side view, profile view, ${promptBundle.fullBodyPrompt}`
             : kind === "back"
-            ? `${promptBundle.fullBodyPrompt}, full body, back view, from behind`
-            : `${promptBundle.fullBodyPrompt}, full body, neutral standing pose`;
+            ? `head-to-toe framing, whole person in frame, back view, from behind, ${promptBundle.fullBodyPrompt}`
+            : `head-to-toe framing, whole person in frame, neutral standing pose, ${promptBundle.fullBodyPrompt}`;
       const metaFromCache = lookImageMetaByUrl[imageUrl];
       const metaFromSource = metaFromCache
         ? null
@@ -1964,6 +1922,15 @@ export default function App() {
           checkpointsLoading={checkpointsLoading}
           onRefreshCheckpoints={() => void loadComfyCheckpoints(settingsDraft.comfyBaseUrl)}
           imageMetaByUrl={lookImageMetaByUrl}
+          imagePromptModel={settingsDraft.imagePromptModel}
+          personaGenerationModel={settingsDraft.personaGenerationModel}
+          availableModels={availableModels}
+          onImagePromptModelChange={(nextModel) =>
+            setSettingsDraft((prev) => ({ ...prev, imagePromptModel: nextModel }))
+          }
+          onPersonaGenerationModelChange={(nextModel) =>
+            setSettingsDraft((prev) => ({ ...prev, personaGenerationModel: nextModel }))
+          }
         />
 
         <ErrorToast error={error} onClose={clearError} />

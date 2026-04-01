@@ -292,19 +292,37 @@ export function ChatPane({
 
       <section className="messages">
         {messages.map((msg) => {
-          const parsed =
+          const parsedAssistant =
             msg.role === "assistant"
               ? splitAssistantContent(msg.content)
-              : { visibleText: msg.content };
-          const textToRender = parsed.visibleText;
+              : undefined;
+          const textToRender = parsedAssistant?.visibleText ?? msg.content;
+          const comfyImageDescriptionsToRender =
+            msg.role === "assistant" && showSystemImageBlock
+              ? (() => {
+                  const next = [
+                    ...(msg.comfyImageDescriptions ?? []),
+                    ...(parsedAssistant?.comfyImageDescriptions ?? []),
+                    ...(msg.comfyImageDescription ? [msg.comfyImageDescription] : []),
+                    ...(parsedAssistant?.comfyImageDescription
+                      ? [parsedAssistant.comfyImageDescription]
+                      : []),
+                  ]
+                    .map((value) => value.trim())
+                    .filter(Boolean);
+                  return Array.from(new Set(next));
+                })()
+              : [];
           const comfyPromptsToRender =
             msg.role === "assistant" && showSystemImageBlock
               ? (() => {
                   const next = [
                     ...(msg.comfyPrompts ?? []),
-                    ...(parsed.comfyPrompts ?? []),
+                    ...(parsedAssistant?.comfyPrompts ?? []),
                     ...(msg.comfyPrompt ? [msg.comfyPrompt] : []),
-                    ...(parsed.comfyPrompt ? [parsed.comfyPrompt] : []),
+                    ...(parsedAssistant?.comfyPrompt
+                      ? [parsedAssistant.comfyPrompt]
+                      : []),
                   ]
                     .map((value) => value.trim())
                     .filter(Boolean);
@@ -313,13 +331,17 @@ export function ChatPane({
               : [];
           const personaControlToRender =
             msg.role === "assistant" && showStatusChangeDetails
-              ? parsePersonaControlRaw(msg.personaControlRaw) ?? parsed.personaControl
+              ? parsePersonaControlRaw(msg.personaControlRaw) ??
+                parsedAssistant?.personaControl
               : undefined;
           const statusDetails = buildStatusDetails(personaControlToRender);
           const imageUrlsToRender = msg.imageUrls ?? [];
           const fallbackExpected = Math.max(
             1,
-            comfyPromptsToRender.length || (msg.comfyPrompt ? 1 : 0),
+            comfyPromptsToRender.length ||
+              comfyImageDescriptionsToRender.length ||
+              (msg.comfyPrompt ? 1 : 0) ||
+              (msg.comfyImageDescription ? 1 : 0),
           );
           const expectedCount = msg.imageGenerationExpected ?? fallbackExpected;
           const completedCount = msg.imageGenerationCompleted ?? imageUrlsToRender.length;
@@ -327,6 +349,7 @@ export function ChatPane({
 
           if (
             !textToRender &&
+            comfyImageDescriptionsToRender.length === 0 &&
             comfyPromptsToRender.length === 0 &&
             imageUrlsToRender.length === 0 &&
             !msg.imageGenerationPending &&
@@ -338,6 +361,20 @@ export function ChatPane({
           return (
             <article key={msg.id} className={`bubble ${msg.role}`}>
               {textToRender ? <p>{textToRender}</p> : null}
+              {comfyImageDescriptionsToRender.map((description, index) => (
+                <section
+                  key={`${msg.id}-img-desc-${index}`}
+                  className="comfy-prompt-block"
+                  aria-label="ComfyUI image description"
+                >
+                  <div className="comfy-prompt-head">
+                    {comfyImageDescriptionsToRender.length > 1
+                      ? `Image description #${index + 1}`
+                      : "Image description"}
+                  </div>
+                  <pre>{description}</pre>
+                </section>
+              ))}
               {comfyPromptsToRender.map((prompt, index) => (
                 <section key={`${msg.id}-comfy-${index}`} className="comfy-prompt-block" aria-label="ComfyUI prompt">
                   <div className="comfy-prompt-head">
