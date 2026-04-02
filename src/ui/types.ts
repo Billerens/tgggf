@@ -5,7 +5,15 @@ export type PersonaDraft = Omit<Persona, "id" | "createdAt" | "updatedAt">;
 export type SidebarTab = "chats" | "personas" | "generation";
 export type PersonaModalTab = "editor" | "generator";
 export type LookDetailLevel = "off" | "soft" | "medium" | "strong";
-export type LookEnhanceTarget = "all" | "face" | "eyes" | "nose" | "lips" | "hands";
+export type LookEnhanceTarget =
+  | "all"
+  | "face"
+  | "eyes"
+  | "nose"
+  | "lips"
+  | "hands"
+  | "chest"
+  | "vagina";
 export interface PersonaLookPack {
   status: "pending" | "ready";
   avatarUrl: string;
@@ -47,5 +55,6 @@ export function createEmptyPersonaDraft(): PersonaDraft {
     fullBodySideImageId: "",
     fullBodyBackImageId: "",
     imageMetaByUrl: {},
+    lookPromptCache: undefined,
   };
 }

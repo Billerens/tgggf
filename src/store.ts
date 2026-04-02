@@ -302,6 +302,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         fullBodySideImageId: input.fullBodySideImageId?.trim() ?? "",
         fullBodyBackImageId: input.fullBodyBackImageId?.trim() ?? "",
         imageMetaByUrl: input.imageMetaByUrl,
+        lookPromptCache: input.lookPromptCache,
         createdAt: get().personas.find((personaItem) => personaItem.id === input.id)?.createdAt ?? ts,
         updatedAt: ts,
       };

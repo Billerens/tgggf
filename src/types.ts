@@ -84,6 +84,24 @@ export interface PersonaAppearanceProfile {
   skin: string;
 }
 
+export interface PersonaLookDetailPromptCache {
+  face: string;
+  eyes: string;
+  nose: string;
+  lips: string;
+  hands: string;
+}
+
+export interface PersonaLookPromptCache {
+  fingerprint: number;
+  locked?: boolean;
+  model: string;
+  generatedAt: string;
+  avatarPrompt: string;
+  fullBodyPrompt: string;
+  detailPrompts: PersonaLookDetailPromptCache;
+}
+
 export interface Persona {
   id: string;
   name: string;
@@ -101,6 +119,7 @@ export interface Persona {
   fullBodySideImageId: string;
   fullBodyBackImageId: string;
   imageMetaByUrl?: Record<string, ImageGenerationMeta>;
+  lookPromptCache?: PersonaLookPromptCache;
   createdAt: string;
   updatedAt: string;
 }

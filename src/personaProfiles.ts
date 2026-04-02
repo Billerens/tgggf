@@ -6,6 +6,7 @@ import type {
   PersonaBehaviorProfile,
   PersonaCoreProfile,
   PersonaEmotionProfile,
+  PersonaLookPromptCache,
   PersonaMemoryPolicy,
   PersonaVoiceProfile,
 } from "./types";
@@ -93,6 +94,82 @@ function clampPositiveInt(value: number, fallback: number, min: number, max: num
 
 function cleanText(value: unknown, fallback = "") {
   return typeof value === "string" ? value.trim() : fallback;
+}
+
+function hashStringToUint32(value: string) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function normalizeLookPromptCache(input: unknown): PersonaLookPromptCache | undefined {
+  if (!isRecord(input)) return undefined;
+
+  const detailPrompts = isRecord(input.detailPrompts) ? input.detailPrompts : null;
+  if (!detailPrompts) return undefined;
+
+  const rawFingerprint = input.fingerprint;
+  const fingerprint =
+    typeof rawFingerprint === "number" && Number.isFinite(rawFingerprint)
+      ? rawFingerprint >>> 0
+      : (() => {
+          const asString = cleanText(rawFingerprint);
+          if (!asString) return 0;
+          const asNumber = Number(asString);
+          if (Number.isFinite(asNumber)) {
+            return asNumber >>> 0;
+          }
+          return hashStringToUint32(asString);
+        })();
+  const locked = input.locked === true;
+  const model = cleanText(input.model);
+  const generatedAt = cleanText(input.generatedAt);
+  const avatarPrompt = cleanText(input.avatarPrompt);
+  const fullBodyPrompt = cleanText(input.fullBodyPrompt);
+  const face = cleanText(detailPrompts.face);
+  const eyes = cleanText(detailPrompts.eyes);
+  const nose = cleanText(detailPrompts.nose);
+  const lips = cleanText(detailPrompts.lips);
+  const hands = cleanText(detailPrompts.hands);
+
+  if (
+    !Number.isFinite(fingerprint) ||
+    fingerprint <= 0 ||
+    !model ||
+    !generatedAt ||
+    !avatarPrompt ||
+    !fullBodyPrompt ||
+    !face ||
+    !eyes ||
+    !nose ||
+    !lips ||
+    !hands
+  ) {
+    return undefined;
+  }
+
+  return {
+    fingerprint,
+    locked,
+    model,
+    generatedAt,
+    avatarPrompt,
+    fullBodyPrompt,
+    detailPrompts: {
+      face,
+      eyes,
+      nose,
+      lips,
+      hands,
+    },
+  };
 }
 
 function normalizeAppearance(
@@ -276,6 +353,7 @@ export function normalizePersonaRecord(persona: LegacyPersonaRecord): Persona {
     fullBodyImageId: cleanText(persona.fullBodyImageId),
     fullBodySideImageId: cleanText(persona.fullBodySideImageId),
     fullBodyBackImageId: cleanText(persona.fullBodyBackImageId),
+    lookPromptCache: normalizeLookPromptCache(persona.lookPromptCache),
     advanced: normalizeAdvancedProfile(persona.advanced ?? buildAdvancedProfileFromLegacy(persona)),
   };
 }

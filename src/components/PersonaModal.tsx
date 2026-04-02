@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { RefreshCw, Sparkles, Trash2, UserRound, X } from "lucide-react";
+import { Pencil, RefreshCw, Sparkles, Trash2, UserRound, X } from "lucide-react";
 import type { GeneratedPersonaDraft } from "../lmstudio";
 import { dbApi } from "../db";
 import type { ImageGenerationMeta, Persona } from "../types";
@@ -53,9 +53,10 @@ interface PersonaModalProps {
     targetOverride?: LookEnhanceTarget,
   ) => void;
   onRegenerateLookImage: (
-    packIndex: number,
+    packIndex: number | null,
     kind: "avatar" | "fullbody" | "side" | "back",
     imageUrl: string,
+    promptOverride?: string,
   ) => void;
   onStopLookEnhancement: () => void;
   generatedLookPacks: PersonaLookPack[];
@@ -92,6 +93,12 @@ const ENHANCE_TARGET_OPTIONS: Array<{ value: LookEnhanceTarget; label: string }>
   { value: "hands", label: "Руки" },
 ];
 
+function normalizePersonaEnhanceTarget(value: LookEnhanceTarget): LookEnhanceTarget {
+  return ENHANCE_TARGET_OPTIONS.some((option) => option.value === value)
+    ? value
+    : "all";
+}
+
 interface EnhanceOverlayButtonProps {
   busy: boolean;
   onEnhance: (targetOverride?: LookEnhanceTarget) => void;
@@ -100,6 +107,7 @@ interface EnhanceOverlayButtonProps {
 interface RegenerateOverlayButtonProps {
   busy: boolean;
   onRegenerate: () => void;
+  onRegenerateWithPrompt?: () => void;
 }
 
 function EnhanceOverlayButton({ busy, onEnhance }: EnhanceOverlayButtonProps) {
@@ -181,21 +189,40 @@ function EnhanceOverlayButton({ busy, onEnhance }: EnhanceOverlayButtonProps) {
   );
 }
 
-function RegenerateOverlayButton({ busy, onRegenerate }: RegenerateOverlayButtonProps) {
+function RegenerateOverlayButton({
+  busy,
+  onRegenerate,
+  onRegenerateWithPrompt,
+}: RegenerateOverlayButtonProps) {
   return (
-    <button
-      type="button"
-      className={`persona-look-regenerate-btn ${busy ? "busy" : ""}`}
-      onClick={(event) => {
-        event.stopPropagation();
-        onRegenerate();
-      }}
-      disabled={busy}
-      title="Перегенерировать изображение"
-    >
-      <RefreshCw size={12} />
-      {busy ? "..." : "↻"}
-    </button>
+    <div className={`persona-look-regenerate-control ${busy ? "busy" : ""}`}>
+      {onRegenerateWithPrompt ? (
+        <button
+          type="button"
+          className="persona-look-regenerate-prompt-btn"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRegenerateWithPrompt();
+          }}
+          disabled={busy}
+          title="Перегенерировать с правкой prompt"
+        >
+          <Pencil size={12} />
+        </button>
+      ) : null}
+      <button
+        type="button"
+        className={`persona-look-regenerate-btn ${busy ? "busy" : ""}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onRegenerate();
+        }}
+        disabled={busy}
+        title="Перегенерировать изображение"
+      >
+        <RefreshCw size={12} />
+      </button>
+    </div>
   );
 }
 
@@ -268,6 +295,18 @@ export function PersonaModal({
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMetaOverride, setPreviewMetaOverride] = useState<ImageGenerationMeta | undefined>(undefined);
   const [previewKind, setPreviewKind] = useState<"avatar" | "fullbody" | "side" | "back" | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<{
+    packIndex: number | null;
+    kind: "avatar" | "fullbody" | "side" | "back";
+    sourceUrl: string;
+  } | null>(null);
+  const [promptEditDialog, setPromptEditDialog] = useState<{
+    packIndex: number;
+    kind: "avatar" | "fullbody" | "side" | "back";
+    sourceUrl: string;
+    prompt: string;
+  } | null>(null);
+  const promptEditTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const parseImageIdFromLink = (value: string) => {
     const normalized = value.trim();
@@ -337,18 +376,81 @@ export function PersonaModal({
   const draftFullBodySrc = resolveImageSrc(personaDraft.fullBodyUrl, personaDraft.fullBodyImageId);
   const draftSideSrc = resolveImageSrc(personaDraft.fullBodySideUrl, personaDraft.fullBodySideImageId);
   const draftBackSrc = resolveImageSrc(personaDraft.fullBodyBackUrl, personaDraft.fullBodyBackImageId);
+  const activePersonaEnhanceTarget = normalizePersonaEnhanceTarget(lookEnhanceTarget);
   const handleEnhanceRequest = (
     packIndex: number | null,
     kind: "avatar" | "fullbody" | "side" | "back",
     src: string,
     targetOverride?: LookEnhanceTarget,
   ) => {
-    const normalizedTarget = (targetOverride ?? lookEnhanceTarget) as LookEnhanceTarget;
+    const normalizedTarget = normalizePersonaEnhanceTarget(
+      (targetOverride ?? activePersonaEnhanceTarget) as LookEnhanceTarget,
+    );
     if (normalizedTarget !== lookEnhanceTarget) {
       setLookEnhanceTarget(normalizedTarget);
     }
     onEnhanceLookImage(packIndex, kind, src, normalizedTarget);
   };
+
+  const resolveLookPrompt = (
+    kind: "avatar" | "fullbody" | "side" | "back",
+    sourceUrl: string,
+  ) => {
+    const normalizedSourceUrl = sourceUrl.trim();
+    const directMeta = normalizedSourceUrl
+      ? imageMetaByUrl[normalizedSourceUrl] ?? imageMetaByUrl[sourceUrl]
+      : undefined;
+    const slotMeta = imageMetaByUrl[`__slot__:${kind}`];
+    return (directMeta?.prompt ?? slotMeta?.prompt ?? "").trim();
+  };
+
+  const handleRegenerateWithPromptRequest = (
+    packIndex: number,
+    kind: "avatar" | "fullbody" | "side" | "back",
+    sourceUrl: string,
+  ) => {
+    const normalizedSourceUrl = sourceUrl.trim();
+    if (!normalizedSourceUrl) return;
+    const currentPrompt = resolveLookPrompt(kind, normalizedSourceUrl);
+    setPromptEditDialog({
+      packIndex,
+      kind,
+      sourceUrl: normalizedSourceUrl,
+      prompt: currentPrompt,
+    });
+  };
+
+  const closePromptEditDialog = () => {
+    setPromptEditDialog(null);
+  };
+
+  const submitPromptEditDialog = () => {
+    if (!promptEditDialog) return;
+    const promptOverride = promptEditDialog.prompt.trim();
+    onRegenerateLookImage(
+      promptEditDialog.packIndex,
+      promptEditDialog.kind,
+      promptEditDialog.sourceUrl,
+      promptOverride || undefined,
+    );
+    setPromptEditDialog(null);
+  };
+
+  useEffect(() => {
+    if (!promptEditDialog) return;
+    const raf = window.requestAnimationFrame(() => {
+      promptEditTextareaRef.current?.focus();
+      promptEditTextareaRef.current?.setSelectionRange(
+        promptEditDialog.prompt.length,
+        promptEditDialog.prompt.length,
+      );
+    });
+    return () => window.cancelAnimationFrame(raf);
+  }, [
+    promptEditDialog?.packIndex,
+    promptEditDialog?.kind,
+    promptEditDialog?.sourceUrl,
+  ]);
 
   const logPreviewDebug = (payload: Record<string, unknown>) => {
     const snapshot = {
@@ -372,6 +474,7 @@ export function PersonaModal({
     src: string,
     kind: "avatar" | "fullbody" | "side" | "back",
     imageId?: string,
+    packIndex: number | null = null,
   ) => {
     const normalizedImageId = (imageId ?? "").trim();
     if (normalizedImageId) {
@@ -389,6 +492,11 @@ export function PersonaModal({
         setPreviewSrc(asset.dataUrl);
         setPreviewKind(kind);
         setPreviewMetaOverride(asset.meta);
+        setPreviewTarget({
+          packIndex,
+          kind,
+          sourceUrl: asset.dataUrl,
+        });
         return;
       }
       logPreviewDebug({
@@ -407,6 +515,15 @@ export function PersonaModal({
     setPreviewSrc(src || null);
     setPreviewKind(kind);
     setPreviewMetaOverride(undefined);
+    setPreviewTarget(
+      src
+        ? {
+            packIndex,
+            kind,
+            sourceUrl: src,
+          }
+        : null,
+    );
   };
 
   const resolvePreviewMeta = (src: string | null, kind: "avatar" | "fullbody" | "side" | "back" | null) => {
@@ -439,6 +556,22 @@ export function PersonaModal({
     });
   }, [previewSrc, previewKind, previewMetaOverride, imageMetaByUrl]);
   const hasAppearance = Object.values(personaDraft.appearance).some((value) => value.trim());
+  const hasLookPromptCache = Boolean(personaDraft.lookPromptCache);
+  const isLookPromptCacheLocked = Boolean(personaDraft.lookPromptCache?.locked);
+  const lookPromptGeneratedAt = personaDraft.lookPromptCache?.generatedAt
+    ? new Date(personaDraft.lookPromptCache.generatedAt).toLocaleString("ru-RU")
+    : "";
+  const updateLookPromptCache = (
+    updater: (cache: NonNullable<PersonaDraft["lookPromptCache"]>) => NonNullable<PersonaDraft["lookPromptCache"]>,
+  ) => {
+    setPersonaDraft((prev) => {
+      if (!prev.lookPromptCache) return prev;
+      return {
+        ...prev,
+        lookPromptCache: updater(prev.lookPromptCache),
+      };
+    });
+  };
   const describeGeneratedAppearance = (draft: GeneratedPersonaDraft) =>
     [
       draft.appearance.faceDescription,
@@ -458,6 +591,16 @@ export function PersonaModal({
       .join(", ");
 
   if (!open) return null;
+
+  const promptEditKindLabel: Record<"avatar" | "fullbody" | "side" | "back", string> = {
+    avatar: "Avatar",
+    fullbody: "Fullbody",
+    side: "Side",
+    back: "Back",
+  };
+  const promptEditBusy = promptEditDialog
+    ? regeneratingLookImageKey === `${promptEditDialog.packIndex}:${promptEditDialog.kind}`
+    : false;
 
   return (
     <div className="overlay" role="dialog" aria-modal="true">
@@ -676,6 +819,152 @@ export function PersonaModal({
                     }
                   />
                 </label>
+                <label>
+                  Кэш look-prompts (из карточки персоны)
+                  <div className="muted">
+                    {hasLookPromptCache
+                      ? "Используется для повторных улучшений/генерации внешности без лишнего запроса к LM."
+                      : "Пока пусто. Заполнится после первой генерации внешности."}
+                  </div>
+                </label>
+                {hasLookPromptCache ? (
+                  <>
+                    <input
+                      value={personaDraft.lookPromptCache?.model ?? ""}
+                      readOnly
+                      title="Модель, которой был сгенерирован кэш"
+                    />
+                    <input
+                      value={personaDraft.lookPromptCache?.fingerprint ?? ""}
+                      readOnly
+                      title="Числовой отпечаток только по полям внешности"
+                    />
+                    <input
+                      value={lookPromptGeneratedAt}
+                      readOnly
+                      title="Когда кэш был сгенерирован"
+                    />
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(personaDraft.lookPromptCache?.locked)}
+                        onChange={(event) =>
+                          updateLookPromptCache((cache) => ({
+                            ...cache,
+                            locked: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span>
+                        Зафиксировать кэш (не перегенерировать и не перезаписывать автоматически)
+                      </span>
+                    </label>
+                    <textarea
+                      placeholder="avatarPrompt"
+                      value={personaDraft.lookPromptCache?.avatarPrompt ?? ""}
+                      disabled={isLookPromptCacheLocked}
+                      onChange={(event) =>
+                        updateLookPromptCache((cache) => ({
+                          ...cache,
+                          avatarPrompt: event.target.value,
+                        }))
+                      }
+                    />
+                    <textarea
+                      placeholder="fullBodyPrompt"
+                      value={personaDraft.lookPromptCache?.fullBodyPrompt ?? ""}
+                      disabled={isLookPromptCacheLocked}
+                      onChange={(event) =>
+                        updateLookPromptCache((cache) => ({
+                          ...cache,
+                          fullBodyPrompt: event.target.value,
+                        }))
+                      }
+                    />
+                    <textarea
+                      placeholder="detailPrompts.face"
+                      value={personaDraft.lookPromptCache?.detailPrompts.face ?? ""}
+                      disabled={isLookPromptCacheLocked}
+                      onChange={(event) =>
+                        updateLookPromptCache((cache) => ({
+                          ...cache,
+                          detailPrompts: {
+                            ...cache.detailPrompts,
+                            face: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                    <textarea
+                      placeholder="detailPrompts.eyes"
+                      value={personaDraft.lookPromptCache?.detailPrompts.eyes ?? ""}
+                      disabled={isLookPromptCacheLocked}
+                      onChange={(event) =>
+                        updateLookPromptCache((cache) => ({
+                          ...cache,
+                          detailPrompts: {
+                            ...cache.detailPrompts,
+                            eyes: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                    <textarea
+                      placeholder="detailPrompts.nose"
+                      value={personaDraft.lookPromptCache?.detailPrompts.nose ?? ""}
+                      disabled={isLookPromptCacheLocked}
+                      onChange={(event) =>
+                        updateLookPromptCache((cache) => ({
+                          ...cache,
+                          detailPrompts: {
+                            ...cache.detailPrompts,
+                            nose: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                    <textarea
+                      placeholder="detailPrompts.lips"
+                      value={personaDraft.lookPromptCache?.detailPrompts.lips ?? ""}
+                      disabled={isLookPromptCacheLocked}
+                      onChange={(event) =>
+                        updateLookPromptCache((cache) => ({
+                          ...cache,
+                          detailPrompts: {
+                            ...cache.detailPrompts,
+                            lips: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                    <textarea
+                      placeholder="detailPrompts.hands"
+                      value={personaDraft.lookPromptCache?.detailPrompts.hands ?? ""}
+                      disabled={isLookPromptCacheLocked}
+                      onChange={(event) =>
+                        updateLookPromptCache((cache) => ({
+                          ...cache,
+                          detailPrompts: {
+                            ...cache.detailPrompts,
+                            hands: event.target.value,
+                          },
+                        }))
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="danger"
+                      onClick={() =>
+                        setPersonaDraft((prev) => ({
+                          ...prev,
+                          lookPromptCache: undefined,
+                        }))
+                      }
+                    >
+                      Сбросить кэш look-prompts
+                    </button>
+                  </>
+                ) : null}
                 <input
                   placeholder="URL аватара"
                   value={personaDraft.avatarUrl}
@@ -745,7 +1034,7 @@ export function PersonaModal({
                 <label>
                   Что улучшать при кнопке "Улучшить"
                   <Dropdown
-                    value={lookEnhanceTarget}
+                    value={activePersonaEnhanceTarget}
                     onChange={(nextTarget) => setLookEnhanceTarget(nextTarget as LookEnhanceTarget)}
                     options={[
                       { value: "all", label: "Все части" },
@@ -808,6 +1097,7 @@ export function PersonaModal({
                                 draftAvatarSrc,
                                 "avatar",
                                 personaDraft.avatarImageId || parseImageIdFromLink(personaDraft.avatarUrl),
+                                null,
                               );
                             }}
                           >
@@ -834,6 +1124,7 @@ export function PersonaModal({
                                 draftFullBodySrc,
                                 "fullbody",
                                 personaDraft.fullBodyImageId || parseImageIdFromLink(personaDraft.fullBodyUrl),
+                                null,
                               );
                             }}
                           >
@@ -860,6 +1151,7 @@ export function PersonaModal({
                                 draftSideSrc,
                                 "side",
                                 personaDraft.fullBodySideImageId || parseImageIdFromLink(personaDraft.fullBodySideUrl),
+                                null,
                               );
                             }}
                           >
@@ -886,6 +1178,7 @@ export function PersonaModal({
                                 draftBackSrc,
                                 "back",
                                 personaDraft.fullBodyBackImageId || parseImageIdFromLink(personaDraft.fullBodyBackUrl),
+                                null,
                               );
                             }}
                           >
@@ -941,6 +1234,7 @@ export function PersonaModal({
                                       packAvatarSrc,
                                       "avatar",
                                       pack.avatarImageId || parseImageIdFromLink(pack.avatarUrl),
+                                      index,
                                     );
                                   }}
                                 >
@@ -950,6 +1244,13 @@ export function PersonaModal({
                                   busy={regeneratingLookImageKey === avatarKey}
                                   onRegenerate={() =>
                                     onRegenerateLookImage(index, "avatar", pack.avatarUrl || packAvatarSrc)
+                                  }
+                                  onRegenerateWithPrompt={() =>
+                                    handleRegenerateWithPromptRequest(
+                                      index,
+                                      "avatar",
+                                      pack.avatarUrl || packAvatarSrc,
+                                    )
                                   }
                                 />
                                 <EnhanceOverlayButton
@@ -975,6 +1276,7 @@ export function PersonaModal({
                                       packFullBodySrc,
                                       "fullbody",
                                       pack.fullBodyImageId || parseImageIdFromLink(pack.fullBodyUrl),
+                                      index,
                                     );
                                   }}
                                 >
@@ -984,6 +1286,13 @@ export function PersonaModal({
                                   busy={regeneratingLookImageKey === fullBodyKey}
                                   onRegenerate={() =>
                                     onRegenerateLookImage(index, "fullbody", pack.fullBodyUrl || packFullBodySrc)
+                                  }
+                                  onRegenerateWithPrompt={() =>
+                                    handleRegenerateWithPromptRequest(
+                                      index,
+                                      "fullbody",
+                                      pack.fullBodyUrl || packFullBodySrc,
+                                    )
                                   }
                                 />
                                 <EnhanceOverlayButton
@@ -1010,6 +1319,7 @@ export function PersonaModal({
                                         packSideSrc,
                                         "side",
                                         pack.fullBodySideImageId || parseImageIdFromLink(pack.fullBodySideUrl),
+                                        index,
                                       );
                                     }}
                                   >
@@ -1023,6 +1333,13 @@ export function PersonaModal({
                                     busy={regeneratingLookImageKey === sideKey}
                                     onRegenerate={() =>
                                       onRegenerateLookImage(index, "side", pack.fullBodySideUrl || packSideSrc)
+                                    }
+                                    onRegenerateWithPrompt={() =>
+                                      handleRegenerateWithPromptRequest(
+                                        index,
+                                        "side",
+                                        pack.fullBodySideUrl || packSideSrc,
+                                      )
                                     }
                                   />
                                   <EnhanceOverlayButton
@@ -1050,6 +1367,7 @@ export function PersonaModal({
                                         packBackSrc,
                                         "back",
                                         pack.fullBodyBackImageId || parseImageIdFromLink(pack.fullBodyBackUrl),
+                                        index,
                                       );
                                     }}
                                   >
@@ -1063,6 +1381,13 @@ export function PersonaModal({
                                     busy={regeneratingLookImageKey === backKey}
                                     onRegenerate={() =>
                                       onRegenerateLookImage(index, "back", pack.fullBodyBackUrl || packBackSrc)
+                                    }
+                                    onRegenerateWithPrompt={() =>
+                                      handleRegenerateWithPromptRequest(
+                                        index,
+                                        "back",
+                                        pack.fullBodyBackUrl || packBackSrc,
+                                      )
                                     }
                                   />
                                   <EnhanceOverlayButton
@@ -1654,12 +1979,124 @@ export function PersonaModal({
       <ImagePreviewModal
         src={previewSrc}
         meta={previewMetaOverride ?? resolvePreviewMeta(previewSrc, previewKind)}
+        enhanceTarget={activePersonaEnhanceTarget}
+        enhanceTargetOptions={ENHANCE_TARGET_OPTIONS}
+        onEnhanceTargetChange={(nextTarget) =>
+          setLookEnhanceTarget(nextTarget as LookEnhanceTarget)
+        }
+        actionBusy={
+          previewTarget
+            ? (() => {
+                const previewKey =
+                  previewTarget.packIndex === null
+                    ? `draft:${previewTarget.kind}`
+                    : `${previewTarget.packIndex}:${previewTarget.kind}`;
+                return (
+                  enhancingLookImageKey === previewKey ||
+                  regeneratingLookImageKey === previewKey
+                );
+              })()
+            : false
+        }
+        onEnhance={
+          previewTarget
+            ? (targetOverride) =>
+                handleEnhanceRequest(
+                  previewTarget.packIndex,
+                  previewTarget.kind,
+                  previewTarget.sourceUrl,
+                  targetOverride,
+                )
+            : undefined
+        }
+        onRegenerate={
+          previewTarget
+            ? (promptOverride) =>
+                onRegenerateLookImage(
+                  previewTarget.packIndex,
+                  previewTarget.kind,
+                  previewTarget.sourceUrl,
+                  promptOverride,
+                )
+            : undefined
+        }
         onClose={() => {
           setPreviewSrc(null);
           setPreviewKind(null);
           setPreviewMetaOverride(undefined);
+          setPreviewTarget(null);
         }}
       />
+      {promptEditDialog ? (
+        <div
+          className="prompt-edit-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Перегенерация с правкой prompt"
+          onClick={closePromptEditDialog}
+        >
+          <div
+            className="prompt-edit-dialog"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="prompt-edit-header">
+              <h4>Перегенерация с правкой prompt</h4>
+              <button
+                type="button"
+                className="icon-btn mini"
+                onClick={closePromptEditDialog}
+                disabled={promptEditBusy}
+                aria-label="Закрыть"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <p className="prompt-edit-meta">
+              Пакет #{promptEditDialog.packIndex + 1} · {promptEditKindLabel[promptEditDialog.kind]}
+            </p>
+            <textarea
+              ref={promptEditTextareaRef}
+              className="prompt-edit-textarea"
+              value={promptEditDialog.prompt}
+              onChange={(event) =>
+                setPromptEditDialog((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        prompt: event.target.value,
+                      }
+                    : prev,
+                )
+              }
+              onKeyDown={(event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                  event.preventDefault();
+                  submitPromptEditDialog();
+                }
+              }}
+              placeholder="Введите prompt для перегенерации"
+              rows={10}
+            />
+            <div className="prompt-edit-actions">
+              <button
+                type="button"
+                onClick={closePromptEditDialog}
+                disabled={promptEditBusy}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={submitPromptEditDialog}
+                disabled={promptEditBusy}
+              >
+                {promptEditBusy ? "Перегенерирую..." : "Перегенерировать"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

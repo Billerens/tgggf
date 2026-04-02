@@ -9,6 +9,7 @@ import type {
   Persona,
   PersonaRuntimeState,
 } from "../types";
+import type { LookEnhanceTarget } from "../ui/types";
 import type { PersonaControlPayload } from "../personaDynamics";
 import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
@@ -27,6 +28,20 @@ interface ChatPaneProps {
   memoryCount: number;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
+  imageActionBusy: boolean;
+  onEnhanceImage: (payload: {
+    messageId: string;
+    sourceUrl: string;
+    meta?: ImageGenerationMeta;
+  }, targetOverride?: LookEnhanceTarget) => void;
+  onRegenerateImage: (
+    payload: {
+      messageId: string;
+      sourceUrl: string;
+      meta?: ImageGenerationMeta;
+    },
+    promptOverride?: string,
+  ) => void;
   onDeleteChat: () => void;
   onSubmitMessage: (event: FormEvent) => void;
   onOpenSidebar: () => void;
@@ -136,6 +151,9 @@ export function ChatPane({
   memoryCount,
   showSystemImageBlock,
   showStatusChangeDetails,
+  imageActionBusy,
+  onEnhanceImage,
+  onRegenerateImage,
   onDeleteChat,
   onSubmitMessage,
   onOpenSidebar,
@@ -143,6 +161,11 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
+  const [previewTarget, setPreviewTarget] = useState<{
+    messageId: string;
+    sourceUrl: string;
+    sourceIndex: number;
+  } | null>(null);
   const [activePersonaAvatarSrc, setActivePersonaAvatarSrc] = useState("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -178,6 +201,36 @@ export function ChatPane({
     if (!node) return;
     node.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
+
+  useEffect(() => {
+    if (!previewTarget || !previewSrc) return;
+    const message = messages.find((candidate) => candidate.id === previewTarget.messageId);
+    if (!message) return;
+    const imageUrls = message.imageUrls ?? [];
+    if (imageUrls.length === 0) return;
+
+    const preferredByIndex = imageUrls[previewTarget.sourceIndex] ?? "";
+    const preferredBySource = imageUrls.includes(previewTarget.sourceUrl)
+      ? previewTarget.sourceUrl
+      : "";
+    const nextSource =
+      preferredByIndex || preferredBySource || imageUrls[0] || previewSrc;
+
+    if (!nextSource || nextSource === previewSrc) {
+      return;
+    }
+
+    setPreviewSrc(nextSource);
+    setPreviewMeta(imageMetaByUrl[nextSource]);
+    setPreviewTarget((prev) =>
+      prev
+        ? {
+            ...prev,
+            sourceUrl: nextSource,
+          }
+        : prev,
+    );
+  }, [messages, imageMetaByUrl, previewTarget, previewSrc]);
 
   const relationshipBadge =
     activePersonaState
@@ -392,7 +445,13 @@ export function ChatPane({
                       className="bubble-image-btn"
                       onClick={() => {
                         setPreviewSrc(url);
-                        setPreviewMeta(imageMetaByUrl[url]);
+                        const meta = imageMetaByUrl[url];
+                        setPreviewMeta(meta);
+                        setPreviewTarget({
+                          messageId: msg.id,
+                          sourceUrl: url,
+                          sourceIndex: index,
+                        });
                       }}
                     >
                       <img src={url} alt={`generated-${index + 1}`} loading="lazy" />
@@ -445,9 +504,39 @@ export function ChatPane({
       <ImagePreviewModal
         src={previewSrc}
         meta={previewMeta}
+        actionBusy={imageActionBusy}
+        onEnhance={
+          previewTarget
+            ? (targetOverride) => {
+                onEnhanceImage(
+                  {
+                    messageId: previewTarget.messageId,
+                    sourceUrl: previewTarget.sourceUrl,
+                    meta: previewMeta,
+                  },
+                  targetOverride,
+                );
+              }
+            : undefined
+        }
+        onRegenerate={
+          previewTarget
+            ? (promptOverride) => {
+                onRegenerateImage(
+                  {
+                    messageId: previewTarget.messageId,
+                    sourceUrl: previewTarget.sourceUrl,
+                    meta: previewMeta,
+                  },
+                  promptOverride,
+                );
+              }
+            : undefined
+        }
         onClose={() => {
           setPreviewSrc(null);
           setPreviewMeta(undefined);
+          setPreviewTarget(null);
         }}
       />
     </main>

@@ -11,10 +11,11 @@ import {
   generateComfyImages,
   listComfyCheckpoints,
   readComfyImageGenerationMeta,
+  type ComfyGenerationItem,
   type ComfyImageGenerationMeta,
 } from "./comfy";
 import { dbApi } from "./db";
-import { localizeImageUrls } from "./imageStorage";
+import { localizeImageUrlOrThrow, localizeImageUrls } from "./imageStorage";
 import { useAppStore } from "./store";
 import { ChatPane } from "./components/ChatPane";
 import { ChatDetailsModal } from "./components/ChatDetailsModal";
@@ -24,7 +25,12 @@ import { GenerationPane } from "./components/GenerationPane";
 import { PersonaModal } from "./components/PersonaModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
-import type { GeneratorSession, Persona } from "./types";
+import type {
+  AppSettings,
+  GeneratorSession,
+  Persona,
+  PersonaLookPromptCache,
+} from "./types";
 import {
   createEmptyPersonaDraft,
   type LookDetailLevel,
@@ -39,6 +45,26 @@ type PersonaLookPromptBundle = Awaited<
 >;
 type PwaInstallStatus = "installed" | "available" | "unavailable";
 type LookMetaKind = "avatar" | "fullbody" | "side" | "back";
+type ChatImageActionContext = {
+  messageId: string;
+  sourceUrl: string;
+  meta?: ComfyImageGenerationMeta;
+};
+type GeneratorImageActionContext = {
+  sessionId: string;
+  sourceUrl: string;
+  meta?: ComfyImageGenerationMeta;
+};
+type SharedImageEnhanceReview = {
+  context: ChatImageActionContext | GeneratorImageActionContext;
+  beforeUrl: string;
+  afterUrl: string;
+  afterMeta: ComfyImageGenerationMeta;
+  target: LookEnhanceTarget;
+};
+type ComfyDetailTarget = NonNullable<
+  NonNullable<ComfyGenerationItem["detailing"]>["targets"]
+>[number];
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -51,6 +77,45 @@ function stableSeedFromText(value: string) {
     hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
   }
   return hash || 1;
+}
+
+function resolveLookPromptModel(
+  settings: Pick<AppSettings, "imagePromptModel" | "model">,
+) {
+  const imagePromptModel = settings.imagePromptModel.trim();
+  if (imagePromptModel) return imagePromptModel;
+  return settings.model.trim();
+}
+
+function normalizeAppearanceFragment(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function buildLookPromptCacheFingerprint(appearance: Persona["appearance"]) {
+  const serialized = [
+    `face=${normalizeAppearanceFragment(appearance.faceDescription)}`,
+    `height=${normalizeAppearanceFragment(appearance.height)}`,
+    `eyes=${normalizeAppearanceFragment(appearance.eyes)}`,
+    `lips=${normalizeAppearanceFragment(appearance.lips)}`,
+    `hair=${normalizeAppearanceFragment(appearance.hair)}`,
+    `age=${normalizeAppearanceFragment(appearance.ageType)}`,
+    `body=${normalizeAppearanceFragment(appearance.bodyType)}`,
+    `markers=${normalizeAppearanceFragment(appearance.markers)}`,
+    `accessories=${normalizeAppearanceFragment(appearance.accessories)}`,
+    `clothing=${normalizeAppearanceFragment(appearance.clothingStyle)}`,
+    `skin=${normalizeAppearanceFragment(appearance.skin)}`,
+  ].join("|");
+  return stableSeedFromText(serialized);
+}
+
+function toLookPromptBundle(
+  cache: PersonaLookPromptCache,
+): PersonaLookPromptBundle {
+  return {
+    avatarPrompt: cache.avatarPrompt,
+    fullBodyPrompt: cache.fullBodyPrompt,
+    detailPrompts: cache.detailPrompts,
+  };
 }
 
 function waitMs(ms: number) {
@@ -132,6 +197,39 @@ async function pickPreferredEnhancedUrl(
   return ranked[0]?.url ?? pool[0];
 }
 
+async function readImageSize(url: string, timeoutMs = 2500) {
+  return new Promise<{ width: number; height: number }>((resolve) => {
+    const image = new Image();
+    let settled = false;
+    const finish = (size: { width: number; height: number }) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      image.onload = null;
+      image.onerror = null;
+      resolve(size);
+    };
+    const timeoutId = window.setTimeout(
+      () => finish({ width: 1024, height: 1024 }),
+      timeoutMs,
+    );
+    image.onload = () =>
+      finish({
+        width: Math.max(1, image.naturalWidth),
+        height: Math.max(1, image.naturalHeight),
+      });
+    image.onerror = () => finish({ width: 1024, height: 1024 });
+    image.decoding = "async";
+    image.src = url;
+  });
+}
+
+function normalizeComfyDimension(value: number, fallback: number) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  const rounded = Math.round(value / 64) * 64;
+  return Math.max(512, Math.min(1536, rounded || fallback));
+}
+
 const LOOK_META_SLOT_KEY: Record<LookMetaKind, string> = {
   avatar: "__slot__:avatar",
   fullbody: "__slot__:fullbody",
@@ -181,8 +279,12 @@ function synchronizeLookMetaWithUrls(
 
 function mapEnhanceTargetToDetailTargets(
   target: LookEnhanceTarget,
-): Array<"face" | "eyes" | "nose" | "lips" | "hands"> {
-  if (target === "all") return ["face", "eyes", "nose", "lips", "hands"];
+): ComfyDetailTarget[] {
+  if (target === "all") {
+    return ["face", "eyes", "nose", "lips", "hands", "nipples", "vagina"];
+  }
+  if (target === "chest") return ["nipples"];
+  if (target === "vagina") return ["vagina"];
   return [target];
 }
 
@@ -216,6 +318,20 @@ function parseImageAssetId(value: string) {
   return normalized.slice("idb://".length).trim();
 }
 
+async function resolveImageSource(source: string, imageIdHint?: string) {
+  const normalized = source.trim();
+  if (!normalized) return "";
+  const hintedId = (imageIdHint ?? "").trim();
+  if (hintedId) {
+    const hintedAsset = await dbApi.getImageAsset(hintedId);
+    if (hintedAsset?.dataUrl) return hintedAsset.dataUrl;
+  }
+  const parsedId = parseImageAssetId(normalized);
+  if (!parsedId) return normalized;
+  const asset = await dbApi.getImageAsset(parsedId);
+  return asset?.dataUrl ?? "";
+}
+
 export default function App() {
   const [enhanceReview, setEnhanceReview] = useState<{
     packIndex: number | null;
@@ -227,6 +343,8 @@ export default function App() {
     afterMeta: ComfyImageGenerationMeta;
     afterImageId: string;
   } | null>(null);
+  const [sharedEnhanceReview, setSharedEnhanceReview] =
+    useState<SharedImageEnhanceReview | null>(null);
 
   const {
     personas,
@@ -306,6 +424,7 @@ export default function App() {
   const [generationCompletedCount, setGenerationCompletedCount] = useState(0);
   const [generationPendingImageCount, setGenerationPendingImageCount] =
     useState(0);
+  const [imageActionBusy, setImageActionBusy] = useState(false);
   const [generationSessions, setGenerationSessions] = useState<
     GeneratorSession[]
   >([]);
@@ -321,6 +440,8 @@ export default function App() {
   const lookEnhanceAbortRef = useRef<AbortController | null>(null);
   const lookRegenerateRunRef = useRef(0);
   const lookRegenerateAbortRef = useRef<AbortController | null>(null);
+  const imageActionRunRef = useRef(0);
+  const imageActionAbortRef = useRef<AbortController | null>(null);
   const lookSessionAssetIdsRef = useRef<Set<string>>(new Set());
   const lookPromptBundleCacheRef = useRef<{
     key: string;
@@ -328,22 +449,24 @@ export default function App() {
   } | null>(null);
 
   const getCachedLookPromptBundle = async () => {
-    const cacheKey = JSON.stringify({
-      lmBaseUrl: settings.lmBaseUrl,
-      model: settings.model,
-      temperature: settings.temperature,
-      lmAuth: settings.lmAuth,
-      persona: {
-        name: personaDraft.name,
-        personalityPrompt: personaDraft.personalityPrompt,
-        appearance: personaDraft.appearance,
-        stylePrompt: personaDraft.stylePrompt,
-        advanced: personaDraft.advanced,
-      },
-    });
+    const cacheKey = buildLookPromptCacheFingerprint(personaDraft.appearance);
+    const persistedCache = personaDraft.lookPromptCache;
+    const shouldKeepLockedCache = Boolean(persistedCache?.locked);
+    const runtimeCacheKey = shouldKeepLockedCache
+      ? `locked:${persistedCache?.fingerprint ?? cacheKey}`
+      : `appearance:${cacheKey}`;
+    const promptModel = resolveLookPromptModel(settings);
     const cached = lookPromptBundleCacheRef.current;
-    if (cached?.key === cacheKey) {
+    if (cached?.key === runtimeCacheKey) {
       return cached.bundle;
+    }
+    if (
+      persistedCache &&
+      (persistedCache.locked || persistedCache.fingerprint === cacheKey)
+    ) {
+      const bundle = toLookPromptBundle(persistedCache);
+      lookPromptBundleCacheRef.current = { key: runtimeCacheKey, bundle };
+      return bundle;
     }
     const bundle = await generatePersonaLookPrompts(settings, {
       name: personaDraft.name,
@@ -352,7 +475,34 @@ export default function App() {
       stylePrompt: personaDraft.stylePrompt,
       advanced: personaDraft.advanced,
     });
-    lookPromptBundleCacheRef.current = { key: cacheKey, bundle };
+    lookPromptBundleCacheRef.current = {
+      key: `appearance:${cacheKey}`,
+      bundle,
+    };
+    const nowIso = new Date().toISOString();
+    setPersonaDraft((prev) => {
+      if (prev.lookPromptCache?.locked) {
+        return prev;
+      }
+      const nextFingerprint = buildLookPromptCacheFingerprint(prev.appearance);
+      if (nextFingerprint !== cacheKey) {
+        return prev;
+      }
+      return {
+        ...prev,
+        lookPromptCache: {
+          fingerprint: cacheKey,
+          locked: prev.lookPromptCache?.locked ?? false,
+          model: promptModel,
+          generatedAt: nowIso,
+          avatarPrompt: bundle.avatarPrompt,
+          fullBodyPrompt: bundle.fullBodyPrompt,
+          detailPrompts: {
+            ...bundle.detailPrompts,
+          },
+        },
+      };
+    });
     return bundle;
   };
 
@@ -509,6 +659,15 @@ export default function App() {
     }
     return next;
   }, [generationSession]);
+  const chatImageMetaByUrl = useMemo(
+    () =>
+      Object.fromEntries(
+        messages.flatMap((message) =>
+          Object.entries(message.imageMetaByUrl ?? {}),
+        ),
+      ) as Record<string, ComfyImageGenerationMeta>,
+    [messages],
+  );
 
   useEffect(() => {
     if (!generationPersonaId && personas.length > 0) {
@@ -859,6 +1018,7 @@ export default function App() {
       fullBodySideImageId,
       fullBodyBackImageId,
       imageMetaByUrl: syncedLookMeta,
+      lookPromptCache: persona.lookPromptCache,
     });
     setShowPersonaModal(true);
     setPersonaModalTab("editor");
@@ -1085,11 +1245,11 @@ export default function App() {
         };
         const fullBodyPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
           "head-to-toe framing:1.3",
-          "whole person in frame:1.3",
+          "whole person framing:1.3",
           "long shot",
           "one person:1.3",
           "neutral standing pose",
-          "clean background",
+          "clean white background",
           "no environment",
         ]);
         const fullBodyUrls = await generateComfyImages(
@@ -1174,7 +1334,7 @@ export default function App() {
             "do not change gender",
             "do not remove clothes",
             "head-to-toe framing:1.3",
-            "whole person in frame:1.3",
+            "whole person framing:1.3",
             "long shot",
             "one person:1.3",
             "strict side profile:1.4",
@@ -1185,9 +1345,8 @@ export default function App() {
             "no frontal pose",
             "no back pose",
             "profile silhouette",
-            "camera at eye level",
             "orthographic side framing",
-            "clean background",
+            "clean white background",
             "no environment",
           ]);
           const sideUrls = await generateComfyImages(
@@ -1265,7 +1424,7 @@ export default function App() {
             "do not change gender",
             "do not remove clothes",
             "head-to-toe framing:1.3",
-            "whole person in frame:1.3",
+            "whole person framing:1.3",
             "long shot",
             "one person:1.3",
             "strict back view:1.4",
@@ -1276,9 +1435,8 @@ export default function App() {
             "back of head visible",
             "no frontal pose",
             "no side pose",
-            "camera at eye level",
-            "orthographic rear framing",
-            "clean background",
+            "orthographic rear framing:1.4",
+            "clean white background",
             "no environment",
           ]);
           const backUrls = await generateComfyImages(
@@ -1452,16 +1610,17 @@ export default function App() {
   };
 
   const regenerateLookImage = async (
-    packIndex: number,
+    packIndex: number | null,
     kind: "avatar" | "fullbody" | "side" | "back",
     imageUrl: string,
+    promptOverride?: string,
   ) => {
     const normalizedImageUrl = imageUrl.trim();
     if (!normalizedImageUrl) return;
-    const pack = generatedLookPacks[packIndex];
-    if (!pack || pack.status !== "ready") return;
+    const pack = packIndex === null ? null : generatedLookPacks[packIndex];
+    if (packIndex !== null && (!pack || pack.status !== "ready")) return;
 
-    const key = `${packIndex}:${kind}`;
+    const key = packIndex === null ? `draft:${kind}` : `${packIndex}:${kind}`;
     if (lookGenerationLoading) return;
     if (enhancingLookImageKey) return;
     if (regeneratingLookImageKey && regeneratingLookImageKey !== key) return;
@@ -1483,6 +1642,22 @@ export default function App() {
 
     const patchPack = (patch: Partial<PersonaLookPack>) => {
       if (lookRegenerateRunRef.current !== runId) return;
+      if (packIndex === null) {
+        setPersonaDraft((prev) => ({
+          ...prev,
+          avatarUrl: patch.avatarUrl ?? prev.avatarUrl,
+          fullBodyUrl: patch.fullBodyUrl ?? prev.fullBodyUrl,
+          fullBodySideUrl: patch.fullBodySideUrl ?? prev.fullBodySideUrl,
+          fullBodyBackUrl: patch.fullBodyBackUrl ?? prev.fullBodyBackUrl,
+          avatarImageId: patch.avatarImageId ?? prev.avatarImageId,
+          fullBodyImageId: patch.fullBodyImageId ?? prev.fullBodyImageId,
+          fullBodySideImageId:
+            patch.fullBodySideImageId ?? prev.fullBodySideImageId,
+          fullBodyBackImageId:
+            patch.fullBodyBackImageId ?? prev.fullBodyBackImageId,
+        }));
+        return;
+      }
       setGeneratedLookPacks((prev) =>
         prev.map((candidate, index) =>
           index === packIndex ? { ...candidate, ...patch } : candidate,
@@ -1516,27 +1691,42 @@ export default function App() {
             ? resolveDetailLevel("back")
             : resolveDetailLevel("front");
 
-      const fullBodyReference = pack.fullBodyUrl.trim();
-      if (
-        (kind === "avatar" || kind === "side" || kind === "back") &&
-        !fullBodyReference
-      ) {
-        throw new Error(
-          "Для перегенерации avatar/side/back нужен fullbody в пакете.",
-        );
+      const rawFullBodyReference =
+        packIndex === null
+          ? personaDraft.fullBodyUrl.trim()
+          : (pack?.fullBodyUrl.trim() ?? "");
+      const fullBodyReference = await resolveImageSource(
+        rawFullBodyReference,
+        packIndex === null
+          ? personaDraft.fullBodyImageId
+          : pack?.fullBodyImageId,
+      );
+      const resolvedSourceImage = await resolveImageSource(normalizedImageUrl);
+      const avatarReference = fullBodyReference || resolvedSourceImage;
+      if ((kind === "side" || kind === "back") && !fullBodyReference) {
+        throw new Error("Для перегенерации side/back нужен fullbody в пакете.");
       }
 
       const currentSlotUrl =
-        kind === "avatar"
-          ? pack.avatarUrl
-          : kind === "fullbody"
-            ? pack.fullBodyUrl
-            : kind === "side"
-              ? pack.fullBodySideUrl
-              : pack.fullBodyBackUrl;
+        packIndex === null
+          ? kind === "avatar"
+            ? personaDraft.avatarUrl
+            : kind === "fullbody"
+              ? personaDraft.fullBodyUrl
+              : kind === "side"
+                ? personaDraft.fullBodySideUrl
+                : personaDraft.fullBodyBackUrl
+          : kind === "avatar"
+            ? (pack?.avatarUrl ?? "")
+            : kind === "fullbody"
+              ? (pack?.fullBodyUrl ?? "")
+              : kind === "side"
+                ? (pack?.fullBodySideUrl ?? "")
+                : (pack?.fullBodyBackUrl ?? "");
       const sourceMeta =
         lookImageMetaByUrl[currentSlotUrl] ??
         lookImageMetaByUrl[normalizedImageUrl] ??
+        lookImageMetaByUrl[resolvedSourceImage] ??
         lookImageMetaByUrl[LOOK_META_SLOT_KEY[kind]] ??
         null;
       const sourceSeed =
@@ -1572,8 +1762,8 @@ export default function App() {
                 "preserve clothing design and colors",
                 "do not change gender",
                 "do not remove clothes",
-                "head-to-toe framing",
-                "whole person in frame",
+                "head-to-toe framing:1.4",
+                "whole person framing:1.4",
                 "long shot",
                 "one person",
                 "strict side profile",
@@ -1584,9 +1774,8 @@ export default function App() {
                 "no frontal pose",
                 "no back pose",
                 "profile silhouette",
-                "camera at eye level",
-                "orthographic side framing",
-                "clean background",
+                "orthographic side framing:1.4",
+                "clean white background",
                 "no environment",
               ])
             : kind === "back"
@@ -1599,8 +1788,8 @@ export default function App() {
                   "preserve clothing design and colors",
                   "do not change gender",
                   "do not remove clothes",
-                  "head-to-toe framing",
-                  "whole person in frame",
+                  "head-to-toe framing:1.4",
+                  "whole person framing:1.4",
                   "long shot",
                   "one person",
                   "strict back view",
@@ -1611,24 +1800,24 @@ export default function App() {
                   "back of head visible",
                   "no frontal pose",
                   "no side pose",
-                  "camera at eye level",
-                  "orthographic rear framing",
-                  "clean background",
+                  "orthographic rear framing:1.4",
+                  "clean white background",
                   "no environment",
                 ])
               : mergePromptTags(promptBundle.fullBodyPrompt, [
-                  "head-to-toe framing",
-                  "whole person in frame",
+                  "head-to-toe framing:1.4",
+                  "whole person framing:1.4",
                   "long shot",
-                  "one person",
+                  "one person:1.4",
                   "neutral standing pose",
-                  "clean background",
+                  "clean white background",
                   "no environment",
                 ]);
       const prompt =
-        kind === "side" || kind === "back"
+        promptOverride?.trim() ||
+        (kind === "side" || kind === "back"
           ? fallbackPrompt
-          : sourceMeta?.prompt?.trim() || fallbackPrompt;
+          : sourceMeta?.prompt?.trim() || fallbackPrompt);
       const checkpointName = personaDraft.imageCheckpoint || undefined;
 
       const detailConfig = detailLevelForKind
@@ -1648,7 +1837,7 @@ export default function App() {
               height: avatarSize,
               seed: nextSeed,
               checkpointName,
-              styleReferenceImage: fullBodyReference,
+              styleReferenceImage: avatarReference || undefined,
               styleStrength: 1,
               compositionStrength: 0,
               saveComfyOutputs: settings.saveComfyOutputs,
@@ -1800,6 +1989,313 @@ export default function App() {
     setRegeneratingLookImageKey(null);
   };
 
+  const replaceChatMessageImage = async (
+    context: ChatImageActionContext,
+    nextUrl: string,
+    nextMeta: ComfyImageGenerationMeta,
+  ) => {
+    const currentState = useAppStore.getState();
+    const target = currentState.messages.find(
+      (message) => message.id === context.messageId,
+    );
+    if (!target) return;
+    const sourceUrl = context.sourceUrl.trim();
+    if (!sourceUrl) return;
+    const nextContent = target.content.includes(sourceUrl)
+      ? target.content.split(sourceUrl).join(nextUrl)
+      : target.content;
+    const nextImageUrls = (target.imageUrls ?? []).map((url) =>
+      url === sourceUrl ? nextUrl : url,
+    );
+    const updated = {
+      ...target,
+      content: nextContent,
+      imageUrls: nextImageUrls,
+      imageMetaByUrl: {
+        ...(target.imageMetaByUrl ?? {}),
+        [nextUrl]: nextMeta,
+      },
+    };
+    await dbApi.saveMessage(updated);
+    useAppStore.setState((prev) => ({
+      messages: prev.messages.map((message) =>
+        message.id === updated.id ? updated : message,
+      ),
+    }));
+  };
+
+  const replaceGeneratorSessionImage = async (
+    context: GeneratorImageActionContext,
+    nextUrl: string,
+    nextMeta: ComfyImageGenerationMeta,
+  ) => {
+    const sourceUrl = context.sourceUrl.trim();
+    if (!sourceUrl) return;
+    const now = new Date().toISOString();
+    let persisted: GeneratorSession | null = null;
+    setGenerationSessions((prev) =>
+      prev.map((session) => {
+        if (session.id !== context.sessionId) return session;
+        let touched = false;
+        const nextEntries = session.entries.map((entry) => {
+          const nextImageUrls = (entry.imageUrls ?? []).map((url) =>
+            url === sourceUrl ? nextUrl : url,
+          );
+          const changed = nextImageUrls.some(
+            (url, index) => url !== (entry.imageUrls ?? [])[index],
+          );
+          if (!changed) return entry;
+          touched = true;
+          return {
+            ...entry,
+            imageUrls: nextImageUrls,
+            imageMetaByUrl: {
+              ...(entry.imageMetaByUrl ?? {}),
+              [nextUrl]: nextMeta,
+            },
+          };
+        });
+        if (!touched) return session;
+        persisted = {
+          ...session,
+          entries: nextEntries,
+          updatedAt: now,
+        };
+        return persisted;
+      }),
+    );
+    if (persisted) {
+      await dbApi.saveGeneratorSession(persisted);
+    }
+  };
+
+  const applySharedImageReplacement = async (
+    context: ChatImageActionContext | GeneratorImageActionContext,
+    nextUrl: string,
+    nextMeta: ComfyImageGenerationMeta,
+  ) => {
+    if ("messageId" in context) {
+      await replaceChatMessageImage(context, nextUrl, nextMeta);
+      return;
+    }
+    await replaceGeneratorSessionImage(context, nextUrl, nextMeta);
+  };
+
+  const runSharedImageAction = async (
+    context: ChatImageActionContext | GeneratorImageActionContext,
+    mode: "enhance" | "regenerate",
+    targetOverride: LookEnhanceTarget = "all",
+    promptOverride?: string,
+  ) => {
+    const sourceUrl = context.sourceUrl.trim();
+    if (!sourceUrl) return;
+    if (imageActionBusy) return;
+
+    const runId = imageActionRunRef.current + 1;
+    imageActionRunRef.current = runId;
+    imageActionAbortRef.current?.abort();
+    const abortController = new AbortController();
+    imageActionAbortRef.current = abortController;
+    const ensureActive = () => {
+      if (
+        imageActionRunRef.current !== runId ||
+        abortController.signal.aborted
+      ) {
+        throw new DOMException("Shared image action aborted", "AbortError");
+      }
+    };
+
+    setImageActionBusy(true);
+    if (mode === "enhance") {
+      setSharedEnhanceReview(null);
+    }
+    try {
+      const sourceMeta = context.meta ?? chatImageMetaByUrl[sourceUrl] ?? null;
+      const sourceImage = await resolveImageSource(sourceUrl);
+      ensureActive();
+      const localizedSourceList = await localizeImageUrls([
+        sourceImage || sourceUrl,
+      ]);
+      ensureActive();
+      const sourceForGeneration =
+        localizedSourceList[0] || sourceImage || sourceUrl;
+      const sourceSeed =
+        typeof sourceMeta?.seed === "number" && Number.isFinite(sourceMeta.seed)
+          ? sourceMeta.seed
+          : stableSeedFromText(sourceForGeneration);
+      const nextSeed = stableSeedFromText(
+        `${sourceSeed}:${mode}:${Date.now()}`,
+      );
+      const fallbackPrompt =
+        sourceMeta?.prompt?.trim() ||
+        "one person, neutral standing pose, clean background, high quality";
+      const basePrompt = promptOverride?.trim() || fallbackPrompt;
+      const targetTags: Record<LookEnhanceTarget, string[]> = {
+        all: ["full body details", "balanced details"],
+        face: ["focus on face", "facial details"],
+        eyes: ["focus on eyes", "sharp eyes"],
+        nose: ["focus on nose", "clean nose shape"],
+        lips: ["focus on lips", "lip details"],
+        hands: ["focus on hands", "correct fingers", "natural hand anatomy"],
+        chest: ["focus on chest", "natural breast details"],
+        vagina: ["focus on intimate area", "natural anatomy details"],
+      };
+      const size = await readImageSize(sourceForGeneration);
+      ensureActive();
+      const width = normalizeComfyDimension(size.width, 1024);
+      const height = normalizeComfyDimension(size.height, 1024);
+      const checkpointName =
+        sourceMeta?.model?.trim() ||
+        activePersona?.imageCheckpoint ||
+        undefined;
+      let prompt = "";
+      let nextSource = "";
+      let effectiveSeed = nextSeed;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const attemptSeed = stableSeedFromText(
+          `${nextSeed}:${targetOverride}:attempt:${attempt}:${Date.now()}`,
+        );
+        const attemptPrompt =
+          mode === "enhance"
+            ? mergePromptTags(basePrompt, [
+                "same subject",
+                "preserve composition",
+                "sharper details",
+                "high quality",
+                ...targetTags[targetOverride],
+                ...(attempt > 0 ? ["noticeable improvement"] : []),
+              ])
+            : mergePromptTags(basePrompt, [
+                "same subject",
+                "new variation",
+                "different framing details",
+                "high quality",
+                "clean background",
+                ...(attempt > 0 ? ["strong variation"] : []),
+              ]);
+        const enhanceDetailing =
+          mode === "enhance"
+            ? {
+                enabled: true as const,
+                level: "medium" as const,
+                targets: mapEnhanceTargetToDetailTargets(targetOverride),
+              }
+            : undefined;
+        const generationFlow = mode === "regenerate" ? "base" : "i2i";
+        const styleStrength = mode === "enhance" ? 1 : 0.78;
+        const compositionStrength = mode === "enhance" ? 0.95 : 0;
+        const generatedUrls = await generateComfyImages(
+          [
+            {
+              flow: generationFlow,
+              prompt: attemptPrompt,
+              width,
+              height,
+              seed: attemptSeed,
+              checkpointName,
+              styleReferenceImage: sourceForGeneration,
+              styleStrength,
+              compositionStrength,
+              forceHiResFix: true,
+              enableUpscaler: true,
+              upscaleFactor: 1.4,
+              saveComfyOutputs: settings.saveComfyOutputs,
+              ...(enhanceDetailing ? { detailing: enhanceDetailing } : {}),
+            },
+          ],
+          settings.comfyBaseUrl,
+          settings.comfyAuth,
+          undefined,
+          abortController.signal,
+        );
+        ensureActive();
+        const localized = await localizeImageUrls(generatedUrls);
+        ensureActive();
+        const candidate =
+          mode === "enhance"
+            ? await pickPreferredEnhancedUrl(localized, sourceForGeneration)
+            : (localized.find(
+                (value) =>
+                  value.trim() !== sourceForGeneration.trim() &&
+                  value.trim() !== sourceUrl,
+              ) ??
+              localized[0] ??
+              "");
+        if (!candidate) continue;
+        prompt = attemptPrompt;
+        effectiveSeed = attemptSeed;
+        nextSource = candidate;
+        if (
+          candidate.trim() !== sourceForGeneration.trim() &&
+          candidate.trim() !== sourceUrl
+        ) {
+          break;
+        }
+      }
+      if (
+        !nextSource ||
+        nextSource.trim() === sourceForGeneration.trim() ||
+        nextSource.trim() === sourceUrl
+      ) {
+        throw new Error(
+          "Перегенерация вернула слишком похожий кадр. Попробуйте изменить prompt.",
+        );
+      }
+      const localizedNextSource = await localizeImageUrlOrThrow(nextSource);
+      ensureActive();
+      const nextMeta: ComfyImageGenerationMeta = {
+        seed: effectiveSeed,
+        prompt,
+        model: checkpointName,
+        flow: mode === "regenerate" ? "base" : "i2i",
+      };
+      await dbApi.saveImageAsset({
+        id: crypto.randomUUID(),
+        dataUrl: localizedNextSource,
+        meta: nextMeta,
+        createdAt: new Date().toISOString(),
+      });
+      if (mode === "enhance") {
+        setSharedEnhanceReview({
+          context,
+          beforeUrl: sourceUrl,
+          afterUrl: localizedNextSource,
+          afterMeta: nextMeta,
+          target: targetOverride,
+        });
+      } else {
+        await applySharedImageReplacement(
+          context,
+          localizedNextSource,
+          nextMeta,
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        useAppStore.setState({ error: (error as Error).message });
+      }
+    } finally {
+      if (imageActionRunRef.current === runId) {
+        setImageActionBusy(false);
+        imageActionAbortRef.current = null;
+      }
+    }
+  };
+
+  const enhanceSharedImage = (
+    context: ChatImageActionContext | GeneratorImageActionContext,
+    targetOverride: LookEnhanceTarget = "all",
+  ) => {
+    void runSharedImageAction(context, "enhance", targetOverride);
+  };
+
+  const regenerateSharedImage = (
+    context: ChatImageActionContext | GeneratorImageActionContext,
+    promptOverride?: string,
+  ) => {
+    void runSharedImageAction(context, "regenerate", "all", promptOverride);
+  };
+
   const enhanceLookImage = async (
     packIndex: number | null,
     kind: "avatar" | "fullbody" | "side" | "back",
@@ -1840,10 +2336,10 @@ export default function App() {
         kind === "avatar"
           ? `${promptBundle.avatarPrompt}, close-up, close face, headshot, face focus, looking at viewer`
           : kind === "side"
-            ? `head-to-toe framing, whole person in frame, side view, profile view, ${promptBundle.fullBodyPrompt}`
+            ? `head-to-toe framing:1.4, whole person framing:1.4, side view, profile view, ${promptBundle.fullBodyPrompt}`
             : kind === "back"
-              ? `head-to-toe framing, whole person in frame, back view, from behind, ${promptBundle.fullBodyPrompt}`
-              : `head-to-toe framing, whole person in frame, neutral standing pose, ${promptBundle.fullBodyPrompt}`;
+              ? `head-to-toe framing:1.4, whole person framing:1.4, back view, from behind, ${promptBundle.fullBodyPrompt}`
+              : `head-to-toe framing:1.4, whole person framing:1.4, neutral standing pose, ${promptBundle.fullBodyPrompt}`;
       const metaFromCache = lookImageMetaByUrl[imageUrl];
       const metaFromSource = metaFromCache
         ? null
@@ -1940,6 +2436,7 @@ export default function App() {
                     : effectiveDetailLevel,
                 targets: mapEnhanceTargetToDetailTargets(requestedTarget),
                 prompts: promptBundle.detailPrompts,
+                disableIntimateDetailers: true,
               },
             },
           ],
@@ -2162,6 +2659,7 @@ export default function App() {
       fullBodySideImageId: "",
       fullBodyBackImageId: "",
       imageMetaByUrl: {},
+      lookPromptCache: undefined,
     });
     setEditingPersonaId(null);
     setPersonaModalTab("editor");
@@ -2413,6 +2911,7 @@ export default function App() {
 
         {sidebarTab === "generation" ? (
           <GenerationPane
+            generationSessionId={generationSessionId}
             topic={generationTopic}
             onTopicChange={setGenerationTopic}
             isInfinite={generationInfinite}
@@ -2432,6 +2931,9 @@ export default function App() {
             generatedImageUrls={generatedImageUrls}
             imageMetaByUrl={generationImageMetaByUrl}
             pendingImageCount={generationPendingImageCount}
+            imageActionBusy={imageActionBusy}
+            onEnhanceImage={enhanceSharedImage}
+            onRegenerateImage={regenerateSharedImage}
             onStart={() => void startGeneration()}
             onStop={stopGeneration}
           />
@@ -2441,11 +2943,7 @@ export default function App() {
             activePersona={activePersona}
             activeChatId={activeChatId}
             messages={messages}
-            imageMetaByUrl={Object.fromEntries(
-              messages.flatMap((message) =>
-                Object.entries(message.imageMetaByUrl ?? {}),
-              ),
-            )}
+            imageMetaByUrl={chatImageMetaByUrl}
             messageInput={messageInput}
             setMessageInput={setMessageInput}
             isLoading={isLoading}
@@ -2453,6 +2951,9 @@ export default function App() {
             memoryCount={activeMemories.length}
             showSystemImageBlock={settings.showSystemImageBlock}
             showStatusChangeDetails={settings.showStatusChangeDetails}
+            imageActionBusy={imageActionBusy}
+            onEnhanceImage={enhanceSharedImage}
+            onRegenerateImage={regenerateSharedImage}
             onDeleteChat={() => {
               if (!activeChatId) return;
               void deleteChat(activeChatId);
@@ -2471,14 +2972,13 @@ export default function App() {
           chat={activeChat}
           persona={activePersona}
           messages={messages}
-          imageMetaByUrl={Object.fromEntries(
-            messages.flatMap((message) =>
-              Object.entries(message.imageMetaByUrl ?? {}),
-            ),
-          )}
+          imageMetaByUrl={chatImageMetaByUrl}
           memories={activeMemories}
           runtimeState={activePersonaState}
           settings={settings}
+          imageActionBusy={imageActionBusy}
+          onEnhanceImage={enhanceSharedImage}
+          onRegenerateImage={regenerateSharedImage}
           onUpdateChatStyleStrength={(chatId, value) => {
             void setChatStyleStrength(chatId, value);
           }}
@@ -2611,6 +3111,29 @@ export default function App() {
               next.kind,
               next.beforePreviewUrl || next.beforeUrl,
             );
+          }}
+        />
+        <EnhanceCompareModal
+          open={Boolean(sharedEnhanceReview) && !enhanceReview}
+          beforeUrl={sharedEnhanceReview?.beforeUrl ?? ""}
+          afterUrl={sharedEnhanceReview?.afterUrl ?? ""}
+          onClose={() => setSharedEnhanceReview(null)}
+          onKeepOld={() => setSharedEnhanceReview(null)}
+          onAccept={() => {
+            if (!sharedEnhanceReview) return;
+            const next = sharedEnhanceReview;
+            setSharedEnhanceReview(null);
+            void applySharedImageReplacement(
+              next.context,
+              next.afterUrl,
+              next.afterMeta,
+            );
+          }}
+          onRegenerate={() => {
+            if (!sharedEnhanceReview) return;
+            const next = sharedEnhanceReview;
+            setSharedEnhanceReview(null);
+            void runSharedImageAction(next.context, "enhance", next.target);
           }}
         />
       </div>

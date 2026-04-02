@@ -9,6 +9,7 @@ import type {
   PersonaMemory,
   PersonaRuntimeState,
 } from "../types";
+import type { LookEnhanceTarget } from "../ui/types";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface ChatDetailsModalProps {
@@ -20,6 +21,20 @@ interface ChatDetailsModalProps {
   memories: PersonaMemory[];
   runtimeState: PersonaRuntimeState | null;
   settings: AppSettings;
+  imageActionBusy: boolean;
+  onEnhanceImage: (payload: {
+    messageId: string;
+    sourceUrl: string;
+    meta?: ImageGenerationMeta;
+  }, targetOverride?: LookEnhanceTarget) => void;
+  onRegenerateImage: (
+    payload: {
+      messageId: string;
+      sourceUrl: string;
+      meta?: ImageGenerationMeta;
+    },
+    promptOverride?: string,
+  ) => void;
   onUpdateChatStyleStrength: (chatId: string, value: number | null) => void;
   onClose: () => void;
 }
@@ -31,6 +46,7 @@ interface ImageAttachment {
   alt: string;
   meta?: ImageGenerationMeta;
   messageId: string;
+  sourceIndex?: number;
   role: ChatMessage["role"];
   createdAt: string;
 }
@@ -49,7 +65,7 @@ function extractImageAttachments(
     const text = message.content ?? "";
     const explicitImageUrls = message.imageUrls ?? [];
 
-    for (const srcRaw of explicitImageUrls) {
+    for (const [sourceIndex, srcRaw] of explicitImageUrls.entries()) {
       const src = (srcRaw ?? "").trim();
       if (!src) continue;
       const key = `${message.id}::${src}`;
@@ -60,6 +76,7 @@ function extractImageAttachments(
         alt: "Generated image",
         meta: imageMetaByUrl[src],
         messageId: message.id,
+        sourceIndex,
         role: message.role,
         createdAt: message.createdAt,
       });
@@ -129,12 +146,16 @@ export function ChatDetailsModal({
   memories,
   runtimeState,
   settings,
+  imageActionBusy,
+  onEnhanceImage,
+  onRegenerateImage,
   onUpdateChatStyleStrength,
   onClose,
 }: ChatDetailsModalProps) {
   const [tab, setTab] = useState<DetailsTab>("attachments");
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
+  const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
   const [useGlobalStyleStrength, setUseGlobalStyleStrength] = useState(
     typeof chat?.chatStyleStrength !== "number",
   );
@@ -157,6 +178,41 @@ export function ChatDetailsModal({
         : settings.chatStyleStrength,
     );
   }, [chat?.id, chat?.chatStyleStrength, settings.chatStyleStrength]);
+
+  useEffect(() => {
+    if (!previewAttachment || !previewSrc) return;
+    const message = messages.find((candidate) => candidate.id === previewAttachment.messageId);
+    if (!message) return;
+    const imageUrls = message.imageUrls ?? [];
+    if (imageUrls.length === 0) return;
+
+    const preferredByIndex =
+      typeof previewAttachment.sourceIndex === "number" &&
+      previewAttachment.sourceIndex >= 0
+        ? imageUrls[previewAttachment.sourceIndex] ?? ""
+        : "";
+    const preferredBySource = imageUrls.includes(previewAttachment.src)
+      ? previewAttachment.src
+      : "";
+    const nextSource =
+      preferredByIndex || preferredBySource || imageUrls[0] || previewSrc;
+
+    if (!nextSource || nextSource === previewSrc) {
+      return;
+    }
+
+    setPreviewSrc(nextSource);
+    setPreviewMeta(imageMetaByUrl[nextSource]);
+    setPreviewAttachment((prev) =>
+      prev
+        ? {
+            ...prev,
+            src: nextSource,
+            meta: imageMetaByUrl[nextSource],
+          }
+        : prev,
+    );
+  }, [messages, imageMetaByUrl, previewAttachment, previewSrc]);
 
   if (!open) return null;
 
@@ -204,6 +260,7 @@ export function ChatDetailsModal({
                       onClick={() => {
                         setPreviewSrc(attachment.src);
                         setPreviewMeta(attachment.meta);
+                        setPreviewAttachment(attachment);
                       }}
                     >
                       <img src={attachment.src} alt={attachment.alt} loading="lazy" />
@@ -346,9 +403,36 @@ export function ChatDetailsModal({
       <ImagePreviewModal
         src={previewSrc}
         meta={previewMeta}
+        actionBusy={imageActionBusy}
+        onEnhance={
+          previewAttachment
+            ? (targetOverride) => {
+                onEnhanceImage({
+                  messageId: previewAttachment.messageId,
+                  sourceUrl: previewAttachment.src,
+                  meta: previewMeta,
+                }, targetOverride);
+              }
+            : undefined
+        }
+        onRegenerate={
+          previewAttachment
+            ? (promptOverride) => {
+                onRegenerateImage(
+                  {
+                    messageId: previewAttachment.messageId,
+                    sourceUrl: previewAttachment.src,
+                    meta: previewMeta,
+                  },
+                  promptOverride,
+                );
+              }
+            : undefined
+        }
         onClose={() => {
           setPreviewSrc(null);
           setPreviewMeta(undefined);
+          setPreviewAttachment(null);
         }}
       />
     </div>

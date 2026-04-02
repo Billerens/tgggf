@@ -97,3 +97,15 @@ export async function localizeImageUrls(sources: string[]) {
 
   return Array.from(new Set(localized));
 }
+
+export async function localizeImageUrlOrThrow(source: string) {
+  const value = source.trim();
+  if (!value) {
+    throw new Error("Пустой URL изображения для локализации.");
+  }
+  const dataUrl = await toLocalDataUrl(value);
+  if (!isDataUrl(dataUrl)) {
+    throw new Error("Не удалось локализовать изображение в data URL.");
+  }
+  return dataUrl;
+}

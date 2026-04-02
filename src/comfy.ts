@@ -69,13 +69,18 @@ export interface ComfyGenerationItem {
   detailing?: {
     enabled?: boolean;
     level?: "soft" | "medium" | "strong";
-    targets?: Array<"face" | "eyes" | "nose" | "lips" | "hands">;
+    targets?: Array<
+      "face" | "eyes" | "nose" | "lips" | "hands" | "nipples" | "vagina"
+    >;
     prompts?: Partial<Record<"face" | "eyes" | "nose" | "lips" | "hands", string>>;
+    disableIntimateDetailers?: boolean;
   };
 }
 
 type DetailLevel = "soft" | "medium" | "strong";
 type DetailTarget = "face" | "eyes" | "nose" | "lips" | "hands";
+type IntimateDetailTarget = "nipples" | "vagina";
+type I2IDetailerTarget = DetailTarget | IntimateDetailTarget | "penis";
 export type ComfyFlow = "base" | "i2i";
 
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
@@ -603,12 +608,31 @@ function setClipTextByExactTitle(
   }
 }
 
+function isBaseDetailTarget(value: string): value is DetailTarget {
+  return (
+    value === "face" ||
+    value === "eyes" ||
+    value === "nose" ||
+    value === "lips" ||
+    value === "hands"
+  );
+}
+
+function isIntimateDetailTarget(value: string): value is IntimateDetailTarget {
+  return value === "nipples" || value === "vagina";
+}
+
 function detectDetailerTargets(workflow: ComfyWorkflow) {
-  const targets = new Set<DetailTarget>();
+  const targets = new Set<I2IDetailerTarget>();
   for (const node of Object.values(workflow)) {
     if (node.class_type !== "FaceDetailer") continue;
     const title = node._meta?.title?.toLowerCase() ?? "";
     if (!title) continue;
+    if (title.includes("nipple") || title.includes("breast") || title.includes("chest")) {
+      targets.add("nipples");
+    }
+    if (title.includes("vagina")) targets.add("vagina");
+    if (title.includes("penis")) targets.add("penis");
     if (title.includes("hand")) targets.add("hands");
     if (title.includes("eye")) targets.add("eyes");
     if (title.includes("nose")) targets.add("nose");
@@ -633,8 +657,6 @@ function applyDetailerVramSaver(workflow: ComfyWorkflow) {
   }
 }
 
-type I2IDetailerTarget = DetailTarget | "nipples" | "vagina" | "penis";
-
 const I2I_DETAILER_CHAIN: Array<{
   target: I2IDetailerTarget;
   detailerTitle: string;
@@ -656,10 +678,6 @@ const I2I_HIRES_SWITCH_TITLE = "Hires Fix Switch";
 const I2I_UPSCALE_CLASS = "vsLinx_UpscaleByFactorWithModel";
 const I2I_UPSCALE_TITLE_TOKEN = "upscaling";
 
-function isSelectableDetailTarget(target: I2IDetailerTarget): target is DetailTarget {
-  return target === "face" || target === "eyes" || target === "nose" || target === "lips" || target === "hands";
-}
-
 function resolvePrimaryI2IUpscaleNodeId(workflow: ComfyWorkflow) {
   let fallbackNodeId: string | null = null;
   for (const [nodeId, node] of Object.entries(workflow)) {
@@ -679,7 +697,7 @@ function resolvePrimaryI2IUpscaleNodeId(workflow: ComfyWorkflow) {
 
 function rewireI2IDetailerChain(
   workflow: ComfyWorkflow,
-  enabledTargets: Set<DetailTarget>,
+  enabledTargets: Set<I2IDetailerTarget>,
   flowConfig: ComfyFlowConfig,
 ) {
   const hiresSwitchEntry = getNodeEntryByExactTitle(workflow, I2I_HIRES_SWITCH_TITLE);
@@ -721,7 +739,7 @@ function rewireI2IDetailerChain(
     const entry = getNodeEntryByExactTitle(workflow, chainNode.detailerTitle);
     if (!entry) continue;
     const [nodeId, node] = entry;
-    const enabled = isSelectableDetailTarget(chainNode.target) && enabledTargets.has(chainNode.target);
+    const enabled = enabledTargets.has(chainNode.target);
     if (node.inputs) {
       // Rewire detailers to consume the latest enabled image to avoid evaluating disabled branches.
       node.inputs.image = cloneWorkflowLink(activeImageLink);
@@ -772,7 +790,7 @@ function applyDetailing(
       setBooleanInputByExactTitle(workflow, "Nipples bypass", "bypass", true);
       setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", true);
       setBooleanInputByExactTitle(workflow, "Penis bypass", "bypass", true);
-      rewireI2IDetailerChain(workflow, new Set<DetailTarget>(), flowConfig);
+      rewireI2IDetailerChain(workflow, new Set<I2IDetailerTarget>(), flowConfig);
     }
   };
 
@@ -781,6 +799,12 @@ function applyDetailing(
     return;
   }
 
+  const shouldDisableIntimateDetailers = Boolean(
+    detailing.disableIntimateDetailers,
+  );
+  const requestedTargets = Array.isArray(detailing.targets)
+    ? detailing.targets
+    : [];
   const i2iDenoiseMap: Record<DetailLevel, { base: number; hires: number }> = {
     soft: { base: 0.62, hires: 0.22 },
     medium: { base: 0.72, hires: 0.3 },
@@ -795,11 +819,20 @@ function applyDetailing(
     medium: { face: 0.14, eyes: 0.14, nose: 0.18, lips: 0.2, hands: 0.22 },
     strong: { face: 0.18, eyes: 0.18, nose: 0.22, lips: 0.24, hands: 0.28 },
   };
+  const intimateLevelMap: Record<DetailLevel, { nipples: number; vagina: number }> = {
+    soft: { nipples: 0.12, vagina: 0.14 },
+    medium: { nipples: 0.18, vagina: 0.22 },
+    strong: { nipples: 0.24, vagina: 0.28 },
+  };
   const denoise = levelMap[detailing.level as DetailLevel];
+  const intimateDenoise = intimateLevelMap[detailing.level as DetailLevel];
   let enabledTargets =
-    detailing.targets && detailing.targets.length > 0
-      ? new Set<DetailTarget>(detailing.targets)
+    requestedTargets.length > 0
+      ? new Set<DetailTarget>(requestedTargets.filter(isBaseDetailTarget))
       : new Set<DetailTarget>(["face", "eyes", "nose", "lips", "hands"]);
+  let enabledIntimateTargets = shouldDisableIntimateDetailers
+    ? new Set<IntimateDetailTarget>()
+    : new Set<IntimateDetailTarget>(requestedTargets.filter(isIntimateDetailTarget));
 
   if (isI2I) {
     const supportedTargets = detectDetailerTargets(workflow);
@@ -807,11 +840,14 @@ function applyDetailing(
       enabledTargets = new Set(
         Array.from(enabledTargets).filter((target) => supportedTargets.has(target)),
       );
-      if (enabledTargets.size === 0) {
+      enabledIntimateTargets = new Set(
+        Array.from(enabledIntimateTargets).filter((target) => supportedTargets.has(target)),
+      );
+      if (enabledTargets.size === 0 && enabledIntimateTargets.size === 0) {
         console.warn(
           "[tg-gf][comfy][detailing] requested targets are not supported by i2i workflow detailers; disabling inpaint detailing for this run.",
           {
-            requestedTargets: detailing.targets ?? [],
+            requestedTargets,
             supportedTargets: Array.from(supportedTargets),
           },
         );
@@ -826,12 +862,16 @@ function applyDetailing(
   setEnableDetailer("Nose", enabledTargets.has("nose"));
   setEnableDetailer("Lips", enabledTargets.has("lips"));
   setEnableDetailer("Hands", enabledTargets.has("hands"));
-  setEnableDetailer("Nipples", false);
-  setEnableDetailer("Vagina", false);
+  setEnableDetailer("Nipples", enabledIntimateTargets.has("nipples"));
+  setEnableDetailer("Vagina", enabledIntimateTargets.has("vagina"));
   setEnableDetailer("Penis", false);
 
   if (isI2I) {
     const i2iDenoise = i2iDenoiseMap[detailing.level as DetailLevel];
+    const i2iEnabledTargets = new Set<I2IDetailerTarget>([
+      ...Array.from(enabledTargets),
+      ...Array.from(enabledIntimateTargets),
+    ]);
     setSliderByExactTitle(workflow, "Denoise", i2iDenoise.base);
     setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", i2iDenoise.hires);
     // Mirror "Enable * Detailer" behavior using bypass switches present in i2i_2 flow.
@@ -840,11 +880,10 @@ function applyDetailing(
     setBooleanInputByExactTitle(workflow, "Nose bypass", "bypass", !enabledTargets.has("nose"));
     setBooleanInputByExactTitle(workflow, "Lips bypass", "bypass", !enabledTargets.has("lips"));
     setBooleanInputByExactTitle(workflow, "Hands bypass", "bypass", !enabledTargets.has("hands"));
-    // Always bypass erotic detailers in app flow.
-    setBooleanInputByExactTitle(workflow, "Nipples bypass", "bypass", true);
-    setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", true);
+    setBooleanInputByExactTitle(workflow, "Nipples bypass", "bypass", !enabledIntimateTargets.has("nipples"));
+    setBooleanInputByExactTitle(workflow, "Vagina bypass", "bypass", !enabledIntimateTargets.has("vagina"));
     setBooleanInputByExactTitle(workflow, "Penis bypass", "bypass", true);
-    rewireI2IDetailerChain(workflow, enabledTargets, flowConfig);
+    rewireI2IDetailerChain(workflow, i2iEnabledTargets, flowConfig);
   }
   const minDenoise = 0.01;
   setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : minDenoise);
@@ -852,10 +891,20 @@ function applyDetailing(
   setSliderByExactTitle(workflow, "Denoise Nose", enabledTargets.has("nose") ? denoise.nose : minDenoise);
   setSliderByExactTitle(workflow, "Denoise Lips", enabledTargets.has("lips") ? denoise.lips : minDenoise);
   setSliderByExactTitle(workflow, "Denoise Hands", enabledTargets.has("hands") ? denoise.hands : minDenoise);
-
-  // Explicitly disable erotic detail passes in persona generation flow.
-  setSliderByExactTitle(workflow, "Denoise Nipples", minDenoise);
-  setSliderByExactTitle(workflow, "Denoise Vagina", minDenoise);
+  setSliderByExactTitle(
+    workflow,
+    "Denoise Nipples",
+    enabledIntimateTargets.has("nipples")
+      ? intimateDenoise.nipples
+      : minDenoise,
+  );
+  setSliderByExactTitle(
+    workflow,
+    "Denoise Vagina",
+    enabledIntimateTargets.has("vagina")
+      ? intimateDenoise.vagina
+      : minDenoise,
+  );
   setSliderByExactTitle(workflow, "Denoise Penis", minDenoise);
 
   if (enabledTargets.has("face")) {

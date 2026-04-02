@@ -5,6 +5,7 @@ import type {
   Persona,
   PersonaAdvancedProfile,
   PersonaAppearanceProfile,
+  PersonaLookPromptCache,
   PersonaRuntimeState,
 } from "./types";
 import type {
@@ -186,6 +187,23 @@ function formatAppearanceProfile(
     .map((value) => value.trim())
     .filter(Boolean);
   return parts.length > 0 ? parts.join(", ") : "Не указано.";
+}
+
+function formatLookPromptCacheInput(
+  lookPromptCache: PersonaLookPromptCache | undefined,
+) {
+  if (!lookPromptCache) return "none";
+  return [
+    `locked=${lookPromptCache.locked ? "true" : "false"}`,
+    `fingerprint=${lookPromptCache.fingerprint}`,
+    `avatarPrompt=${lookPromptCache.avatarPrompt}`,
+    `fullBodyPrompt=${lookPromptCache.fullBodyPrompt}`,
+    `detail.face=${lookPromptCache.detailPrompts.face}`,
+    `detail.eyes=${lookPromptCache.detailPrompts.eyes}`,
+    `detail.nose=${lookPromptCache.detailPrompts.nose}`,
+    `detail.lips=${lookPromptCache.detailPrompts.lips}`,
+    `detail.hands=${lookPromptCache.detailPrompts.hands}`,
+  ].join("\n");
 }
 
 export function buildSystemPrompt(
@@ -410,9 +428,9 @@ export async function requestChatCompletion(
     !personaControl &&
     Boolean(
       comfyPrompt ||
-        (comfyPrompts && comfyPrompts.length > 0) ||
-        comfyImageDescription ||
-        (comfyImageDescriptions && comfyImageDescriptions.length > 0),
+      (comfyPrompts && comfyPrompts.length > 0) ||
+      comfyImageDescription ||
+      (comfyImageDescriptions && comfyImageDescriptions.length > 0),
     );
   const fallbackContent = filteredImageOnlyResponse
     ? "Могу отправить изображение по явному запросу. Опиши, что именно нужно сгенерировать."
@@ -486,7 +504,11 @@ export async function generateThemedComfyPrompt(
   settings: AppSettings,
   persona: Pick<
     Persona,
-    "name" | "appearance" | "stylePrompt" | "personalityPrompt"
+    | "name"
+    | "appearance"
+    | "stylePrompt"
+    | "personalityPrompt"
+    | "lookPromptCache"
   >,
   topic: string,
   iteration: number,
@@ -514,6 +536,8 @@ export async function generateThemedComfyPrompt(
     "Определяй количество действующих лиц из тематики.",
     "Описывай строго одного человека (solo, single subject, one person) или нескольких если описание (тематика) этого требует.",
     "Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
+    "Если в input есть блок LookPrompt cache, используй его как identity prior: hair/face/eyes/body/outfit-теги приоритетны и помогают держать консистентность.",
+    "Из LookPrompt cache можно брать только стабильные identity/outfit детали, но не добавляй лишние детали, которых нет в теме.",
     "Все теги из <theme_tags> ОБЯЗАТЕЛЬНО должны присутствовать в <comfyui_prompt> без потери смысла.",
     "Используй уместную одежду, если тема не требует специального костюма.",
     "Добавляй композицию, свет, фон, ракурс, качество.",
@@ -526,6 +550,7 @@ export async function generateThemedComfyPrompt(
     `Appearance: ${formatAppearanceProfile(persona.appearance)}`,
     `Style: ${persona.stylePrompt || "-"}`,
     `Personality: ${persona.personalityPrompt || "-"}`,
+    `LookPrompt cache:\n${formatLookPromptCacheInput(persona.lookPromptCache)}`,
     `Theme: ${topic}`,
     `Iteration: ${iteration}`,
     "Generate one unique prompt variation for this iteration.",
@@ -563,7 +588,9 @@ export async function generateThemedComfyPrompt(
   }
 
   const parsed = splitAssistantContent(text);
-  const prompt = toTrimmedString(parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt);
+  const prompt = toTrimmedString(
+    parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt,
+  );
   const themeTags = extractThemeTags(text, topic);
   if (prompt) {
     return mergeRequiredTags(prompt, themeTags);
@@ -581,14 +608,20 @@ export async function generateComfyPromptFromImageDescription(
   settings: AppSettings,
   persona: Pick<
     Persona,
-    "name" | "appearance" | "stylePrompt" | "personalityPrompt"
+    | "name"
+    | "appearance"
+    | "stylePrompt"
+    | "personalityPrompt"
+    | "lookPromptCache"
   >,
   imageDescription: string,
   iteration: number,
 ): Promise<string> {
   const description = toTrimmedString(imageDescription);
   if (!description) {
-    throw new Error("Пустое описание изображения для генерации ComfyUI prompt.");
+    throw new Error(
+      "Пустое описание изображения для генерации ComfyUI prompt.",
+    );
   }
 
   const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
@@ -610,6 +643,8 @@ export async function generateComfyPromptFromImageDescription(
     "Все lock-детали из Image description должны перейти в prompt без потери смысла, но не перегружай prompt.",
     "Не подменяй lock-детали похожими, но другими по смыслу формулировками.",
     "Для персонажа используй ТОЛЬКО детали из Image description + Appearance.",
+    "Если в input есть LookPrompt cache, используй его как identity prior для стабильных черт (hair/face/eyes/body/outfit), но scene-specific детали бери из Image description.",
+    "LookPrompt cache НЕ должен ломать требования Image description по эмоции/сцене/условиям.",
     "Одежда должна соответствовать ситуации!",
     "При конфликте: scene-specific детали (эмоция, одежда, окружение, условия) берутся из Image description; стабильная идентичность (волосы/глаза/возрастной тип/телосложение) — из Appearance.",
     "Не добавляй детали, которых нет в исходном описании (например пирсинг/тату/аксессуары/фетиш-атрибуты, если они не указаны).",
@@ -633,6 +668,7 @@ export async function generateComfyPromptFromImageDescription(
     `Appearance: ${formatAppearanceProfile(persona.appearance)}`,
     `Style: ${persona.stylePrompt || "-"}`,
     `Personality: ${persona.personalityPrompt || "-"}`,
+    `LookPrompt cache:\n${formatLookPromptCacheInput(persona.lookPromptCache)}`,
     `Image description: ${description}`,
     `Iteration: ${iteration}`,
   ].join("\n");
@@ -668,7 +704,9 @@ export async function generateComfyPromptFromImageDescription(
   }
 
   const parsed = splitAssistantContent(text);
-  const prompt = toTrimmedString(parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt);
+  const prompt = toTrimmedString(
+    parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt,
+  );
   if (prompt) return prompt;
 
   const fallbackPrompt = text
@@ -719,18 +757,28 @@ function normalizeBaseUrl(url: string) {
 
 function toTrimmedString(value: unknown): string {
   if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
     return String(value).trim();
   }
   return "";
 }
 
 function resolveImagePromptModel(settings: AppSettings) {
-  return toTrimmedString(settings.imagePromptModel) || toTrimmedString(settings.model);
+  return (
+    toTrimmedString(settings.imagePromptModel) ||
+    toTrimmedString(settings.model)
+  );
 }
 
 function resolvePersonaGenerationModel(settings: AppSettings) {
-  return toTrimmedString(settings.personaGenerationModel) || toTrimmedString(settings.model);
+  return (
+    toTrimmedString(settings.personaGenerationModel) ||
+    toTrimmedString(settings.model)
+  );
 }
 
 function encodeBase64(value: string) {
@@ -1010,8 +1058,8 @@ function normalizeAmbiguousShotTags(prompt: string) {
   if (!replacedFullBodyTag) return normalized.join(", ");
 
   return mergeRequiredTags(normalized.join(", "), [
-    "head-to-toe framing",
-    "whole person in frame",
+    "head-to-toe framing:1.4",
+    "whole person framing:1.4",
     "long shot",
   ]);
 }
@@ -1124,8 +1172,12 @@ export async function generatePersonaLookPrompts(
     "Оба промпта должны быть только comma-separated English tags.",
     "detailPrompts.* также только comma-separated English tags.",
     "identityLocks.* также comma-separated English tags (короткие, конкретные).",
-    "Каждый тег СТРОГО короткий (1-2 слова), конкретный и визуальный.",
-    "Каждый тег должен быть самодостаточным и содержать объект признака (например eyes/hair/lips/skin/outfit); запрещены обрывки вроде 'large almond shaped' или 'blue-violet color'.",
+    "Каждый тег делай коротким и конкретным (обычно 2-4 слова), но самодостаточным.",
+    "Каждый тег должен содержать объект признака (eyes/hair/lips/skin/face/body/outfit/boots/background и т.д.), а не только модификатор.",
+    "Запрещены обрывки без объекта: 'large almond shaped', 'bright blue-violet color', 'soft skin texture' без указания части тела.",
+    "Если указываешь форму/цвет глаз, пиши полный тег с объектом: 'almond-shaped eyes', 'blue-violet eyes'.",
+    "Если указываешь волосы, губы, кожу, одежду — всегда добавляй объект в самом теге: 'wavy light-brown hair', 'full glossy lips', 'pale flawless skin', 'black low-cut dress'.",
+    "Нельзя дробить один признак на 2 тега, если первый тег сам по себе невалиден. Каждый tag должен читаться отдельно и иметь смысл.",
     "КРИТИЧНО: избегай длинных перегруженных промптов и повторов.",
     "Жёстко запрещены дубликаты тегов и перефразированные дубликаты (например short bob haircut и bob haircut to shoulders одновременно без необходимости).",
     "Если тег уже передаёт признак, не добавляй второй тег с тем же смыслом.",
@@ -1154,7 +1206,7 @@ export async function generatePersonaLookPrompts(
     "Hair-теги должны идти в начале обоих prompt (после quality-тегов), чтобы модель не теряла прическу.",
     "Если вход содержит конкретные черты лица/глаз/волос/роста/маркеров — они обязательны в обоих prompt.",
     "Рост добавляй аккуратно как нейтральный дескриптор пропорций (без фантазий).",
-    "Разница между полями: avatarPrompt = close face portrait/headshot (лицо крупно в кадре); fullBodyPrompt = head-to-toe framing (whole person in frame).",
+    "Разница между полями: avatarPrompt = close face portrait/headshot (лицо крупно в кадре); fullBodyPrompt = head-to-toe framing (whole person framing).",
     "Не используй теги full body/fullbody/full-body — они неоднозначны и могут смещать телосложение.",
     "Для fullBodyPrompt всегда указывай clean/plain background (solid studio backdrop, no environment).",
     "Для fullBodyPrompt задавай спокойную нейтральную позу (neutral standing pose, relaxed posture, arms relaxed).",

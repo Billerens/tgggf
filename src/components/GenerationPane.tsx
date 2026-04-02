@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Image, Infinity, Play, Square } from "lucide-react";
 import type { ImageGenerationMeta } from "../types";
+import type { LookEnhanceTarget } from "../ui/types";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface GenerationPaneProps {
+  generationSessionId: string;
   topic: string;
   onTopicChange: (value: string) => void;
   isInfinite: boolean;
@@ -17,11 +19,26 @@ interface GenerationPaneProps {
   generatedImageUrls: string[];
   imageMetaByUrl: Record<string, ImageGenerationMeta>;
   pendingImageCount: number;
+  imageActionBusy: boolean;
+  onEnhanceImage: (payload: {
+    sessionId: string;
+    sourceUrl: string;
+    meta?: ImageGenerationMeta;
+  }, targetOverride?: LookEnhanceTarget) => void;
+  onRegenerateImage: (
+    payload: {
+      sessionId: string;
+      sourceUrl: string;
+      meta?: ImageGenerationMeta;
+    },
+    promptOverride?: string,
+  ) => void;
   onStart: () => void;
   onStop: () => void;
 }
 
 export function GenerationPane({
+  generationSessionId,
   topic,
   onTopicChange,
   isInfinite,
@@ -35,11 +52,35 @@ export function GenerationPane({
   generatedImageUrls,
   imageMetaByUrl,
   pendingImageCount,
+  imageActionBusy,
+  onEnhanceImage,
+  onRegenerateImage,
   onStart,
   onStop,
 }: GenerationPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
+  const [previewTarget, setPreviewTarget] = useState<{
+    sessionId: string;
+    sourceUrl: string;
+    sourceIndex: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!previewTarget || !previewSrc) return;
+    const nextSource = generatedImageUrls[previewTarget.sourceIndex] ?? "";
+    if (!nextSource || nextSource === previewSrc) return;
+    setPreviewSrc(nextSource);
+    setPreviewMeta(imageMetaByUrl[nextSource]);
+    setPreviewTarget((prev) =>
+      prev
+        ? {
+            ...prev,
+            sourceUrl: nextSource,
+          }
+        : prev,
+    );
+  }, [generatedImageUrls, imageMetaByUrl, previewTarget, previewSrc]);
 
   return (
     <>
@@ -138,7 +179,17 @@ export function GenerationPane({
                   className="bubble-image-btn"
                   onClick={() => {
                     setPreviewSrc(url);
-                    setPreviewMeta(imageMetaByUrl[url]);
+                    const meta = imageMetaByUrl[url];
+                    setPreviewMeta(meta);
+                    setPreviewTarget(
+                      generationSessionId
+                        ? {
+                            sessionId: generationSessionId,
+                            sourceUrl: url,
+                            sourceIndex: index,
+                          }
+                        : null,
+                    );
                   }}
                 >
                   <img src={url} alt={`generated-${index + 1}`} loading="lazy" />
@@ -158,9 +209,39 @@ export function GenerationPane({
       <ImagePreviewModal
         src={previewSrc}
         meta={previewMeta}
+        actionBusy={imageActionBusy}
+        onEnhance={
+          previewTarget
+            ? (targetOverride) => {
+                onEnhanceImage(
+                  {
+                    sessionId: previewTarget.sessionId,
+                    sourceUrl: previewTarget.sourceUrl,
+                    meta: previewMeta,
+                  },
+                  targetOverride,
+                );
+              }
+            : undefined
+        }
+        onRegenerate={
+          previewTarget
+            ? (promptOverride) => {
+                onRegenerateImage(
+                  {
+                    sessionId: previewTarget.sessionId,
+                    sourceUrl: previewTarget.sourceUrl,
+                    meta: previewMeta,
+                  },
+                  promptOverride,
+                );
+              }
+            : undefined
+        }
         onClose={() => {
           setPreviewSrc(null);
           setPreviewMeta(undefined);
+          setPreviewTarget(null);
         }}
       />
     </>

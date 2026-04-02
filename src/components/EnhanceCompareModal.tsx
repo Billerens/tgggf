@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MouseEvent, type TouchEvent, type WheelEvent } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 interface EnhanceCompareModalProps {
@@ -215,8 +216,8 @@ export function EnhanceCompareModal({
 
   const transformStyle = { transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` };
 
-  return (
-    <div className="image-preview-overlay" onClick={onClose}>
+  const overlay = (
+    <div className="image-preview-overlay enhance-compare-overlay" onClick={onClose}>
       <div className="enhance-compare-dialog" onClick={(event) => event.stopPropagation()}>
         <button type="button" className="icon-btn image-preview-close" onClick={onClose} title="Закрыть">
           <X size={18} />
@@ -277,4 +278,6 @@ export function EnhanceCompareModal({
       </div>
     </div>
   );
+
+  return createPortal(overlay, document.body);
 }
