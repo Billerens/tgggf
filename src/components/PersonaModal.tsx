@@ -27,6 +27,7 @@ interface PersonaModalProps {
   onDeletePersona: (personaId: string) => void;
   onSubmitPersona: (event: FormEvent) => void;
   onResetDraft: () => void;
+  onResetLookPromptCache: () => void;
   generationTheme: string;
   setGenerationTheme: (value: string) => void;
   generationCount: number;
@@ -252,6 +253,7 @@ export function PersonaModal({
   onDeletePersona,
   onSubmitPersona,
   onResetDraft,
+  onResetLookPromptCache,
   generationTheme,
   setGenerationTheme,
   generationCount,
@@ -999,12 +1001,7 @@ export function PersonaModal({
                     <button
                       type="button"
                       className="danger"
-                      onClick={() =>
-                        setPersonaDraft((prev) => ({
-                          ...prev,
-                          lookPromptCache: undefined,
-                        }))
-                      }
+                      onClick={onResetLookPromptCache}
                     >
                       Сбросить кэш look-prompts
                     </button>

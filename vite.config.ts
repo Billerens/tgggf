@@ -11,6 +11,12 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/lmstudio/, ""),
       },
+      "/lmstudioloc/": {
+        target: "http://127.0.0.1:1234",
+        changeOrigin: false,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/lmstudioloc/, ""),
+      },
       "/comfy/": {
         target: "https://t3.tun.uforge.online",
         changeOrigin: true,

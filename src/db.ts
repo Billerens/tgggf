@@ -389,6 +389,32 @@ function getDb() {
 }
 
 export const dbApi = {
+  async clearAllData() {
+    const db = await getDb();
+    const tx = db.transaction(
+      [
+        "personas",
+        "chats",
+        "messages",
+        "personaStates",
+        "memories",
+        "settings",
+        "generatorSessions",
+        "imageAssets",
+      ],
+      "readwrite",
+    );
+    await tx.objectStore("personas").clear();
+    await tx.objectStore("chats").clear();
+    await tx.objectStore("messages").clear();
+    await tx.objectStore("personaStates").clear();
+    await tx.objectStore("memories").clear();
+    await tx.objectStore("settings").clear();
+    await tx.objectStore("generatorSessions").clear();
+    await tx.objectStore("imageAssets").clear();
+    await tx.done;
+  },
+
   async getPersonas() {
     const db = await getDb();
     const rows = await db.getAll("personas");
@@ -451,6 +477,14 @@ export const dbApi = {
     return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
+  async getAllChats() {
+    const db = await getDb();
+    const rows = await db.getAll("chats");
+    const normalized = rows.map((row) => normalizeChatSession(row));
+    await Promise.all(normalized.map((row) => db.put("chats", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
   async saveChat(chat: ChatSession) {
     const db = await getDb();
     await db.put("chats", normalizeChatSession(chat));
@@ -478,6 +512,12 @@ export const dbApi = {
     return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   },
 
+  async getAllMessages() {
+    const db = await getDb();
+    const rows = await db.getAll("messages");
+    return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  },
+
   async saveMessage(message: ChatMessage) {
     const db = await getDb();
     await db.put("messages", message);
@@ -488,6 +528,12 @@ export const dbApi = {
     return db.get("personaStates", chatId);
   },
 
+  async getAllPersonaStates() {
+    const db = await getDb();
+    const rows = await db.getAll("personaStates");
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
   async savePersonaState(state: PersonaRuntimeState) {
     const db = await getDb();
     await db.put("personaStates", state);
@@ -496,6 +542,14 @@ export const dbApi = {
   async getMemories(chatId: string) {
     const db = await getDb();
     const rows = await db.getAllFromIndex("memories", "by-chat", chatId);
+    const normalized = rows.map((row) => normalizeMemoryRecord(row));
+    await Promise.all(normalized.map((row) => db.put("memories", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async getAllMemories() {
+    const db = await getDb();
+    const rows = await db.getAll("memories");
     const normalized = rows.map((row) => normalizeMemoryRecord(row));
     await Promise.all(normalized.map((row) => db.put("memories", row)));
     return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -540,6 +594,14 @@ export const dbApi = {
     return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
+  async getAllGeneratorSessions() {
+    const db = await getDb();
+    const rows = await db.getAll("generatorSessions");
+    const normalized = rows.map((row) => normalizeGeneratorSession(row));
+    await Promise.all(normalized.map((row) => db.put("generatorSessions", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
   async getGeneratorSession(sessionId: string) {
     const db = await getDb();
     const row = await db.get("generatorSessions", sessionId);
@@ -576,6 +638,12 @@ export const dbApi = {
     const db = await getDb();
     const rows = await Promise.all(uniqueIds.map((imageId) => db.get("imageAssets", imageId)));
     return rows.filter((row): row is ImageAsset => Boolean(row));
+  },
+
+  async getAllImageAssets() {
+    const db = await getDb();
+    const rows = await db.getAll("imageAssets");
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
   async saveImageAsset(asset: ImageAsset) {

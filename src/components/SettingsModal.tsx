@@ -3,6 +3,11 @@ import type { FormEvent } from "react";
 import { RefreshCw, X } from "lucide-react";
 import type { AppSettings, AuthMode, EndpointAuthConfig } from "../types";
 import { Dropdown } from "./Dropdown";
+import type {
+  BackupExportFormat,
+  BackupImportMode,
+  BackupExportScope,
+} from "../features/backup/dataTransfer";
 
 type PwaInstallStatus = "installed" | "available" | "unavailable";
 
@@ -12,14 +17,26 @@ interface SettingsModalProps {
   pwaInstallStatus: PwaInstallStatus;
   availableModels: string[];
   modelsLoading: boolean;
+  exportableChats: Array<{ id: string; title: string; personaName: string }>;
+  exportBusy: boolean;
+  importBusy: boolean;
+  dataTransferMessage: string | null;
+  exportDownloadUrl: string | null;
+  exportDownloadFileName: string | null;
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
   onInstallPwa: () => void;
   onRefreshModels: () => void;
+  onExportData: (params: {
+    scope: BackupExportScope;
+    format: BackupExportFormat;
+    chatId?: string;
+  }) => Promise<void>;
+  onImportData: (file: File, mode: BackupImportMode) => Promise<void>;
   onClose: () => void;
   onSubmit: (event: FormEvent) => void;
 }
 
-type SettingsTab = "system" | "personal" | "chat";
+type SettingsTab = "system" | "personal" | "chat" | "data";
 
 const AUTH_MODE_LABELS: Array<{ value: AuthMode; label: string }> = [
   { value: "none", label: "Без auth" },
@@ -59,6 +76,24 @@ const DETAILING_STRENGTH_COLUMNS: Array<{
   { key: "hands", label: "Hands", step: 0.01 },
   { key: "chest", label: "Chest", step: 0.01 },
   { key: "vagina", label: "Vagina", step: 0.01 },
+];
+const EXPORT_SCOPE_OPTIONS: Array<{
+  value: BackupExportScope;
+  label: string;
+}> = [
+  { value: "all", label: "Все данные" },
+  { value: "personas", label: "Только персоны" },
+  { value: "all_chats", label: "Все чаты + персоны" },
+  { value: "chat", label: "Один чат + персона" },
+  { value: "generation_sessions", label: "Сессии генерации + персоны" },
+];
+const EXPORT_FORMAT_OPTIONS: Array<{ value: BackupExportFormat; label: string }> = [
+  { value: "json", label: "JSON (.json)" },
+  { value: "zip", label: "ZIP (.zip)" },
+];
+const IMPORT_MODE_OPTIONS: Array<{ value: BackupImportMode; label: string }> = [
+  { value: "merge", label: "Добавить / объединить" },
+  { value: "replace", label: "Заменить текущие данные" },
 ];
 
 function AuthSettingsSection({
@@ -146,13 +181,26 @@ export function SettingsModal({
   pwaInstallStatus,
   availableModels,
   modelsLoading,
+  exportableChats,
+  exportBusy,
+  importBusy,
+  dataTransferMessage,
+  exportDownloadUrl,
+  exportDownloadFileName,
   setSettingsDraft,
   onInstallPwa,
   onRefreshModels,
+  onExportData,
+  onImportData,
   onClose,
   onSubmit,
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("system");
+  const [exportScope, setExportScope] = useState<BackupExportScope>("all");
+  const [exportFormat, setExportFormat] = useState<BackupExportFormat>("json");
+  const [exportChatId, setExportChatId] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importMode, setImportMode] = useState<BackupImportMode>("merge");
   const updateDetailStrengthValue = (
     level: AppSettings["enhanceDetailLevelAll"],
     key: DetailStrengthColumnKey,
@@ -176,8 +224,13 @@ export function SettingsModal({
   useEffect(() => {
     if (open) {
       setActiveTab("system");
+      setExportScope("all");
+      setExportFormat("json");
+      setExportChatId(exportableChats[0]?.id ?? "");
+      setImportFile(null);
+      setImportMode("merge");
     }
-  }, [open]);
+  }, [open, exportableChats]);
 
   if (!open) return null;
 
@@ -211,6 +264,13 @@ export function SettingsModal({
             onClick={() => setActiveTab("chat")}
           >
             Чат
+          </button>
+          <button
+            type="button"
+            className={activeTab === "data" ? "active" : ""}
+            onClick={() => setActiveTab("data")}
+          >
+            Данные
           </button>
         </div>
         <form className="form" onSubmit={onSubmit}>
@@ -486,9 +546,136 @@ export function SettingsModal({
             </>
           ) : null}
 
-          <button type="submit" className="primary">
-            Сохранить
-          </button>
+          {activeTab === "data" ? (
+            <>
+              <div className="persona-section">
+                <h5>Экспорт</h5>
+                <label>
+                  Набор данных
+                  <Dropdown
+                    value={exportScope}
+                    options={EXPORT_SCOPE_OPTIONS}
+                    onChange={(nextScope) =>
+                      setExportScope(nextScope as BackupExportScope)
+                    }
+                  />
+                </label>
+                {exportScope === "chat" ? (
+                  <label>
+                    Чат для экспорта
+                    <Dropdown
+                      value={exportChatId}
+                      options={
+                        exportableChats.length > 0
+                          ? exportableChats.map((chat) => ({
+                              value: chat.id,
+                              label: `${chat.personaName} — ${chat.title}`,
+                            }))
+                          : [{ value: "", label: "Чаты не найдены" }]
+                      }
+                      onChange={(nextChatId) => setExportChatId(nextChatId)}
+                    />
+                  </label>
+                ) : null}
+                <label>
+                  Формат файла
+                  <Dropdown
+                    value={exportFormat}
+                    options={EXPORT_FORMAT_OPTIONS}
+                    onChange={(nextFormat) =>
+                      setExportFormat(nextFormat as BackupExportFormat)
+                    }
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void onExportData({
+                      scope: exportScope,
+                      format: exportFormat,
+                      chatId: exportScope === "chat" ? exportChatId : undefined,
+                    })
+                  }
+                  disabled={
+                    exportBusy ||
+                    importBusy ||
+                    (exportScope === "chat" && !exportChatId)
+                  }
+                >
+                  {exportBusy ? "Экспорт..." : "Экспортировать"}
+                </button>
+                {exportDownloadUrl && exportDownloadFileName ? (
+                  <div className="settings-download-row">
+                    <a
+                      className="button-link"
+                      href={exportDownloadUrl}
+                      download={exportDownloadFileName}
+                    >
+                      Скачать экспорт
+                    </a>
+                    <small style={{ color: "var(--text-secondary)" }}>
+                      {exportDownloadFileName}
+                    </small>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="persona-section">
+                <h5>Импорт</h5>
+                <label>
+                  Файл бэкапа
+                  <input
+                    type="file"
+                    accept=".json,.zip,application/json,application/zip"
+                    onChange={(event) =>
+                      setImportFile(event.target.files?.[0] ?? null)
+                    }
+                  />
+                </label>
+                <label>
+                  Режим импорта
+                  <Dropdown
+                    value={importMode}
+                    options={IMPORT_MODE_OPTIONS}
+                    onChange={(nextMode) =>
+                      setImportMode(nextMode as BackupImportMode)
+                    }
+                  />
+                </label>
+                {importMode === "replace" ? (
+                  <small style={{ color: "var(--danger)" }}>
+                    Внимание: текущие локальные данные будут полностью удалены перед импортом.
+                  </small>
+                ) : null}
+                <div className="inline-row">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      importFile && void onImportData(importFile, importMode)
+                    }
+                    disabled={!importFile || importBusy || exportBusy}
+                  >
+                    {importBusy ? "Импорт..." : "Импортировать"}
+                  </button>
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    {importFile ? importFile.name : "Файл не выбран"}
+                  </small>
+                </div>
+              </div>
+
+              {dataTransferMessage ? (
+                <small
+                  style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap" }}
+                >
+                  {dataTransferMessage}
+                </small>
+              ) : null}
+            </>
+          ) : (
+            <button type="submit" className="primary">
+              Сохранить
+            </button>
+          )}
         </form>
       </div>
     </div>

@@ -65,6 +65,53 @@ interface UsePersonaLookActionsParams {
   ) => Promise<{ imageId: string; imageUrl: string }>;
 }
 
+const SHARED_TAGS = [
+  "clean white background",
+  "no environment",
+  "solo:1.4",
+  "long shot",
+  "head-to-toe view:1.3",
+  "whole person view:1.3",
+];
+const FRONT_FULLBODY_ADDITIONAL_TAGS = [
+  "neutral standing pose",
+  ...SHARED_TAGS,
+];
+const ADDITIONAL_SHARED_TAGS = [
+  "same person as reference",
+  "same character identity",
+  "same face and body features",
+  "same hairstyle and hair color",
+  "same outfit and accessories",
+  "preserve clothing design and colors:1.3",
+  "do not change gender",
+  "do not remove clothes",
+  ...SHARED_TAGS,
+];
+const SIDE_FULLBODY_ADDITIONAL_TAGS = [
+  ...ADDITIONAL_SHARED_TAGS,
+  "strict side profile view:1.4",
+  "exact 90 degree side view:1.4",
+  "face turned 90 degrees away from camera",
+  "profile silhouette",
+];
+const BACK_FULLBODY_ADDITIONAL_TAGS = [
+  ...ADDITIONAL_SHARED_TAGS,
+  "strict back view:1.4",
+  "back facing camera:1.4",
+  "subject facing away from camera",
+  "back of head visible",
+];
+const AVATAR_ADDITIONAL_TAGS = [
+  "close-up",
+  "face focus",
+  "looking at viewer",
+  "solo",
+  "detailed background",
+  "environmental context",
+  "realistic location",
+];
+
 export function usePersonaLookActions({
   settings,
   personaDraft,
@@ -266,15 +313,7 @@ export function usePersonaLookActions({
             ),
           );
         };
-        const fullBodyPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-          "head-to-toe framing:1.3",
-          "whole person framing:1.3",
-          "long shot",
-          "one person:1.3",
-          "neutral standing pose",
-          "clean white background",
-          "no environment",
-        ]);
+        const fullBodyPrompt = mergePromptTags(promptBundle.fullBodyPrompt, FRONT_FULLBODY_ADDITIONAL_TAGS);
         const fullBodyUrls = await generateComfyImages(
           [
             {
@@ -348,31 +387,7 @@ export function usePersonaLookActions({
           const sideSeed = packSeed + 101;
           const sideReferenceStrength = 1;
           const sideCompositionStrength = 0.08;
-          const sidePrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-            "same person as reference:1.4",
-            "same character identity:1.4",
-            "same face and body features",
-            "same hairstyle and hair color",
-            "same outfit and accessories:1.4",
-            "preserve clothing design and colors:1.3",
-            "do not change gender",
-            "do not remove clothes",
-            "head-to-toe framing:1.3",
-            "whole person framing:1.3",
-            "long shot",
-            "one person:1.3",
-            "strict side profile:1.4",
-            "exact 90 degree side view:1.4",
-            "side view only",
-            "from left side",
-            "face turned 90 degrees away from camera",
-            "no frontal pose",
-            "no back pose",
-            "profile silhouette",
-            "orthographic side framing",
-            "clean white background",
-            "no environment",
-          ]);
+          const sidePrompt = mergePromptTags(promptBundle.fullBodyPrompt, SIDE_FULLBODY_ADDITIONAL_TAGS);
           const sideUrls = await generateComfyImages(
             [
               {
@@ -438,31 +453,7 @@ export function usePersonaLookActions({
           const backSeed = packSeed + 211;
           const backReferenceStrength = 1;
           const backCompositionStrength = 0.08;
-          const backPrompt = mergePromptTags(promptBundle.fullBodyPrompt, [
-            "same person as reference:1.4",
-            "same character identity:1.4",
-            "same face and body features",
-            "same hairstyle and hair color",
-            "same outfit and accessories:1.4",
-            "preserve clothing design and colors:1.3",
-            "do not change gender",
-            "do not remove clothes",
-            "head-to-toe framing:1.3",
-            "whole person framing:1.3",
-            "long shot",
-            "one person:1.3",
-            "strict back view:1.4",
-            "exactly from behind:1.4",
-            "back facing camera:1.4",
-            "back view only",
-            "subject facing away from camera",
-            "back of head visible",
-            "no frontal pose",
-            "no side pose",
-            "orthographic rear framing:1.4",
-            "clean white background",
-            "no environment",
-          ]);
+          const backPrompt = mergePromptTags(promptBundle.fullBodyPrompt, BACK_FULLBODY_ADDITIONAL_TAGS);
           const backUrls = await generateComfyImages(
             [
               {
@@ -523,17 +514,7 @@ export function usePersonaLookActions({
           }
         }
 
-        const avatarPrompt = mergePromptTags(promptBundle.avatarPrompt, [
-          "close-up",
-          "face focus",
-          "looking at viewer",
-          "solo",
-          "single subject",
-          "one person",
-          "detailed background",
-          "environmental context",
-          "realistic location",
-        ]);
+        const avatarPrompt = mergePromptTags(promptBundle.avatarPrompt, AVATAR_ADDITIONAL_TAGS);
         const avatarUrls = await generateComfyImages(
           [
             {
@@ -748,78 +729,12 @@ export function usePersonaLookActions({
 
       const fallbackPrompt =
         kind === "avatar"
-          ? mergePromptTags(promptBundle.avatarPrompt, [
-              "close-up",
-              "face focus",
-              "looking at viewer",
-              "solo",
-              "single subject",
-              "one person",
-              "detailed background",
-              "environmental context",
-              "realistic location",
-            ])
+          ? mergePromptTags(promptBundle.avatarPrompt, AVATAR_ADDITIONAL_TAGS)
           : kind === "side"
-            ? mergePromptTags(promptBundle.fullBodyPrompt, [
-                "same person as reference",
-                "same character identity",
-                "same face and body features",
-                "same hairstyle and hair color",
-                "same outfit and accessories",
-                "preserve clothing design and colors",
-                "do not change gender",
-                "do not remove clothes",
-                "head-to-toe framing:1.4",
-                "whole person framing:1.4",
-                "long shot",
-                "one person",
-                "strict side profile",
-                "exact 90 degree side view",
-                "side view only",
-                "from left side",
-                "face turned 90 degrees away from camera",
-                "no frontal pose",
-                "no back pose",
-                "profile silhouette",
-                "orthographic side framing:1.4",
-                "clean white background",
-                "no environment",
-              ])
+            ? mergePromptTags(promptBundle.fullBodyPrompt, SIDE_FULLBODY_ADDITIONAL_TAGS)
             : kind === "back"
-              ? mergePromptTags(promptBundle.fullBodyPrompt, [
-                  "same person as reference",
-                  "same character identity",
-                  "same face and body features",
-                  "same hairstyle and hair color",
-                  "same outfit and accessories",
-                  "preserve clothing design and colors",
-                  "do not change gender",
-                  "do not remove clothes",
-                  "head-to-toe framing:1.4",
-                  "whole person framing:1.4",
-                  "long shot",
-                  "one person",
-                  "strict back view",
-                  "exactly from behind",
-                  "back facing camera",
-                  "back view only",
-                  "subject facing away from camera",
-                  "back of head visible",
-                  "no frontal pose",
-                  "no side pose",
-                  "orthographic rear framing:1.4",
-                  "clean white background",
-                  "no environment",
-                ])
-              : mergePromptTags(promptBundle.fullBodyPrompt, [
-                  "head-to-toe framing:1.4",
-                  "whole person framing:1.4",
-                  "long shot",
-                  "one person:1.4",
-                  "neutral standing pose",
-                  "clean white background",
-                  "no environment",
-                ]);
+              ? mergePromptTags(promptBundle.fullBodyPrompt, BACK_FULLBODY_ADDITIONAL_TAGS)
+              : mergePromptTags(promptBundle.fullBodyPrompt, FRONT_FULLBODY_ADDITIONAL_TAGS);
       const prompt =
         promptOverride?.trim() ||
         (kind === "side" || kind === "back"
@@ -1093,21 +1008,7 @@ export function usePersonaLookActions({
         "same outfit",
         "same framing",
         "highly detailed",
-        ...(isHandsEnhance
-          ? [
-              "focus on hands",
-              "detailed fingers",
-              "natural hand anatomy",
-              "correct finger count",
-              "no merged fingers",
-            ]
-          : isEyesEnhance
-            ? [
-                "focus on eyes",
-                "iris details",
-                "allow eye color update if requested",
-              ]
-          : ["preserve composition"]),
+        "preserve composition",
       ]);
 
       const runEnhancePass = async (
@@ -1190,38 +1091,6 @@ export function usePersonaLookActions({
       ensureEnhanceActive();
       let improvedSource = await pickPreferredEnhancedUrl(localized, imageUrl);
       let effectiveSeed = enhanceSeed;
-      const noVisibleChange = improvedSource && improvedSource === imageUrl.trim();
-      if (noVisibleChange) {
-        const retrySeed = stableSeedFromText(
-          `${enhanceSeed}:nochange-retry:${Date.now()}`,
-        );
-        const retryPrompt = mergePromptTags(enhancePrompt, [
-          ...(isHandsEnhance
-            ? ["hands emphasized", "clean hand pose", "highly detailed hands"]
-            : [
-                "face emphasized",
-                "sharper facial details",
-                "improve skin and eyes clarity",
-              ]),
-        ]);
-        const retryUrls = await runEnhancePass(retrySeed, retryPrompt, {
-          styleStrength: isHandsEnhance ? 0.86 : 0.92,
-          compositionStrength: isHandsEnhance ? 0.45 : 0.6,
-          hiresFixDenoise: isHandsEnhance ? 0.52 : 0.45,
-          colorFixStrength: isHandsEnhance ? 0.55 : 0.48,
-          detailLevel: "strong",
-          strictOutputNodeMatch: false,
-        });
-        ensureEnhanceActive();
-        const retryLocalized = await localizeImageUrls(retryUrls);
-        ensureEnhanceActive();
-        const retryBest = await pickPreferredEnhancedUrl(retryLocalized, imageUrl);
-        if (retryBest) {
-          improvedSource = retryBest;
-          effectiveSeed = retrySeed;
-          localized = retryLocalized;
-        }
-      }
       const enhanceMeta: ComfyImageGenerationMeta = {
         seed: effectiveSeed,
         prompt: enhancePrompt,

@@ -611,13 +611,13 @@ function setClipTextByExactTitle(
 ) {
   if (!value?.trim()) return;
   const target = title.toLowerCase();
+  const nextText = value.trim();
   for (const node of Object.values(workflow)) {
     if (node.class_type !== "CLIPTextEncode" || !node.inputs) continue;
     const nodeTitle = node._meta?.title?.toLowerCase() ?? "";
     if (nodeTitle !== target) continue;
-    if (typeof node.inputs.text === "string") {
-      node.inputs.text = value.trim();
-    }
+    // Some templates wire `text` via links (array form). Force an inline override for explicit detail prompts.
+    node.inputs.text = nextText;
   }
 }
 

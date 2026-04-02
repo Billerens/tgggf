@@ -150,6 +150,9 @@ html, body {
   overflow-x: hidden;
   padding: 0 16px 20px;
   display: flex; flex-direction: column; gap: 8px;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .list-actions { padding: 4px 4px 12px; width: 100%; }
@@ -222,6 +225,7 @@ html, body {
   display: flex; flex-direction: column; gap: 4px;
   min-width: 0;
   overflow: hidden;
+  flex-shrink: 0;
 }
 .persona-item { flex-direction: row; align-items: center; justify-content: space-between; padding: 8px 8px 8px 12px; }
 .persona-item:hover, .chat-item:hover { background: var(--surface-hover); }
@@ -523,6 +527,30 @@ button.primary { background: var(--accent); border-color: transparent; color: #f
 button.primary:hover:not(:disabled) { background: #3b82f6; box-shadow: 0 0 16px rgba(59, 130, 246, 0.4); }
 button.danger { color: var(--danger); border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.05); }
 button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.6); }
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 14px;
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-light);
+  background: var(--bg-surface-solid);
+  color: var(--text-primary);
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.button-link:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-focus);
+  transform: translateY(-1px);
+}
+.button-link:active {
+  transform: translateY(0);
+}
 .mini { padding: 6px 12px; font-size: 12px; border-radius: 8px;}
 .icon-btn {
   width: 36px;
@@ -644,8 +672,25 @@ button.danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.15); border
   color: var(--text-secondary);
   font-size: 13px;
 }
-.modal-tabs { display: flex; gap: 8px; padding: 16px 24px 0; border-bottom: 1px solid var(--border-light);}
-.modal-tabs button { flex: 1; border-bottom-left-radius: 0; border-bottom-right-radius: 0; border: none; background: transparent; padding-bottom:12px; border-bottom: 2px solid transparent;}
+.modal-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 16px 24px 0;
+  border-bottom: 1px solid var(--border-light);
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+.modal-tabs button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border: none;
+  background: transparent;
+  padding-bottom:12px;
+  border-bottom: 2px solid transparent;
+}
 .modal-tabs button.active { background: transparent; color: var(--text-primary); border-bottom-color: var(--accent); }
 .prompt-edit-overlay {
   position: fixed;
@@ -1011,6 +1056,11 @@ input, select, .form textarea {
 input:focus, select:focus, .form textarea:focus { border-color: var(--accent); background: rgba(255,255,255,0.04); box-shadow: 0 0 0 2px rgba(96,165,250,0.1); }
 .inline-row { display: flex; gap:12px; align-items: center; min-width: 0; width: 100%; }
 .inline-row > :first-child { flex: 1 1 auto; min-width: 0; }
+.settings-download-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
 .settings-table-scroll {
   width: 100%;
   overflow-x: auto;
@@ -1047,6 +1097,9 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
 .persona-list {
   border-right: 1px solid var(--border-light);
   padding: 16px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 .generator-form { display:flex; flex-direction:column; gap:12px;}
@@ -1637,6 +1690,7 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
     z-index: 100; transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     box-shadow: 0 -8px 32px rgba(0,0,0,0.5); border: 1px solid var(--border-light); border-bottom: none;
     background: var(--bg-surface-solid);
+    grid-template-rows: auto auto minmax(0, 1fr);
   }
   
   .sidebar.mobile-open {
@@ -1688,7 +1742,12 @@ input:focus, select:focus, .form textarea:focus { border-color: var(--accent); b
     width: 100%;
   }
   .split { grid-template-columns: 1fr; gap:0;}
-  .persona-list { border-right: none; border-bottom: 1px solid var(--border-light); max-height: 200px;}
+  .persona-list {
+    border-right: none;
+    border-bottom: 1px solid var(--border-light);
+    max-height: clamp(150px, 20svh, 240px);
+    overflow-y: auto;
+  }
   .enhance-compare-dialog {
     width: 100dvw;
     height: 100dvh;

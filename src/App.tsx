@@ -39,6 +39,14 @@ import { usePersonaLookActions } from "./features/look/usePersonaLookActions";
 import { usePersonaDraftActions } from "./features/persona-editor/usePersonaDraftActions";
 import { useAppInstallPrompt } from "./features/settings/useAppInstallPrompt";
 import { useModelCheckpointCatalog } from "./features/settings/useModelCheckpointCatalog";
+import {
+  buildBackupPayload,
+  exportBackupFile,
+  type BackupImportMode,
+  importBackupPayload,
+  parseBackupFile,
+} from "./features/backup/dataTransfer";
+import type { ChatSession } from "./types";
 
 export default function App() {
   const {
@@ -73,6 +81,16 @@ export default function App() {
   const [personaModalTab, setPersonaModalTab] =
     useState<PersonaModalTab>("editor");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [dataTransferMessage, setDataTransferMessage] = useState<string | null>(
+    null,
+  );
+  const [readyExportFile, setReadyExportFile] = useState<{
+    fileName: string;
+    url: string;
+  } | null>(null);
+  const [exportableChats, setExportableChats] = useState<ChatSession[]>([]);
 
   const [personaDraft, setPersonaDraft] = useState(createEmptyPersonaDraft);
   const [editingPersonaId, setEditingPersonaId] = useState<string | null>(null);
@@ -364,6 +382,112 @@ export default function App() {
     }
   };
 
+  const onResetLookPromptCache = () => {
+    lookPromptBundleCacheRef.current = null;
+    setPersonaDraft((prev) => ({
+      ...prev,
+      lookPromptCache: undefined,
+    }));
+  };
+
+  useEffect(() => {
+    if (!showSettingsModal) return;
+    setDataTransferMessage(null);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await dbApi.getAllChats();
+        if (!cancelled) {
+          setExportableChats(rows);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          useAppStore.setState({ error: (error as Error).message });
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [showSettingsModal]);
+
+  useEffect(() => {
+    return () => {
+      if (readyExportFile) {
+        URL.revokeObjectURL(readyExportFile.url);
+      }
+    };
+  }, [readyExportFile]);
+
+  const exportableChatOptions = useMemo(() => {
+    const personaNameById = new Map(personas.map((persona) => [persona.id, persona.name]));
+    return exportableChats.map((chat) => ({
+      id: chat.id,
+      title: chat.title,
+      personaName: personaNameById.get(chat.personaId) ?? "Неизвестная персона",
+    }));
+  }, [exportableChats, personas]);
+
+  const onExportData = async (params: {
+    scope: "all" | "personas" | "all_chats" | "chat" | "generation_sessions";
+    format: "json" | "zip";
+    chatId?: string;
+  }) => {
+    setExportBusy(true);
+    setDataTransferMessage(null);
+    setReadyExportFile((prev) => {
+      if (prev) {
+        URL.revokeObjectURL(prev.url);
+      }
+      return null;
+    });
+    try {
+      const payload = await buildBackupPayload({
+        scope: params.scope,
+        chatId: params.chatId,
+      });
+      const preparedFile = await exportBackupFile(payload, params.format);
+      const downloadUrl = URL.createObjectURL(preparedFile.blob);
+      setReadyExportFile({
+        fileName: preparedFile.fileName,
+        url: downloadUrl,
+      });
+      const meta = payload.meta;
+      setDataTransferMessage(
+        [
+          `Экспорт готов: ${payload.exportScope}`,
+          `Файл подготовлен: ${preparedFile.fileName}. Нажми "Скачать экспорт".`,
+          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}`,
+        ].join("\n"),
+      );
+    } catch (error) {
+      useAppStore.setState({ error: (error as Error).message });
+    } finally {
+      setExportBusy(false);
+    }
+  };
+
+  const onImportData = async (file: File, mode: BackupImportMode) => {
+    setImportBusy(true);
+    setDataTransferMessage(null);
+    try {
+      const payload = await parseBackupFile(file);
+      const meta = await importBackupPayload(payload, mode);
+      await initialize();
+      setDataTransferMessage(
+        [
+          `Импорт завершен из "${file.name}"`,
+          `Режим: ${mode === "replace" ? "замена текущих данных" : "добавление/объединение"}`,
+          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}, settings=${meta.includesSettings ? "yes" : "no"}`,
+        ].join("\n"),
+      );
+    } catch (error) {
+      useAppStore.setState({ error: (error as Error).message });
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
   return (
     <>
       <div className="aurora-bg" />
@@ -478,6 +602,12 @@ export default function App() {
           pwaInstallStatus={pwaInstallStatus}
           availableModels={availableModels}
           modelsLoading={modelsLoading}
+          exportableChats={exportableChatOptions}
+          exportBusy={exportBusy}
+          importBusy={importBusy}
+          dataTransferMessage={dataTransferMessage}
+          exportDownloadUrl={readyExportFile?.url ?? null}
+          exportDownloadFileName={readyExportFile?.fileName ?? null}
           setSettingsDraft={setSettingsDraft}
           onInstallPwa={() => void onInstallPwa()}
           onRefreshModels={() =>
@@ -487,6 +617,8 @@ export default function App() {
               settingsDraft.lmAuth,
             )
           }
+          onExportData={onExportData}
+          onImportData={onImportData}
           onClose={() => setShowSettingsModal(false)}
           onSubmit={onSettingsSubmit}
         />
@@ -506,6 +638,7 @@ export default function App() {
           onDeletePersona={(personaId) => void deletePersona(personaId)}
           onSubmitPersona={onPersonaSubmit}
           onResetDraft={onResetDraft}
+          onResetLookPromptCache={onResetLookPromptCache}
           generationTheme={generationTheme}
           setGenerationTheme={setGenerationTheme}
           generationCount={generationCount}
