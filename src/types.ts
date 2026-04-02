@@ -16,6 +16,24 @@ export type PersonaMemoryLayer = "short_term" | "episodic" | "long_term";
 export type UserGender = "unspecified" | "male" | "female" | "nonbinary";
 export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
 export type AuthMode = "none" | "bearer" | "token" | "basic" | "custom";
+export type EnhanceDetailLevel = "soft" | "medium" | "strong";
+
+export interface EnhanceDetailLevelConfig {
+  i2iBase: number;
+  i2iHires: number;
+  face: number;
+  eyes: number;
+  nose: number;
+  lips: number;
+  hands: number;
+  chest: number;
+  vagina: number;
+}
+
+export type EnhanceDetailStrengthTable = Record<
+  EnhanceDetailLevel,
+  EnhanceDetailLevelConfig
+>;
 
 export interface PersonaCoreProfile {
   archetype: string;
@@ -90,6 +108,8 @@ export interface PersonaLookDetailPromptCache {
   nose: string;
   lips: string;
   hands: string;
+  chest?: string;
+  vagina?: string;
 }
 
 export interface PersonaLookPromptCache {
@@ -236,6 +256,9 @@ export interface AppSettings {
   userGender: UserGender;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
+  enhanceDetailLevelAll: EnhanceDetailLevel;
+  enhanceDetailLevelPart: EnhanceDetailLevel;
+  enhanceDetailStrengthTable: EnhanceDetailStrengthTable;
 }
 
 export interface EndpointAuthConfig {

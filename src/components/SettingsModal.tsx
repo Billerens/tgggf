@@ -35,6 +35,31 @@ const USER_GENDER_OPTIONS: Array<{ value: AppSettings["userGender"]; label: stri
   { value: "female", label: "Женский" },
   { value: "nonbinary", label: "Небинарный / другой" },
 ];
+const DETAILING_LEVEL_OPTIONS: Array<{
+  value: AppSettings["enhanceDetailLevelAll"];
+  label: string;
+}> = [
+  { value: "soft", label: "Soft" },
+  { value: "medium", label: "Medium" },
+  { value: "strong", label: "Strong" },
+];
+type DetailStrengthColumnKey =
+  keyof AppSettings["enhanceDetailStrengthTable"]["soft"];
+const DETAILING_STRENGTH_COLUMNS: Array<{
+  key: DetailStrengthColumnKey;
+  label: string;
+  step: number;
+}> = [
+  { key: "i2iBase", label: "I2I Base", step: 0.01 },
+  { key: "i2iHires", label: "I2I HiRes", step: 0.01 },
+  { key: "face", label: "Face", step: 0.01 },
+  { key: "eyes", label: "Eyes", step: 0.01 },
+  { key: "nose", label: "Nose", step: 0.01 },
+  { key: "lips", label: "Lips", step: 0.01 },
+  { key: "hands", label: "Hands", step: 0.01 },
+  { key: "chest", label: "Chest", step: 0.01 },
+  { key: "vagina", label: "Vagina", step: 0.01 },
+];
 
 function AuthSettingsSection({
   title,
@@ -128,6 +153,25 @@ export function SettingsModal({
   onSubmit,
 }: SettingsModalProps) {
   const [activeTab, setActiveTab] = useState<SettingsTab>("system");
+  const updateDetailStrengthValue = (
+    level: AppSettings["enhanceDetailLevelAll"],
+    key: DetailStrengthColumnKey,
+    rawValue: string,
+  ) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) return;
+    const clamped = Math.max(0.01, Math.min(1, parsed));
+    setSettingsDraft((prev) => ({
+      ...prev,
+      enhanceDetailStrengthTable: {
+        ...prev.enhanceDetailStrengthTable,
+        [level]: {
+          ...prev.enhanceDetailStrengthTable[level],
+          [key]: clamped,
+        },
+      },
+    }));
+  };
 
   useEffect(() => {
     if (open) {
@@ -320,6 +364,86 @@ export function SettingsModal({
 
           {activeTab === "chat" ? (
             <>
+              <label>
+                Сила detailing для "Все части"
+                <Dropdown
+                  value={settingsDraft.enhanceDetailLevelAll}
+                  options={DETAILING_LEVEL_OPTIONS}
+                  onChange={(nextLevel) =>
+                    setSettingsDraft((v) => ({
+                      ...v,
+                      enhanceDetailLevelAll:
+                        nextLevel as AppSettings["enhanceDetailLevelAll"],
+                    }))
+                  }
+                />
+              </label>
+              <label>
+                Сила detailing для "Конкретной части"
+                <Dropdown
+                  value={settingsDraft.enhanceDetailLevelPart}
+                  options={DETAILING_LEVEL_OPTIONS}
+                  onChange={(nextLevel) =>
+                    setSettingsDraft((v) => ({
+                      ...v,
+                      enhanceDetailLevelPart:
+                        nextLevel as AppSettings["enhanceDetailLevelPart"],
+                    }))
+                  }
+                />
+                <small style={{ color: "var(--text-secondary)", display: "block", marginTop: 6 }}>
+                  Используется при улучшении глаз/губ/рук/груди/вагины и других отдельных таргетов.
+                </small>
+              </label>
+              <div className="persona-section">
+                <h5>Таблица denoise для soft / medium / strong</h5>
+                <small style={{ color: "var(--text-secondary)", display: "block", marginBottom: 10 }}>
+                  Эти значения напрямую идут в flow detailing: img2img denoise и denoise по частям.
+                </small>
+                <div className="settings-table-scroll">
+                  <table className="settings-table">
+                    <thead>
+                      <tr>
+                        <th>Уровень</th>
+                        {DETAILING_STRENGTH_COLUMNS.map((column) => (
+                          <th key={column.key}>{column.label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {DETAILING_LEVEL_OPTIONS.map((levelOption) => {
+                        const level = levelOption.value;
+                        const levelValues =
+                          settingsDraft.enhanceDetailStrengthTable[level];
+                        return (
+                          <tr key={level}>
+                            <th scope="row">{levelOption.label}</th>
+                            {DETAILING_STRENGTH_COLUMNS.map((column) => (
+                              <td key={`${level}:${column.key}`}>
+                                <input
+                                  className="settings-table-input"
+                                  type="number"
+                                  min={0.01}
+                                  max={1}
+                                  step={column.step}
+                                  value={levelValues[column.key]}
+                                  onChange={(event) =>
+                                    updateDetailStrengthValue(
+                                      level,
+                                      column.key,
+                                      event.target.value,
+                                    )
+                                  }
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
               <label>
                 Сила style reference в чате
                 <input

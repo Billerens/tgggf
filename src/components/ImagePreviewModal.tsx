@@ -10,7 +10,11 @@ import {
 import { createPortal } from "react-dom";
 import { Pencil, RefreshCw, Sparkles, X } from "lucide-react";
 import type { ImageGenerationMeta } from "../types";
-import type { LookEnhanceTarget } from "../ui/types";
+import type {
+  LookEnhanceDetailKey,
+  LookEnhancePromptOverrides,
+  LookEnhanceTarget,
+} from "../ui/types";
 import { Dropdown } from "./Dropdown";
 
 interface ImagePreviewModalProps {
@@ -20,8 +24,12 @@ interface ImagePreviewModalProps {
   actionBusy?: boolean;
   enhanceTarget?: LookEnhanceTarget;
   enhanceTargetOptions?: Array<{ value: LookEnhanceTarget; label: string }>;
+  enhancePromptDefaults?: LookEnhancePromptOverrides;
   onEnhanceTargetChange?: (nextTarget: LookEnhanceTarget) => void;
-  onEnhance?: (targetOverride?: LookEnhanceTarget) => void;
+  onEnhance?: (
+    targetOverride?: LookEnhanceTarget,
+    promptOverride?: string | LookEnhancePromptOverrides,
+  ) => void;
   onRegenerate?: (promptOverride?: string) => void;
   onClose: () => void;
 }
@@ -48,6 +56,24 @@ const ENHANCE_TARGET_OPTIONS: Array<{
   { value: "chest", label: "Грудь" },
   { value: "vagina", label: "Вагина" },
 ];
+const DETAIL_PROMPT_KEYS: LookEnhanceDetailKey[] = [
+  "face",
+  "eyes",
+  "nose",
+  "lips",
+  "hands",
+  "chest",
+  "vagina",
+];
+const DETAIL_PROMPT_LABELS: Record<LookEnhanceDetailKey, string> = {
+  face: "Лицо",
+  eyes: "Глаза",
+  nose: "Нос",
+  lips: "Губы",
+  hands: "Руки",
+  chest: "Грудь",
+  vagina: "Вагина",
+};
 
 function clampScale(value: number) {
   return Math.max(MIN_PREVIEW_SCALE, Math.min(MAX_PREVIEW_SCALE, value));
@@ -79,6 +105,7 @@ export function ImagePreviewModal({
   actionBusy = false,
   enhanceTarget,
   enhanceTargetOptions,
+  enhancePromptDefaults,
   onEnhanceTargetChange,
   onEnhance,
   onRegenerate,
@@ -87,8 +114,13 @@ export function ImagePreviewModal({
   const [scale, setScale] = useState<number>(MIN_PREVIEW_SCALE);
   const [offset, setOffset] = useState<Point>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
-  const [promptEditOpen, setPromptEditOpen] = useState(false);
-  const [promptEditValue, setPromptEditValue] = useState("");
+  const [promptEditMode, setPromptEditMode] = useState<
+    "enhance" | "regenerate" | null
+  >(null);
+  const [promptEditSourcePrompt, setPromptEditSourcePrompt] = useState("");
+  const [promptEditDetailPrompts, setPromptEditDetailPrompts] = useState<
+    Partial<Record<LookEnhanceDetailKey, string>>
+  >({});
   const [localEnhanceTarget, setLocalEnhanceTarget] =
     useState<LookEnhanceTarget>("all");
 
@@ -108,6 +140,7 @@ export function ImagePreviewModal({
     resolvedEnhanceTargetOptions[0]?.value ??
     "all";
   const resolvedEnhanceTarget = enhanceTarget ?? localEnhanceTarget;
+  const hasDetailPromptEditor = Boolean(enhancePromptDefaults?.detailPrompts);
   const activeEnhanceTarget = resolvedEnhanceTargetOptions.some(
     (option) => option.value === resolvedEnhanceTarget,
   )
@@ -137,26 +170,26 @@ export function ImagePreviewModal({
 
   useEffect(() => {
     if (!src) {
-      setPromptEditOpen(false);
-      setPromptEditValue("");
+      setPromptEditMode(null);
+      setPromptEditSourcePrompt("");
+      setPromptEditDetailPrompts({});
       return;
     }
-    setPromptEditOpen(false);
-    setPromptEditValue(meta?.prompt?.trim() ?? "");
+    setPromptEditMode(null);
     if (!enhanceTarget) {
       setLocalEnhanceTarget(fallbackEnhanceTarget);
     }
   }, [src, meta?.prompt, enhanceTarget, fallbackEnhanceTarget]);
 
   useEffect(() => {
-    if (!promptEditOpen) return;
+    if (!promptEditMode) return;
     const raf = window.requestAnimationFrame(() => {
       promptEditTextareaRef.current?.focus();
       const length = promptEditTextareaRef.current?.value.length ?? 0;
       promptEditTextareaRef.current?.setSelectionRange(length, length);
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [promptEditOpen, src]);
+  }, [promptEditMode, src]);
 
   if (!src) return null;
 
@@ -293,16 +326,88 @@ export function ImagePreviewModal({
     setIsDragging(false);
   };
 
+  const openPromptEditor = (mode: "enhance" | "regenerate") => {
+    if (mode === "enhance") {
+      setPromptEditSourcePrompt(
+        enhancePromptDefaults?.sourcePrompt?.trim() || meta?.prompt?.trim() || "",
+      );
+      setPromptEditDetailPrompts({
+        ...(enhancePromptDefaults?.detailPrompts ?? {}),
+      });
+    } else {
+      setPromptEditSourcePrompt(meta?.prompt?.trim() ?? "");
+      setPromptEditDetailPrompts({});
+    }
+    setPromptEditMode(mode);
+  };
+
+  const closePromptEditor = () => {
+    setPromptEditMode(null);
+  };
+
+  const getNormalizedPromptOverride = () => {
+    const promptOverride = promptEditSourcePrompt.trim();
+    return promptOverride || undefined;
+  };
+
+  const setDetailPromptValue = (key: LookEnhanceDetailKey, value: string) => {
+    setPromptEditDetailPrompts((prev) => ({
+      ...prev,
+      [key]: value,
+    }));
+  };
+
+  const getActiveDetailPromptKeys = () => {
+    if (!hasDetailPromptEditor) return [] as LookEnhanceDetailKey[];
+    if (activeEnhanceTarget === "all") return DETAIL_PROMPT_KEYS;
+    if (DETAIL_PROMPT_KEYS.includes(activeEnhanceTarget as LookEnhanceDetailKey)) {
+      return [activeEnhanceTarget as LookEnhanceDetailKey];
+    }
+    return [] as LookEnhanceDetailKey[];
+  };
+
+  const handlePromptEnhanceSubmit = () => {
+    const sourcePrompt = getNormalizedPromptOverride();
+    const detailPrompts: Partial<Record<LookEnhanceDetailKey, string>> = {};
+    for (const key of getActiveDetailPromptKeys()) {
+      const value = promptEditDetailPrompts[key]?.trim();
+      const defaultValue = enhancePromptDefaults?.detailPrompts?.[key]?.trim() ?? "";
+      if (value && value !== defaultValue) {
+        detailPrompts[key] = value;
+      }
+    }
+    const payload: LookEnhancePromptOverrides = {};
+    if (sourcePrompt) {
+      payload.sourcePrompt = sourcePrompt;
+    }
+    if (Object.keys(detailPrompts).length > 0) {
+      payload.detailPrompts = detailPrompts;
+    }
+    onEnhance?.(
+      activeEnhanceTarget,
+      Object.keys(payload).length > 0 ? payload : undefined,
+    );
+    closePromptEditor();
+  };
+
   const handlePromptRegenerateSubmit = () => {
-    const promptOverride = promptEditValue.trim();
-    onRegenerate?.(promptOverride || undefined);
-    setPromptEditOpen(false);
+    const promptOverride = getNormalizedPromptOverride();
+    onRegenerate?.(promptOverride);
+    closePromptEditor();
+  };
+
+  const handlePromptSubmit = () => {
+    if (promptEditMode === "enhance") {
+      handlePromptEnhanceSubmit();
+      return;
+    }
+    handlePromptRegenerateSubmit();
   };
 
   const handlePromptEditorKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
       event.preventDefault();
-      handlePromptRegenerateSubmit();
+      handlePromptSubmit();
     }
   };
 
@@ -327,32 +432,45 @@ export function ImagePreviewModal({
                   disabled={actionBusy}
                   className="image-preview-target-dropdown"
                 />
-                <button
-                  type="button"
-                  className="image-preview-action-btn"
-                  onClick={() => onEnhance(activeEnhanceTarget)}
-                  disabled={actionBusy}
-                  title="Улучшить изображение"
-                >
-                  <Sparkles size={14} />
-                  <span>Улучшить</span>
-                </button>
+                <div className="image-preview-split-action" role="group" aria-label="Действие улучшения">
+                  <button
+                    type="button"
+                    className="image-preview-split-edit"
+                    onClick={() => openPromptEditor("enhance")}
+                    disabled={actionBusy}
+                    title="Улучшить с правкой prompt"
+                    aria-label="Улучшить с правкой prompt"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className="image-preview-split-main"
+                    onClick={() => onEnhance(activeEnhanceTarget)}
+                    disabled={actionBusy}
+                    title="Улучшить"
+                  >
+                    <Sparkles size={14} />
+                    <span>Улучшить</span>
+                  </button>
+                </div>
               </>
             ) : null}
             {onRegenerate ? (
-              <>
+              <div className="image-preview-split-action" role="group" aria-label="Действие перегенерации">
                 <button
                   type="button"
-                  className="image-preview-action-btn"
-                  onClick={() => setPromptEditOpen(true)}
+                  className="image-preview-split-edit"
+                  onClick={() => openPromptEditor("regenerate")}
                   disabled={actionBusy}
                   title="Перегенерировать с правкой prompt"
+                  aria-label="Перегенерировать с правкой prompt"
                 >
                   <Pencil size={14} />
                 </button>
                 <button
                   type="button"
-                  className="image-preview-action-btn"
+                  className="image-preview-split-main"
                   onClick={() => onRegenerate()}
                   disabled={actionBusy}
                   title="Перегенерировать"
@@ -360,7 +478,7 @@ export function ImagePreviewModal({
                   <RefreshCw size={14} />
                   <span>Перегенерировать</span>
                 </button>
-              </>
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -402,25 +520,33 @@ export function ImagePreviewModal({
             <pre>{meta?.prompt?.trim() || "—"}</pre>
           </div>
         </section>
-        {promptEditOpen ? (
+        {promptEditMode ? (
           <div
             className="prompt-edit-overlay"
             role="dialog"
             aria-modal="true"
-            aria-label="Перегенерация с правкой prompt"
+            aria-label={
+              promptEditMode === "enhance"
+                ? "Улучшение с правкой prompt"
+                : "Перегенерация с правкой prompt"
+            }
             onClick={() => {
               if (!actionBusy) {
-                setPromptEditOpen(false);
+                closePromptEditor();
               }
             }}
           >
             <div className="prompt-edit-dialog" onClick={(event) => event.stopPropagation()}>
               <div className="prompt-edit-header">
-                <h4>Перегенерация с правкой prompt</h4>
+                <h4>
+                  {promptEditMode === "enhance"
+                    ? `Улучшение (${resolvedEnhanceTargetOptions.find((option) => option.value === activeEnhanceTarget)?.label ?? "цель"})`
+                    : "Перегенерация"}
+                </h4>
                 <button
                   type="button"
                   className="icon-btn mini"
-                  onClick={() => setPromptEditOpen(false)}
+                  onClick={closePromptEditor}
                   disabled={actionBusy}
                   aria-label="Закрыть"
                 >
@@ -430,23 +556,58 @@ export function ImagePreviewModal({
               <textarea
                 ref={promptEditTextareaRef}
                 className="prompt-edit-textarea"
-                value={promptEditValue}
-                onChange={(event) => setPromptEditValue(event.target.value)}
+                value={promptEditSourcePrompt}
+                onChange={(event) =>
+                  setPromptEditSourcePrompt(event.target.value)
+                }
                 onKeyDown={handlePromptEditorKeyDown}
                 disabled={actionBusy}
               />
+              {promptEditMode === "enhance" ? (
+                <div className="prompt-edit-detail-grid">
+                  {getActiveDetailPromptKeys().map((key) => (
+                    <label key={key} className="prompt-edit-detail-field">
+                      <span>{`detailPrompts.${key} (${DETAIL_PROMPT_LABELS[key]})`}</span>
+                      <textarea
+                        value={promptEditDetailPrompts[key] ?? ""}
+                        onChange={(event) =>
+                          setDetailPromptValue(key, event.target.value)
+                        }
+                        disabled={actionBusy}
+                        rows={3}
+                      />
+                    </label>
+                  ))}
+                </div>
+              ) : null}
               <div className="prompt-edit-actions">
                 <button
                   type="button"
                   className="ghost"
-                  onClick={() => setPromptEditOpen(false)}
+                  onClick={closePromptEditor}
                   disabled={actionBusy}
                 >
                   Отмена
                 </button>
-                <button type="button" className="primary" onClick={handlePromptRegenerateSubmit} disabled={actionBusy}>
-                  Перегенерировать
-                </button>
+                {promptEditMode === "enhance" ? (
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={handlePromptEnhanceSubmit}
+                    disabled={actionBusy}
+                  >
+                    Улучшить
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={handlePromptRegenerateSubmit}
+                    disabled={actionBusy}
+                  >
+                    Перегенерировать
+                  </button>
+                )}
               </div>
             </div>
           </div>

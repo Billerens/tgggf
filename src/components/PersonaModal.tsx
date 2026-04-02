@@ -5,6 +5,7 @@ import { dbApi } from "../db";
 import type { ImageGenerationMeta, Persona } from "../types";
 import type {
   LookDetailLevel,
+  LookEnhancePromptOverrides,
   LookEnhanceTarget,
   PersonaDraft,
   PersonaLookPack,
@@ -51,6 +52,7 @@ interface PersonaModalProps {
     kind: "avatar" | "fullbody" | "side" | "back",
     imageUrl: string,
     targetOverride?: LookEnhanceTarget,
+    promptOverride?: string | LookEnhancePromptOverrides,
   ) => void;
   onRegenerateLookImage: (
     packIndex: number | null,
@@ -382,6 +384,7 @@ export function PersonaModal({
     kind: "avatar" | "fullbody" | "side" | "back",
     src: string,
     targetOverride?: LookEnhanceTarget,
+    promptOverride?: string | LookEnhancePromptOverrides,
   ) => {
     const normalizedTarget = normalizePersonaEnhanceTarget(
       (targetOverride ?? activePersonaEnhanceTarget) as LookEnhanceTarget,
@@ -389,7 +392,13 @@ export function PersonaModal({
     if (normalizedTarget !== lookEnhanceTarget) {
       setLookEnhanceTarget(normalizedTarget);
     }
-    onEnhanceLookImage(packIndex, kind, src, normalizedTarget);
+    onEnhanceLookImage(
+      packIndex,
+      kind,
+      src,
+      normalizedTarget,
+      promptOverride,
+    );
   };
 
   const resolveLookPrompt = (
@@ -540,6 +549,42 @@ export function PersonaModal({
     if (normalizedSrc === draftSideSrc.trim()) return imageMetaByUrl["__slot__:side"];
     if (normalizedSrc === draftBackSrc.trim()) return imageMetaByUrl["__slot__:back"];
     return undefined;
+  };
+
+  const resolveEnhancePromptDefaults = (
+    kind: "avatar" | "fullbody" | "side" | "back",
+    src: string,
+  ): LookEnhancePromptOverrides => {
+    const normalizedSrc = src.trim();
+    const directMeta =
+      imageMetaByUrl[normalizedSrc] ??
+      imageMetaByUrl[src];
+    const sourceMetaPrompt = directMeta?.prompt?.trim() ?? "";
+    const cache = personaDraft.lookPromptCache;
+    const cacheBasePrompt =
+      kind === "avatar"
+        ? cache?.avatarPrompt?.trim() ?? ""
+        : cache?.fullBodyPrompt?.trim() ?? "";
+    const fallbackSourcePrompt =
+      kind === "avatar"
+        ? cacheBasePrompt
+          ? `close-up, close face, headshot, face focus, looking at viewer, ${cacheBasePrompt}`
+          : ""
+        : kind === "side"
+          ? cacheBasePrompt
+            ? `head-to-toe framing:1.4, whole person framing:1.4, side view, profile view, ${cacheBasePrompt}`
+            : ""
+          : kind === "back"
+            ? cacheBasePrompt
+              ? `head-to-toe framing:1.4, whole person framing:1.4, back view, from behind, ${cacheBasePrompt}`
+              : ""
+            : cacheBasePrompt
+              ? `head-to-toe framing:1.4, whole person framing:1.4, neutral standing pose, ${cacheBasePrompt}`
+              : "";
+    return {
+      sourcePrompt: sourceMetaPrompt || fallbackSourcePrompt,
+      detailPrompts: cache?.detailPrompts ? { ...cache.detailPrompts } : undefined,
+    };
   };
 
   useEffect(() => {
@@ -1979,6 +2024,14 @@ export function PersonaModal({
       <ImagePreviewModal
         src={previewSrc}
         meta={previewMetaOverride ?? resolvePreviewMeta(previewSrc, previewKind)}
+        enhancePromptDefaults={
+          previewTarget
+            ? resolveEnhancePromptDefaults(
+                previewTarget.kind,
+                previewTarget.sourceUrl,
+              )
+            : undefined
+        }
         enhanceTarget={activePersonaEnhanceTarget}
         enhanceTargetOptions={ENHANCE_TARGET_OPTIONS}
         onEnhanceTargetChange={(nextTarget) =>
@@ -2000,12 +2053,13 @@ export function PersonaModal({
         }
         onEnhance={
           previewTarget
-            ? (targetOverride) =>
+            ? (targetOverride, promptOverride) =>
                 handleEnhanceRequest(
                   previewTarget.packIndex,
                   previewTarget.kind,
                   previewTarget.sourceUrl,
                   targetOverride,
+                  promptOverride,
                 )
             : undefined
         }

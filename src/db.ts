@@ -7,6 +7,8 @@ import type {
   ChatMessage,
   ChatSession,
   EndpointAuthConfig,
+  EnhanceDetailLevel,
+  EnhanceDetailStrengthTable,
   GeneratorSession,
   ImageAsset,
   Persona,
@@ -64,6 +66,42 @@ const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
 
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
+const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = ["soft", "medium", "strong"];
+const DEFAULT_ENHANCE_DETAIL_STRENGTH_TABLE: EnhanceDetailStrengthTable = {
+  soft: {
+    i2iBase: 0.62,
+    i2iHires: 0.22,
+    face: 0.1,
+    eyes: 0.1,
+    nose: 0.12,
+    lips: 0.13,
+    hands: 0.16,
+    chest: 0.12,
+    vagina: 0.14,
+  },
+  medium: {
+    i2iBase: 0.72,
+    i2iHires: 0.3,
+    face: 0.14,
+    eyes: 0.14,
+    nose: 0.18,
+    lips: 0.2,
+    hands: 0.22,
+    chest: 0.18,
+    vagina: 0.22,
+  },
+  strong: {
+    i2iBase: 0.82,
+    i2iHires: 0.38,
+    face: 0.18,
+    eyes: 0.18,
+    nose: 0.22,
+    lips: 0.24,
+    hands: 0.28,
+    chest: 0.24,
+    vagina: 0.28,
+  },
+};
 
 function toTrimmedString(value: unknown): string {
   if (typeof value === "string") return value.trim();
@@ -93,6 +131,42 @@ function resolveDefaultBaseUrl() {
   const fromEnv = toTrimmedString(import.meta.env.VITE_LM_BASE_URL);
   if (fromEnv) return fromEnv;
   return import.meta.env.DEV ? DEV_PROXY_BASE_URL : FALLBACK_PROD_BASE_URL;
+}
+
+function clampDetailStrengthValue(value: unknown, fallback: number): number {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return Math.max(0.01, Math.min(1, next));
+}
+
+function normalizeEnhanceDetailStrengthTable(
+  current: unknown,
+): EnhanceDetailStrengthTable {
+  const source =
+    current && typeof current === "object"
+      ? (current as Partial<EnhanceDetailStrengthTable>)
+      : {};
+  const next = {} as EnhanceDetailStrengthTable;
+
+  for (const level of ENHANCE_DETAIL_LEVELS) {
+    const fallback = DEFAULT_ENHANCE_DETAIL_STRENGTH_TABLE[level];
+    const rawLevel =
+      source[level] && typeof source[level] === "object" ? source[level] : {};
+    const typedRawLevel = rawLevel as Partial<typeof fallback>;
+    next[level] = {
+      i2iBase: clampDetailStrengthValue(typedRawLevel.i2iBase, fallback.i2iBase),
+      i2iHires: clampDetailStrengthValue(typedRawLevel.i2iHires, fallback.i2iHires),
+      face: clampDetailStrengthValue(typedRawLevel.face, fallback.face),
+      eyes: clampDetailStrengthValue(typedRawLevel.eyes, fallback.eyes),
+      nose: clampDetailStrengthValue(typedRawLevel.nose, fallback.nose),
+      lips: clampDetailStrengthValue(typedRawLevel.lips, fallback.lips),
+      hands: clampDetailStrengthValue(typedRawLevel.hands, fallback.hands),
+      chest: clampDetailStrengthValue(typedRawLevel.chest, fallback.chest),
+      vagina: clampDetailStrengthValue(typedRawLevel.vagina, fallback.vagina),
+    };
+  }
+
+  return next;
 }
 
 function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettings {
@@ -140,6 +214,15 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   }
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
+  if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelAll)) {
+    merged.enhanceDetailLevelAll = DEFAULT_SETTINGS.enhanceDetailLevelAll;
+  }
+  if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelPart)) {
+    merged.enhanceDetailLevelPart = DEFAULT_SETTINGS.enhanceDetailLevelPart;
+  }
+  merged.enhanceDetailStrengthTable = normalizeEnhanceDetailStrengthTable(
+    merged.enhanceDetailStrengthTable,
+  );
   return merged;
 }
 
@@ -228,6 +311,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   userGender: "unspecified",
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
+  enhanceDetailLevelAll: "medium",
+  enhanceDetailLevelPart: "strong",
+  enhanceDetailStrengthTable: normalizeEnhanceDetailStrengthTable(undefined),
 };
 
 let dbPromise: Promise<IDBPDatabase<TgGfDb>> | null = null;

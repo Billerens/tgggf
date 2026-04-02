@@ -10,6 +10,8 @@ import { useAppStore } from "../../store";
 import type { AppSettings } from "../../types";
 import type {
   LookDetailLevel,
+  LookEnhanceDetailKey,
+  LookEnhancePromptOverrides,
   LookEnhanceTarget,
   PersonaDraft,
   PersonaLookPack,
@@ -292,6 +294,7 @@ export function usePersonaLookActions({
                     enabled: true,
                     level: resolveDetailLevel("front") ?? undefined,
                     prompts: detailPrompts,
+                    strengthTable: settings.enhanceDetailStrengthTable,
                   }
                 : undefined,
             },
@@ -549,6 +552,7 @@ export function usePersonaLookActions({
                     enabled: true,
                     level: resolveDetailLevel("front") ?? undefined,
                     prompts: detailPrompts,
+                    strengthTable: settings.enhanceDetailStrengthTable,
                   }
                 : undefined,
             },
@@ -828,6 +832,7 @@ export function usePersonaLookActions({
             enabled: true,
             level: detailLevelForKind,
             prompts: detailPrompts,
+            strengthTable: settings.enhanceDetailStrengthTable,
           }
         : undefined;
 
@@ -975,6 +980,7 @@ export function usePersonaLookActions({
     kind: LookKind,
     imageUrl: string,
     targetOverride?: LookEnhanceTarget,
+    promptOverride?: string | LookEnhancePromptOverrides,
   ) => {
     if (!imageUrl.trim()) return;
     const key = packIndex === null ? `draft:${kind}` : `${packIndex}:${kind}`;
@@ -1024,7 +1030,41 @@ export function usePersonaLookActions({
           );
       ensureEnhanceActive();
       const sourceMeta = metaFromCache ?? metaFromSource ?? null;
-      const sourcePrompt = sourceMeta?.prompt?.trim() || basePrompt;
+      const normalizedPromptOverride: LookEnhancePromptOverrides =
+        typeof promptOverride === "string"
+          ? { sourcePrompt: promptOverride }
+          : promptOverride ?? {};
+      const overrideSourcePrompt =
+        normalizedPromptOverride.sourcePrompt?.trim() ?? "";
+      const defaultSourcePrompt = sourceMeta?.prompt?.trim() || basePrompt;
+      const hasCustomSourcePromptOverride = Boolean(
+        overrideSourcePrompt && overrideSourcePrompt !== defaultSourcePrompt,
+      );
+      const sourcePrompt =
+        overrideSourcePrompt || defaultSourcePrompt;
+      const overrideDetailPrompts = normalizedPromptOverride.detailPrompts;
+      const detailPromptKeys: LookEnhanceDetailKey[] = [
+        "face",
+        "eyes",
+        "nose",
+        "lips",
+        "hands",
+        "chest",
+        "vagina",
+      ];
+      const effectiveDetailPrompts: Partial<
+        Record<LookEnhanceDetailKey | "nipples", string>
+      > = {
+        ...(!hasCustomSourcePromptOverride ? promptBundle.detailPrompts : {}),
+      };
+      if (overrideDetailPrompts) {
+        for (const key of detailPromptKeys) {
+          const nextValue = overrideDetailPrompts[key]?.trim();
+          if (nextValue) {
+            effectiveDetailPrompts[key] = nextValue;
+          }
+        }
+      }
       const sourceSeed =
         sourceMeta?.seed !== undefined
           ? sourceMeta.seed
@@ -1039,6 +1079,11 @@ export function usePersonaLookActions({
         requestedTarget,
       });
       const isHandsEnhance = requestedTarget === "hands";
+      const isEyesEnhance = requestedTarget === "eyes";
+      const detailTargets = mapEnhanceTargetToDetailTargets(requestedTarget);
+      const hasIntimateTargets = detailTargets.some(
+        (target) => target === "nipples" || target === "vagina",
+      );
       const enhanceSeed = stableSeedFromText(
         `${sourceSeed}:${imageUrl}:${kind}:${requestedTarget}:${Date.now()}`,
       );
@@ -1056,6 +1101,12 @@ export function usePersonaLookActions({
               "correct finger count",
               "no merged fingers",
             ]
+          : isEyesEnhance
+            ? [
+                "focus on eyes",
+                "iris details",
+                "allow eye color update if requested",
+              ]
           : ["preserve composition"]),
       ]);
 
@@ -1072,6 +1123,18 @@ export function usePersonaLookActions({
         },
       ) => {
         const effectiveDetailLevel = options?.detailLevel ?? detailLevel;
+        const comfyDetailPrompts: Partial<
+          Record<
+            "face" | "eyes" | "nose" | "lips" | "hands" | "nipples" | "vagina" | "chest",
+            string
+          >
+        > = {
+          ...effectiveDetailPrompts,
+        };
+        const chestPrompt = effectiveDetailPrompts.chest?.trim();
+        if (chestPrompt) {
+          comfyDetailPrompts.nipples = chestPrompt;
+        }
         const preferredOutputTitles = [
           "Preview after Detailing",
           "Preview after Upscale/HiRes Fix",
@@ -1086,9 +1149,10 @@ export function usePersonaLookActions({
               seed: passSeed,
               checkpointName: personaDraft.imageCheckpoint || undefined,
               styleReferenceImage: imageUrl,
-              styleStrength: options?.styleStrength ?? (isHandsEnhance ? 0.9 : 1),
+              styleStrength: options?.styleStrength ?? (isHandsEnhance ? 0.9 : isEyesEnhance ? 0.95 : 1),
               compositionStrength:
-                options?.compositionStrength ?? (isHandsEnhance ? 0.7 : 1),
+                options?.compositionStrength ??
+                (isHandsEnhance ? 0.7 : isEyesEnhance ? 0.82 : 1),
               forceHiResFix: true,
               enableUpscaler: true,
               upscaleFactor: 1.4,
@@ -1106,9 +1170,10 @@ export function usePersonaLookActions({
                   effectiveDetailLevel === "off"
                     ? "strong"
                     : effectiveDetailLevel,
-                targets: mapEnhanceTargetToDetailTargets(requestedTarget),
-                prompts: promptBundle.detailPrompts,
-                disableIntimateDetailers: true,
+                targets: detailTargets,
+                prompts: comfyDetailPrompts,
+                strengthTable: settings.enhanceDetailStrengthTable,
+                disableIntimateDetailers: !hasIntimateTargets,
               },
             },
           ],

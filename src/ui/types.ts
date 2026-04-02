@@ -14,6 +14,18 @@ export type LookEnhanceTarget =
   | "hands"
   | "chest"
   | "vagina";
+export type LookEnhanceDetailKey =
+  | "face"
+  | "eyes"
+  | "nose"
+  | "lips"
+  | "hands"
+  | "chest"
+  | "vagina";
+export interface LookEnhancePromptOverrides {
+  sourcePrompt?: string;
+  detailPrompts?: Partial<Record<LookEnhanceDetailKey, string>>;
+}
 export interface PersonaLookPack {
   status: "pending" | "ready";
   avatarUrl: string;

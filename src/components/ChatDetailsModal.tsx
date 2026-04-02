@@ -9,7 +9,11 @@ import type {
   PersonaMemory,
   PersonaRuntimeState,
 } from "../types";
-import type { LookEnhanceTarget } from "../ui/types";
+import type {
+  LookEnhancePromptOverrides,
+  LookEnhanceTarget,
+} from "../ui/types";
+import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface ChatDetailsModalProps {
@@ -26,7 +30,7 @@ interface ChatDetailsModalProps {
     messageId: string;
     sourceUrl: string;
     meta?: ImageGenerationMeta;
-  }, targetOverride?: LookEnhanceTarget) => void;
+  }, targetOverride?: LookEnhanceTarget, promptOverride?: string | LookEnhancePromptOverrides) => void;
   onRegenerateImage: (
     payload: {
       messageId: string;
@@ -169,6 +173,12 @@ export function ChatDetailsModal({
     [messages, imageMetaByUrl],
   );
   const memoryByLayer = useMemo(() => groupMemories(memories), [memories]);
+  const previewResolvedMeta = previewAttachment
+    ? previewMeta ?? imageMetaByUrl[previewAttachment.src]
+    : previewMeta;
+  const previewEnhancePromptDefaults = previewAttachment
+    ? resolveSharedEnhancePromptDefaults(persona, previewResolvedMeta)
+    : undefined;
 
   useEffect(() => {
     setUseGlobalStyleStrength(typeof chat?.chatStyleStrength !== "number");
@@ -402,16 +412,19 @@ export function ChatDetailsModal({
       </div>
       <ImagePreviewModal
         src={previewSrc}
-        meta={previewMeta}
+        meta={previewResolvedMeta}
+        enhancePromptDefaults={previewEnhancePromptDefaults}
         actionBusy={imageActionBusy}
         onEnhance={
           previewAttachment
-            ? (targetOverride) => {
+            ? (targetOverride, promptOverride) => {
+                const effectivePromptOverride =
+                  promptOverride ?? previewEnhancePromptDefaults;
                 onEnhanceImage({
                   messageId: previewAttachment.messageId,
                   sourceUrl: previewAttachment.src,
-                  meta: previewMeta,
-                }, targetOverride);
+                  meta: previewResolvedMeta,
+                }, targetOverride, effectivePromptOverride);
               }
             : undefined
         }
@@ -422,7 +435,7 @@ export function ChatDetailsModal({
                   {
                     messageId: previewAttachment.messageId,
                     sourceUrl: previewAttachment.src,
-                    meta: previewMeta,
+                    meta: previewResolvedMeta,
                   },
                   promptOverride,
                 );

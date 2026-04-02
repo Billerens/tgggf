@@ -5,7 +5,12 @@ import { dbApi } from "../../db";
 import { localizeImageUrlOrThrow, localizeImageUrls } from "../../imageStorage";
 import { useAppStore } from "../../store";
 import type { AppSettings, GeneratorSession, Persona } from "../../types";
-import type { LookEnhanceTarget } from "../../ui/types";
+import type {
+  LookEnhanceDetailKey,
+  LookEnhancePromptOverrides,
+  LookEnhanceTarget,
+} from "../../ui/types";
+import { resolveSharedEnhancePromptDefaults } from "./enhancePromptDefaults";
 import {
   mapEnhanceTargetToDetailTargets,
   mergePromptTags,
@@ -155,7 +160,7 @@ export function useSharedImageActions({
     context: SharedImageActionContext,
     mode: "enhance" | "regenerate",
     targetOverride: LookEnhanceTarget = "all",
-    promptOverride?: string,
+    promptOverride?: string | LookEnhancePromptOverrides,
   ) => {
     const sourceUrl = context.sourceUrl.trim();
     if (!sourceUrl) return;
@@ -181,6 +186,10 @@ export function useSharedImageActions({
     }
     try {
       const sourceMeta = context.meta ?? chatImageMetaByUrl[sourceUrl] ?? null;
+      const promptDefaults = resolveSharedEnhancePromptDefaults(
+        activePersona,
+        sourceMeta ?? undefined,
+      );
       const sourceImage = await resolveImageSource(sourceUrl);
       ensureActive();
       const localizedSourceList = await localizeImageUrls([
@@ -199,17 +208,68 @@ export function useSharedImageActions({
       const fallbackPrompt =
         sourceMeta?.prompt?.trim() ||
         "one person, neutral standing pose, clean background, high quality";
-      const basePrompt = promptOverride?.trim() || fallbackPrompt;
+      const sourcePromptOverride =
+        typeof promptOverride === "string"
+          ? promptOverride
+          : promptOverride?.sourcePrompt;
+      const normalizedSourcePromptOverride = sourcePromptOverride?.trim() || "";
+      const defaultSourcePrompt =
+        promptDefaults?.sourcePrompt?.trim() || fallbackPrompt;
+      const hasCustomSourcePromptOverride = Boolean(
+        normalizedSourcePromptOverride &&
+          normalizedSourcePromptOverride !== defaultSourcePrompt,
+      );
+      const basePrompt = normalizedSourcePromptOverride || defaultSourcePrompt;
+      const detailPromptKeys: LookEnhanceDetailKey[] = [
+        "face",
+        "eyes",
+        "nose",
+        "lips",
+        "hands",
+        "chest",
+        "vagina",
+      ];
+      const detailPrompts: Partial<Record<LookEnhanceDetailKey, string>> = {};
+      if (!hasCustomSourcePromptOverride && promptDefaults?.detailPrompts) {
+        for (const key of detailPromptKeys) {
+          const cachedValue = promptDefaults.detailPrompts[key]?.trim();
+          if (cachedValue) {
+            detailPrompts[key] = cachedValue;
+          }
+        }
+      }
+      if (
+        typeof promptOverride !== "string" &&
+        promptOverride?.detailPrompts
+      ) {
+        for (const key of detailPromptKeys) {
+          const overrideValue = promptOverride.detailPrompts[key]?.trim();
+          if (overrideValue) {
+            detailPrompts[key] = overrideValue;
+          }
+        }
+      }
+      const hasDetailPrompts = Object.keys(detailPrompts).length > 0;
       const targetTags: Record<LookEnhanceTarget, string[]> = {
         all: ["full body details", "balanced details"],
         face: ["focus on face", "facial details"],
-        eyes: ["focus on eyes", "sharp eyes"],
+        eyes: [
+          "focus on eyes",
+          "sharp eyes",
+          "allow eye color update if requested",
+        ],
         nose: ["focus on nose", "clean nose shape"],
         lips: ["focus on lips", "lip details"],
         hands: ["focus on hands", "correct fingers", "natural hand anatomy"],
         chest: ["focus on chest", "natural breast details"],
         vagina: ["focus on intimate area", "natural anatomy details"],
       };
+      const isHandsEnhance = targetOverride === "hands";
+      const isEyesEnhance = targetOverride === "eyes";
+      const enhanceDetailLevel =
+        targetOverride === "all"
+          ? settings.enhanceDetailLevelAll
+          : settings.enhanceDetailLevelPart;
       const size = await readImageSize(sourceForGeneration);
       ensureActive();
       const width = normalizeComfyDimension(size.width, 1024);
@@ -247,13 +307,29 @@ export function useSharedImageActions({
           mode === "enhance"
             ? {
                 enabled: true as const,
-                level: "medium" as const,
+                level: enhanceDetailLevel,
                 targets: mapEnhanceTargetToDetailTargets(targetOverride),
+                prompts: hasDetailPrompts ? detailPrompts : undefined,
+                strengthTable: settings.enhanceDetailStrengthTable,
               }
             : undefined;
         const generationFlow = mode === "regenerate" ? "base" : "i2i";
-        const styleStrength = mode === "enhance" ? 1 : 0.78;
-        const compositionStrength = mode === "enhance" ? 0.95 : 0;
+        const styleStrength =
+          mode === "enhance"
+            ? isHandsEnhance
+              ? 0.9
+              : isEyesEnhance
+                ? 0.95
+                : 1
+            : 0.78;
+        const compositionStrength =
+          mode === "enhance"
+            ? isHandsEnhance
+              ? 0.72
+              : isEyesEnhance
+                ? 0.82
+                : 0.95
+            : 0;
         const generatedUrls = await generateComfyImages(
           [
             {
@@ -355,8 +431,14 @@ export function useSharedImageActions({
   const enhanceSharedImage = (
     context: SharedImageActionContext,
     targetOverride: LookEnhanceTarget = "all",
+    promptOverride?: string | LookEnhancePromptOverrides,
   ) => {
-    void runSharedImageAction(context, "enhance", targetOverride);
+    void runSharedImageAction(
+      context,
+      "enhance",
+      targetOverride,
+      promptOverride,
+    );
   };
 
   const regenerateSharedImage = (

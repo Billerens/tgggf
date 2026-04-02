@@ -1,5 +1,9 @@
-import type { EndpointAuthConfig, ImageGenerationMeta } from "./types";
-import { dbApi } from "./db";
+import type {
+  EndpointAuthConfig,
+  EnhanceDetailStrengthTable,
+  ImageGenerationMeta,
+} from "./types";
+import { DEFAULT_SETTINGS, dbApi } from "./db";
 
 interface ComfyNode {
   class_type?: string;
@@ -46,6 +50,13 @@ declare global {
 }
 
 export type ComfyImageGenerationMeta = ImageGenerationMeta;
+type DetailLevel = "soft" | "medium" | "strong";
+type DetailTarget = "face" | "eyes" | "nose" | "lips" | "hands";
+type IntimateDetailTarget = "nipples" | "vagina";
+type DetailPromptTarget =
+  | DetailTarget
+  | IntimateDetailTarget
+  | "chest";
 
 export interface ComfyGenerationItem {
   prompt: string;
@@ -68,18 +79,16 @@ export interface ComfyGenerationItem {
   pickLatestImageOnly?: boolean;
   detailing?: {
     enabled?: boolean;
-    level?: "soft" | "medium" | "strong";
+    level?: DetailLevel;
     targets?: Array<
       "face" | "eyes" | "nose" | "lips" | "hands" | "nipples" | "vagina"
     >;
-    prompts?: Partial<Record<"face" | "eyes" | "nose" | "lips" | "hands", string>>;
+    prompts?: Partial<Record<DetailPromptTarget, string>>;
+    strengthTable?: EnhanceDetailStrengthTable;
     disableIntimateDetailers?: boolean;
   };
 }
 
-type DetailLevel = "soft" | "medium" | "strong";
-type DetailTarget = "face" | "eyes" | "nose" | "lips" | "hands";
-type IntimateDetailTarget = "nipples" | "vagina";
 type I2IDetailerTarget = DetailTarget | IntimateDetailTarget | "penis";
 export type ComfyFlow = "base" | "i2i";
 
@@ -134,7 +143,7 @@ interface ComfyFlowConfig {
   compositionStrengthNodeId?: string;
   hiresFixNodeId?: string;
   outputTitlePreferences: string[];
-  detailPromptTitles: Record<DetailTarget, string>;
+  detailPromptTitles: Record<DetailTarget | IntimateDetailTarget, string>;
   requiresReferenceImage?: boolean;
 }
 
@@ -156,6 +165,8 @@ const FLOW_CONFIGS: Record<ComfyFlow, ComfyFlowConfig> = {
       nose: "Nose",
       lips: "Lips",
       hands: "Hands",
+      nipples: "Nipples",
+      vagina: "Vagina",
     },
   },
   i2i: {
@@ -183,6 +194,8 @@ const FLOW_CONFIGS: Record<ComfyFlow, ComfyFlowConfig> = {
       nose: "Nose Clip transform",
       lips: "Lips Clip transform",
       hands: "Hands Clip transform",
+      nipples: "Nipples Clip transform",
+      vagina: "Vagina Clip transform",
     },
     requiresReferenceImage: true,
   },
@@ -805,27 +818,10 @@ function applyDetailing(
   const requestedTargets = Array.isArray(detailing.targets)
     ? detailing.targets
     : [];
-  const i2iDenoiseMap: Record<DetailLevel, { base: number; hires: number }> = {
-    soft: { base: 0.62, hires: 0.22 },
-    medium: { base: 0.72, hires: 0.3 },
-    strong: { base: 0.82, hires: 0.38 },
-  };
-
-  const levelMap: Record<
-    DetailLevel,
-    { face: number; eyes: number; nose: number; lips: number; hands: number }
-  > = {
-    soft: { face: 0.1, eyes: 0.1, nose: 0.12, lips: 0.13, hands: 0.16 },
-    medium: { face: 0.14, eyes: 0.14, nose: 0.18, lips: 0.2, hands: 0.22 },
-    strong: { face: 0.18, eyes: 0.18, nose: 0.22, lips: 0.24, hands: 0.28 },
-  };
-  const intimateLevelMap: Record<DetailLevel, { nipples: number; vagina: number }> = {
-    soft: { nipples: 0.12, vagina: 0.14 },
-    medium: { nipples: 0.18, vagina: 0.22 },
-    strong: { nipples: 0.24, vagina: 0.28 },
-  };
-  const denoise = levelMap[detailing.level as DetailLevel];
-  const intimateDenoise = intimateLevelMap[detailing.level as DetailLevel];
+  const fallbackStrengthTable = DEFAULT_SETTINGS.enhanceDetailStrengthTable;
+  const strengthTable = detailing.strengthTable ?? fallbackStrengthTable;
+  const level = detailing.level as DetailLevel;
+  const levelStrength = strengthTable[level] ?? fallbackStrengthTable[level];
   let enabledTargets =
     requestedTargets.length > 0
       ? new Set<DetailTarget>(requestedTargets.filter(isBaseDetailTarget))
@@ -867,13 +863,12 @@ function applyDetailing(
   setEnableDetailer("Penis", false);
 
   if (isI2I) {
-    const i2iDenoise = i2iDenoiseMap[detailing.level as DetailLevel];
     const i2iEnabledTargets = new Set<I2IDetailerTarget>([
       ...Array.from(enabledTargets),
       ...Array.from(enabledIntimateTargets),
     ]);
-    setSliderByExactTitle(workflow, "Denoise", i2iDenoise.base);
-    setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", i2iDenoise.hires);
+    setSliderByExactTitle(workflow, "Denoise", levelStrength.i2iBase);
+    setSliderByExactTitle(workflow, "Hi-Res Fix Denoise", levelStrength.i2iHires);
     // Mirror "Enable * Detailer" behavior using bypass switches present in i2i_2 flow.
     setBooleanInputByExactTitle(workflow, "Face bypass", "bypass", !enabledTargets.has("face"));
     setBooleanInputByExactTitle(workflow, "Eyes bypass", "bypass", !enabledTargets.has("eyes"));
@@ -886,23 +881,23 @@ function applyDetailing(
     rewireI2IDetailerChain(workflow, i2iEnabledTargets, flowConfig);
   }
   const minDenoise = 0.01;
-  setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? denoise.face : minDenoise);
-  setSliderByExactTitle(workflow, "Denoise Eyes", enabledTargets.has("eyes") ? denoise.eyes : minDenoise);
-  setSliderByExactTitle(workflow, "Denoise Nose", enabledTargets.has("nose") ? denoise.nose : minDenoise);
-  setSliderByExactTitle(workflow, "Denoise Lips", enabledTargets.has("lips") ? denoise.lips : minDenoise);
-  setSliderByExactTitle(workflow, "Denoise Hands", enabledTargets.has("hands") ? denoise.hands : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Face", enabledTargets.has("face") ? levelStrength.face : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Eyes", enabledTargets.has("eyes") ? levelStrength.eyes : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Nose", enabledTargets.has("nose") ? levelStrength.nose : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Lips", enabledTargets.has("lips") ? levelStrength.lips : minDenoise);
+  setSliderByExactTitle(workflow, "Denoise Hands", enabledTargets.has("hands") ? levelStrength.hands : minDenoise);
   setSliderByExactTitle(
     workflow,
     "Denoise Nipples",
     enabledIntimateTargets.has("nipples")
-      ? intimateDenoise.nipples
+      ? levelStrength.chest
       : minDenoise,
   );
   setSliderByExactTitle(
     workflow,
     "Denoise Vagina",
     enabledIntimateTargets.has("vagina")
-      ? intimateDenoise.vagina
+      ? levelStrength.vagina
       : minDenoise,
   );
   setSliderByExactTitle(workflow, "Denoise Penis", minDenoise);
@@ -921,6 +916,20 @@ function applyDetailing(
   }
   if (enabledTargets.has("hands")) {
     setClipTextByExactTitle(workflow, flowConfig.detailPromptTitles.hands, detailing.prompts?.hands);
+  }
+  if (enabledIntimateTargets.has("nipples")) {
+    setClipTextByExactTitle(
+      workflow,
+      flowConfig.detailPromptTitles.nipples,
+      detailing.prompts?.chest ?? detailing.prompts?.nipples,
+    );
+  }
+  if (enabledIntimateTargets.has("vagina")) {
+    setClipTextByExactTitle(
+      workflow,
+      flowConfig.detailPromptTitles.vagina,
+      detailing.prompts?.vagina,
+    );
   }
 }
 

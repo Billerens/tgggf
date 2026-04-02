@@ -178,6 +178,11 @@ export default function App() {
     setGenerationDelaySeconds,
     setSidebarTab,
   });
+  const generationActivePersona = useMemo(() => {
+    const personaId = generationSession?.personaId || generationPersonaId;
+    if (!personaId) return null;
+    return personas.find((persona) => persona.id === personaId) ?? null;
+  }, [generationPersonaId, generationSession?.personaId, personas]);
 
   const generatedImageUrls = useMemo(
     () =>
@@ -392,6 +397,7 @@ export default function App() {
 
         {sidebarTab === "generation" ? (
           <GenerationPane
+            activePersona={generationActivePersona}
             generationSessionId={generationSessionId}
             topic={generationTopic}
             onTopicChange={setGenerationTopic}
@@ -614,7 +620,11 @@ export default function App() {
             if (!sharedEnhanceReview) return;
             const next = sharedEnhanceReview;
             setSharedEnhanceReview(null);
-            void runSharedImageAction(next.context, "enhance", next.target);
+            void runSharedImageAction(
+              next.context,
+              "enhance",
+              next.target,
+            );
           }}
         />
       </div>

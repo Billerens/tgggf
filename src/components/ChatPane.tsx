@@ -9,10 +9,11 @@ import type {
   Persona,
   PersonaRuntimeState,
 } from "../types";
-import type { LookEnhanceTarget } from "../ui/types";
+import type { LookEnhancePromptOverrides, LookEnhanceTarget } from "../ui/types";
 import type { PersonaControlPayload } from "../personaDynamics";
 import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
+import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface ChatPaneProps {
@@ -33,7 +34,7 @@ interface ChatPaneProps {
     messageId: string;
     sourceUrl: string;
     meta?: ImageGenerationMeta;
-  }, targetOverride?: LookEnhanceTarget) => void;
+  }, targetOverride?: LookEnhanceTarget, promptOverride?: string | LookEnhancePromptOverrides) => void;
   onRegenerateImage: (
     payload: {
       messageId: string;
@@ -256,6 +257,12 @@ export function ChatPane({
         angry: "⛔",
       }[activePersonaState.mood]
     : "○";
+  const previewResolvedMeta = previewTarget
+    ? previewMeta ?? imageMetaByUrl[previewTarget.sourceUrl]
+    : previewMeta;
+  const previewEnhancePromptDefaults = previewTarget
+    ? resolveSharedEnhancePromptDefaults(activePersona, previewResolvedMeta)
+    : undefined;
 
   return (
     <main className="chat">
@@ -503,18 +510,22 @@ export function ChatPane({
       </div>
       <ImagePreviewModal
         src={previewSrc}
-        meta={previewMeta}
+        meta={previewResolvedMeta}
+        enhancePromptDefaults={previewEnhancePromptDefaults}
         actionBusy={imageActionBusy}
         onEnhance={
           previewTarget
-            ? (targetOverride) => {
+            ? (targetOverride, promptOverride) => {
+                const effectivePromptOverride =
+                  promptOverride ?? previewEnhancePromptDefaults;
                 onEnhanceImage(
                   {
                     messageId: previewTarget.messageId,
                     sourceUrl: previewTarget.sourceUrl,
-                    meta: previewMeta,
+                    meta: previewResolvedMeta,
                   },
                   targetOverride,
+                  effectivePromptOverride,
                 );
               }
             : undefined
@@ -526,7 +537,7 @@ export function ChatPane({
                   {
                     messageId: previewTarget.messageId,
                     sourceUrl: previewTarget.sourceUrl,
-                    meta: previewMeta,
+                    meta: previewResolvedMeta,
                   },
                   promptOverride,
                 );

@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { Image, Infinity, Play, Square } from "lucide-react";
-import type { ImageGenerationMeta } from "../types";
-import type { LookEnhanceTarget } from "../ui/types";
+import type { ImageGenerationMeta, Persona } from "../types";
+import type { LookEnhancePromptOverrides, LookEnhanceTarget } from "../ui/types";
+import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface GenerationPaneProps {
+  activePersona: Persona | null;
   generationSessionId: string;
   topic: string;
   onTopicChange: (value: string) => void;
@@ -24,7 +26,7 @@ interface GenerationPaneProps {
     sessionId: string;
     sourceUrl: string;
     meta?: ImageGenerationMeta;
-  }, targetOverride?: LookEnhanceTarget) => void;
+  }, targetOverride?: LookEnhanceTarget, promptOverride?: string | LookEnhancePromptOverrides) => void;
   onRegenerateImage: (
     payload: {
       sessionId: string;
@@ -38,6 +40,7 @@ interface GenerationPaneProps {
 }
 
 export function GenerationPane({
+  activePersona,
   generationSessionId,
   topic,
   onTopicChange,
@@ -81,6 +84,12 @@ export function GenerationPane({
         : prev,
     );
   }, [generatedImageUrls, imageMetaByUrl, previewTarget, previewSrc]);
+  const previewResolvedMeta = previewTarget
+    ? previewMeta ?? imageMetaByUrl[previewTarget.sourceUrl]
+    : previewMeta;
+  const previewEnhancePromptDefaults = previewTarget
+    ? resolveSharedEnhancePromptDefaults(activePersona, previewResolvedMeta)
+    : undefined;
 
   return (
     <>
@@ -208,18 +217,22 @@ export function GenerationPane({
       </main>
       <ImagePreviewModal
         src={previewSrc}
-        meta={previewMeta}
+        meta={previewResolvedMeta}
+        enhancePromptDefaults={previewEnhancePromptDefaults}
         actionBusy={imageActionBusy}
         onEnhance={
           previewTarget
-            ? (targetOverride) => {
+            ? (targetOverride, promptOverride) => {
+                const effectivePromptOverride =
+                  promptOverride ?? previewEnhancePromptDefaults;
                 onEnhanceImage(
                   {
                     sessionId: previewTarget.sessionId,
                     sourceUrl: previewTarget.sourceUrl,
-                    meta: previewMeta,
+                    meta: previewResolvedMeta,
                   },
                   targetOverride,
+                  effectivePromptOverride,
                 );
               }
             : undefined
@@ -231,7 +244,7 @@ export function GenerationPane({
                   {
                     sessionId: previewTarget.sessionId,
                     sourceUrl: previewTarget.sourceUrl,
-                    meta: previewMeta,
+                    meta: previewResolvedMeta,
                   },
                   promptOverride,
                 );

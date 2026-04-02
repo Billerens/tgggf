@@ -215,7 +215,6 @@ export function EnhanceCompareModal({
   };
 
   const transformStyle = { transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` };
-
   const overlay = (
     <div className="image-preview-overlay enhance-compare-overlay" onClick={onClose}>
       <div className="enhance-compare-dialog" onClick={(event) => event.stopPropagation()}>
