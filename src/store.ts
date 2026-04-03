@@ -2119,10 +2119,194 @@ export const useAppStore = create<AppState>((set, get) => ({
         ]),
       ]);
 
+      const extraAssistantMessages: ChatMessage[] = [];
+      const extraEvents: ChatEvent[] = [];
+      let rollingMessages = [...nextMessages, assistantMessage];
+      let latestResponseId = answer.responseId ?? activeChat.lastResponseId;
+
+      if (
+        activeChat.mode === "group" &&
+        personaSpeakerEntries.length > 1 &&
+        GROUP_AUTONOMOUS_REPLY_COUNT > 0
+      ) {
+        const usedSpeakerIds = new Set<string>();
+        if (speakerParticipant?.id) {
+          usedSpeakerIds.add(speakerParticipant.id);
+        }
+
+        for (
+          let beatIndex = 0;
+          beatIndex < GROUP_AUTONOMOUS_REPLY_COUNT;
+          beatIndex += 1
+        ) {
+          const availableEntries = personaSpeakerEntries.filter(
+            (entry) => !usedSpeakerIds.has(entry.participant.id),
+          );
+          const candidateEntries =
+            availableEntries.length > 0 ? availableEntries : personaSpeakerEntries;
+          if (candidateEntries.length === 0) break;
+
+          let selectedEntry = candidateEntries[0];
+          let followupDecisionSource: "director_llm" | "round_robin" = "round_robin";
+
+          if (candidateEntries.length > 1) {
+            const directorCandidates: GroupDirectorCandidate[] =
+              candidateEntries.map((entry) => ({
+                participantId: entry.participant.id,
+                personaId: entry.persona.id,
+                displayName: entry.participant.displayName,
+              }));
+            const directorRecentMessages: GroupDirectorRecentMessage[] =
+              rollingMessages.slice(-8).map((message) => {
+                const author = message.authorParticipantId
+                  ? chatParticipants.find(
+                      (participant) => participant.id === message.authorParticipantId,
+                    )
+                  : undefined;
+                const authorName =
+                  author?.displayName ??
+                  (message.role === "user"
+                    ? "Вы"
+                    : message.role === "assistant"
+                      ? "Участник"
+                      : "Система");
+                return {
+                  role: message.role,
+                  authorName,
+                  content: message.content,
+                };
+              });
+            try {
+              const directorDecision = await runStageWithRetry("decision", () =>
+                requestGroupDirectorDecision(get().settings, {
+                  userMessage: trimmedContent,
+                  candidates: directorCandidates,
+                  recentMessages: directorRecentMessages,
+                  blockedParticipantIds: Array.from(usedSpeakerIds),
+                }),
+              );
+              const directedEntry = candidateEntries.find(
+                (entry) =>
+                  entry.participant.id === directorDecision.speakerParticipantId,
+              );
+              if (directedEntry) {
+                selectedEntry = directedEntry;
+                followupDecisionSource = "director_llm";
+              }
+            } catch {
+              // fallback to round-robin
+            }
+          }
+
+          usedSpeakerIds.add(selectedEntry.participant.id);
+          const followupSpeakerEvent = buildChatEvent("speaker_selected", {
+            speakerParticipantId: selectedEntry.participant.id,
+            speakerPersonaId: selectedEntry.persona.id,
+            reason: "autonomous_reply",
+            decisionSource: followupDecisionSource,
+          });
+          if (followupSpeakerEvent) {
+            extraEvents.push(followupSpeakerEvent);
+          }
+
+          try {
+            const followupLoadedState = await dbApi.getPersonaState(
+              activeChatId,
+              selectedEntry.persona.id,
+            );
+            const followupRuntimeState = ensurePersonaState(
+              followupLoadedState ?? undefined,
+              selectedEntry.persona,
+              activeChatId,
+            );
+            if (!followupLoadedState) {
+              await dbApi.savePersonaState(followupRuntimeState);
+            }
+
+            const followupAllMemories = await dbApi.getMemories(activeChatId);
+            const followupMemoryPool = followupAllMemories.filter(
+              (memory) => memory.personaId === selectedEntry.persona.id,
+            );
+            const followupInput = buildAutonomousFollowupPrompt(
+              "group",
+              trimmedContent,
+              rollingMessages,
+            );
+            const followupRecentMessages = buildRecentMessages(rollingMessages, 5);
+            const followupConversationSummary = buildConversationSummary(
+              rollingMessages,
+              8,
+              5,
+            );
+            const followupMemoryCard = buildLayeredMemoryContextCard(
+              followupMemoryPool,
+              followupRecentMessages,
+              selectedEntry.persona.advanced.memory.decayDays,
+            );
+
+            const followupAnswer = await runStageWithRetry("actor_response", () =>
+              requestChatCompletion(
+                get().settings,
+                selectedEntry.persona,
+                followupInput,
+                latestResponseId,
+                {
+                  runtimeState: followupRuntimeState,
+                  memoryCard: followupMemoryCard,
+                  recentMessages: followupRecentMessages,
+                  conversationSummary: followupConversationSummary,
+                },
+              ),
+            );
+            latestResponseId = followupAnswer.responseId ?? latestResponseId;
+
+            const followupMessage: ChatMessage = {
+              id: id(),
+              chatId: activeChatId,
+              role: "assistant",
+              authorParticipantId: selectedEntry.participant.id,
+              content: followupAnswer.content,
+              personaControlRaw: followupAnswer.personaControl
+                ? JSON.stringify(followupAnswer.personaControl)
+                : undefined,
+              turnId,
+              createdAt: nowIso(),
+            };
+
+            extraAssistantMessages.push(followupMessage);
+            rollingMessages = [...rollingMessages, followupMessage];
+            set({ messages: rollingMessages });
+
+            const followupCreatedEvent = buildChatEvent("message_created", {
+              role: "assistant",
+              messageId: followupMessage.id,
+              authorParticipantId: followupMessage.authorParticipantId ?? null,
+            });
+            if (followupCreatedEvent) {
+              extraEvents.push(followupCreatedEvent);
+            }
+
+            const followupState = evolvePersonaState(
+              followupRuntimeState,
+              selectedEntry.persona,
+              followupInput,
+              followupMessage.content,
+            );
+            await dbApi.savePersonaState(followupState);
+            if (selectedEntry.persona.id === activePersona.id) {
+              resolvedState = followupState;
+            }
+          } catch {
+            break;
+          }
+        }
+      }
+
       await updateTurnJob({
         stage: "commit",
         payload: {
           memoryCount: memoryReconciliation.kept.length,
+          assistantMessages: 1 + extraAssistantMessages.length,
         },
       });
 
@@ -2133,16 +2317,19 @@ export const useAppStore = create<AppState>((set, get) => ({
           latestChat.title === "Новый чат"
             ? titleFromText(trimmedContent)
             : latestChat.title,
-        lastResponseId: answer.responseId ?? latestChat.lastResponseId,
+        lastResponseId: latestResponseId ?? latestChat.lastResponseId,
         updatedAt: nowIso(),
       };
       const committedEvent = buildChatEvent("turn_committed", {
-        messageId: assistantMessage.id,
+        messageId:
+          extraAssistantMessages[extraAssistantMessages.length - 1]?.id ??
+          assistantMessage.id,
+        assistantMessages: 1 + extraAssistantMessages.length,
       });
       const finalizedTurnJob = turnJob
         ? {
-            ...turnJob,
-            stage: "finalize" as const,
+          ...turnJob,
+          stage: "finalize" as const,
             status: "done" as const,
             finishedAt: nowIso(),
           }
@@ -2153,10 +2340,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       await dbApi.commitTurnArtifacts({
         chat: updatedChat,
-        messages: [assistantMessage],
-        events: committedEvent ? [committedEvent] : undefined,
+        messages: [assistantMessage, ...extraAssistantMessages],
+        events: committedEvent
+          ? [...extraEvents, committedEvent]
+          : extraEvents.length > 0
+            ? extraEvents
+            : undefined,
         turnJob: finalizedTurnJob ?? undefined,
       });
+      for (const event of extraEvents) {
+        appendChatEvent(event);
+      }
       if (committedEvent) {
         appendChatEvent(committedEvent);
       }
