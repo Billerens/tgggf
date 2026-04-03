@@ -410,6 +410,16 @@ export function SettingsModal({
           {activeTab === "personal" ? (
             <>
               <label>
+                Имя пользователя
+                <input
+                  value={settingsDraft.userName}
+                  onChange={(e) =>
+                    setSettingsDraft((v) => ({ ...v, userName: e.target.value }))
+                  }
+                  placeholder="Как к вам обращаться"
+                />
+              </label>
+              <label>
                 Пол пользователя
                 <Dropdown
                   value={settingsDraft.userGender}

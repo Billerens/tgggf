@@ -14,6 +14,8 @@ import { ChatDetailsModal } from "./components/ChatDetailsModal";
 import { EnhanceCompareModal } from "./components/EnhanceCompareModal";
 import { ErrorToast } from "./components/ErrorToast";
 import { GenerationPane } from "./components/GenerationPane";
+import { GroupChatPane } from "./components/GroupChatPane";
+import { GroupRoomModal } from "./components/GroupRoomModal";
 import { PersonaModal } from "./components/PersonaModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
@@ -39,6 +41,7 @@ import { usePersonaLookActions } from "./features/look/usePersonaLookActions";
 import { usePersonaDraftActions } from "./features/persona-editor/usePersonaDraftActions";
 import { useAppInstallPrompt } from "./features/settings/useAppInstallPrompt";
 import { useModelCheckpointCatalog } from "./features/settings/useModelCheckpointCatalog";
+import { useGroupStore } from "./groupStore";
 import {
   buildBackupPayload,
   exportBackupFile,
@@ -73,10 +76,26 @@ export default function App() {
     saveSettings,
     clearError,
   } = useAppStore();
+  const {
+    groupRooms,
+    groupParticipants,
+    groupMessages,
+    groupEvents,
+    activeGroupRoomId,
+    isLoading: isGroupLoading,
+    initializeGroup,
+    createGroupRoom,
+    deleteGroupRoom,
+    selectGroupRoom,
+    sendUserGroupMessage,
+    setActiveGroupRoomStatus,
+    runActiveGroupIteration,
+  } = useGroupStore();
 
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chats");
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
+  const [showGroupRoomModal, setShowGroupRoomModal] = useState(false);
   const [showChatDetailsModal, setShowChatDetailsModal] = useState(false);
   const [personaModalTab, setPersonaModalTab] =
     useState<PersonaModalTab>("editor");
@@ -95,6 +114,7 @@ export default function App() {
   const [personaDraft, setPersonaDraft] = useState(createEmptyPersonaDraft);
   const [editingPersonaId, setEditingPersonaId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState("");
+  const [groupMessageInput, setGroupMessageInput] = useState("");
   const [settingsDraft, setSettingsDraft] = useState(settings);
 
   const [generationTheme, setGenerationTheme] = useState("");
@@ -142,6 +162,11 @@ export default function App() {
   }, [initialize]);
 
   useEffect(() => {
+    if (!initialized) return;
+    void initializeGroup(personas);
+  }, [initialized, initializeGroup, personas]);
+
+  useEffect(() => {
     setSettingsDraft(settings);
   }, [settings]);
 
@@ -169,6 +194,34 @@ export default function App() {
     () => chats.find((c) => c.id === activeChatId) ?? null,
     [chats, activeChatId],
   );
+  const activeGroupRoom = useMemo(
+    () => groupRooms.find((room) => room.id === activeGroupRoomId) ?? null,
+    [groupRooms, activeGroupRoomId],
+  );
+
+  useEffect(() => {
+    if (!activeGroupRoom) return;
+    if (activeGroupRoom.status !== "active") return;
+    if (
+      activeGroupRoom.mode === "personas_plus_user" &&
+      activeGroupRoom.waitingForUser
+    ) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      void runActiveGroupIteration(personas, settings, settings.userName);
+    }, 4200);
+
+    return () => window.clearInterval(timerId);
+  }, [
+    activeGroupRoom?.id,
+    activeGroupRoom?.status,
+    activeGroupRoom?.waitingForUser,
+    personas,
+    runActiveGroupIteration,
+    settings,
+  ]);
 
   const {
     generationPersonaId,
@@ -356,6 +409,14 @@ export default function App() {
     await sendMessage(value);
   };
 
+  const onGroupMessageSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!groupMessageInput.trim()) return;
+    const value = groupMessageInput;
+    setGroupMessageInput("");
+    await sendUserGroupMessage(value, settings.userName, personas);
+  };
+
   const onGenerateSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setGenerationLoading(true);
@@ -496,8 +557,10 @@ export default function App() {
           sidebarTab={sidebarTab}
           setSidebarTab={setSidebarTab}
           chats={chats}
+          groupRooms={groupRooms}
           personas={personas}
           activeChatId={activeChatId}
+          activeGroupRoomId={activeGroupRoomId}
           activePersonaId={activePersonaId}
           generationPersonaId={generationPersonaId}
           generationSessions={generationSessions}
@@ -505,11 +568,14 @@ export default function App() {
           onOpenPersonas={() => setShowPersonaModal(true)}
           onOpenSettings={() => setShowSettingsModal(true)}
           onCreateChat={() => void createChat()}
+          onCreateGroupRoom={() => setShowGroupRoomModal(true)}
           onCreateGenerationSession={() => void createGenerationSession()}
           onDeleteGenerationSession={(sessionId) =>
             void deleteGenerationSession(sessionId)
           }
+          onDeleteGroupRoom={(roomId) => void deleteGroupRoom(roomId)}
           onSelectChat={(chatId) => void selectChat(chatId)}
+          onSelectGroupRoom={(roomId) => void selectGroupRoom(roomId)}
           onSelectGenerationSession={setGenerationSessionId}
           onSelectPersona={(personaId) => void selectPersona(personaId)}
           onSelectGenerationPersona={setGenerationPersonaId}
@@ -547,6 +613,30 @@ export default function App() {
             onRegenerateImage={regenerateSharedImage}
             onStart={() => void startGeneration()}
             onStop={stopGeneration}
+          />
+        ) : sidebarTab === "groups" ? (
+          <GroupChatPane
+            activeRoom={activeGroupRoom}
+            participants={groupParticipants}
+            messages={groupMessages}
+            events={groupEvents}
+            personas={personas}
+            inputValue={groupMessageInput}
+            setInputValue={setGroupMessageInput}
+            isLoading={isGroupLoading}
+            controlsDisabled={isGroupLoading}
+            showSystemImageBlock={settings.showSystemImageBlock}
+            showStatusChangeDetails={settings.showStatusChangeDetails}
+            onStartRoom={() => void setActiveGroupRoomStatus("active")}
+            onPauseRoom={() => void setActiveGroupRoomStatus("paused")}
+            onRunIteration={() =>
+              void runActiveGroupIteration(personas, settings, settings.userName)
+            }
+            onDeleteRoom={() => {
+              if (!activeGroupRoomId) return;
+              void deleteGroupRoom(activeGroupRoomId);
+            }}
+            onSubmitMessage={onGroupMessageSubmit}
           />
         ) : (
           <ChatPane
@@ -693,6 +783,21 @@ export default function App() {
               personaGenerationModel: nextModel,
             }))
           }
+        />
+
+        <GroupRoomModal
+          open={showGroupRoomModal}
+          personas={personas}
+          onClose={() => setShowGroupRoomModal(false)}
+          onCreate={async ({ title, mode, participantPersonaIds }) => {
+            await createGroupRoom(personas, {
+              title,
+              mode,
+              participantPersonaIds,
+            });
+            setShowGroupRoomModal(false);
+            setSidebarTab("groups");
+          }}
         />
 
         <ErrorToast error={error} onClose={clearError} />

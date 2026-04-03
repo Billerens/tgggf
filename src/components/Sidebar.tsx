@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   ImagePlus,
+  MessagesSquare,
   MessageCircle,
   Plus,
   Settings,
@@ -12,7 +13,7 @@ import {
 } from "lucide-react";
 import { Logo } from "./Logo";
 import { dbApi } from "../db";
-import type { ChatSession, GeneratorSession, Persona } from "../types";
+import type { ChatSession, GeneratorSession, GroupRoom, Persona } from "../types";
 import type { SidebarTab } from "../ui/types";
 import { formatDate } from "../ui/format";
 
@@ -20,8 +21,10 @@ interface SidebarProps {
   sidebarTab: SidebarTab;
   setSidebarTab: (value: SidebarTab) => void;
   chats: ChatSession[];
+  groupRooms: GroupRoom[];
   personas: Persona[];
   activeChatId: string | null;
+  activeGroupRoomId: string | null;
   activePersonaId: string | null;
   generationPersonaId: string;
   generationSessions: GeneratorSession[];
@@ -29,9 +32,12 @@ interface SidebarProps {
   onOpenPersonas: () => void;
   onOpenSettings: () => void;
   onCreateChat: () => void;
+  onCreateGroupRoom: () => void;
   onCreateGenerationSession: () => void;
+  onDeleteGroupRoom: (roomId: string) => void;
   onDeleteGenerationSession: (sessionId: string) => void;
   onSelectChat: (chatId: string) => void;
+  onSelectGroupRoom: (roomId: string) => void;
   onSelectGenerationSession: (sessionId: string) => void;
   onSelectPersona: (personaId: string) => void;
   onSelectGenerationPersona: (personaId: string) => void;
@@ -163,8 +169,10 @@ export function Sidebar({
   sidebarTab,
   setSidebarTab,
   chats,
+  groupRooms,
   personas,
   activeChatId,
+  activeGroupRoomId,
   activePersonaId,
   generationPersonaId,
   generationSessions,
@@ -172,9 +180,12 @@ export function Sidebar({
   onOpenPersonas,
   onOpenSettings,
   onCreateChat,
+  onCreateGroupRoom,
   onCreateGenerationSession,
+  onDeleteGroupRoom,
   onDeleteGenerationSession,
   onSelectChat,
+  onSelectGroupRoom,
   onSelectGenerationSession,
   onSelectPersona,
   onSelectGenerationPersona,
@@ -226,6 +237,8 @@ export function Sidebar({
           <h2>
             {sidebarTab === "chats"
               ? "Чаты"
+              : sidebarTab === "groups"
+                ? "Группы"
               : sidebarTab === "personas"
                 ? "Персоны"
                 : "Генерация"}
@@ -257,22 +270,37 @@ export function Sidebar({
             type="button"
             className={sidebarTab === "chats" ? "active" : ""}
             onClick={() => setSidebarTab("chats")}
+            title="Чаты"
+            aria-label="Чаты"
           >
-            Чаты
+            <MessageCircle size={18} />
+          </button>
+          <button
+            type="button"
+            className={sidebarTab === "groups" ? "active" : ""}
+            onClick={() => setSidebarTab("groups")}
+            title="Группы"
+            aria-label="Группы"
+          >
+            <MessagesSquare size={18} />
           </button>
           <button
             type="button"
             className={sidebarTab === "personas" ? "active" : ""}
             onClick={() => setSidebarTab("personas")}
+            title="Персоны"
+            aria-label="Персоны"
           >
-            Персоны
+            <Users size={18} />
           </button>
           <button
             type="button"
             className={sidebarTab === "generation" ? "active" : ""}
             onClick={() => setSidebarTab("generation")}
+            title="Генерация"
+            aria-label="Генерация"
           >
-            Генерация
+            <ImagePlus size={18} />
           </button>
         </div>
 
@@ -317,6 +345,53 @@ export function Sidebar({
               })()
             ))}
             {chats.length === 0 ? <p className="empty-state">Чатов пока нет</p> : null}
+          </div>
+        ) : sidebarTab === "groups" ? (
+          <div className="sidebar-list">
+            <div className="list-actions">
+              <button type="button" className="primary" onClick={onCreateGroupRoom}>
+                <Plus size={16} /> Новая группа
+              </button>
+            </div>
+            {groupRooms.map((room) => (
+              <div
+                key={room.id}
+                className={`chat-item chat-item-with-action ${
+                  room.id === activeGroupRoomId ? "active" : ""
+                } ${room.status === "active" ? "is-running" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="grow"
+                  onClick={() => {
+                    onSelectGroupRoom(room.id);
+                    onCloseMobile();
+                  }}
+                >
+                  <div className="sidebar-item-main">
+                    <div className="sidebar-avatar" aria-hidden="true">
+                      <span>G</span>
+                    </div>
+                    <div className="sidebar-item-text">
+                      <strong>{room.title}</strong>
+                      <span>
+                        {room.mode === "personas_plus_user" ? "Персоны + пользователь" : "Только персоны"} •{" "}
+                        {formatDate(room.updatedAt)}
+                      </span>
+                    </div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn danger mini"
+                  onClick={() => onDeleteGroupRoom(room.id)}
+                  title="Удалить группу"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+            {groupRooms.length === 0 ? <p className="empty-state">Групп пока нет</p> : null}
           </div>
         ) : sidebarTab === "personas" ? (
           <div className="sidebar-list">
@@ -434,6 +509,13 @@ export function Sidebar({
         >
           <MessageCircle size={24} />
           Чаты
+        </button>
+        <button
+          className={`mobile-nav-btn ${sidebarTab === "groups" && isMobileOpen ? "active" : ""}`}
+          onClick={() => onToggleMobileTab("groups")}
+        >
+          <MessagesSquare size={24} />
+          Группы
         </button>
         <button
           className={`mobile-nav-btn ${sidebarTab === "personas" && isMobileOpen ? "active" : ""}`}

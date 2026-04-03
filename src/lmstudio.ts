@@ -208,7 +208,7 @@ function formatLookPromptCacheInput(
 
 export function buildSystemPrompt(
   persona: Persona,
-  settings: Pick<AppSettings, "userGender">,
+  settings: Pick<AppSettings, "userGender" | "userName">,
   context?: ChatCompletionContext,
 ) {
   const runtimeState = context?.runtimeState;
@@ -338,7 +338,9 @@ export function buildSystemPrompt(
     relationshipExpressionRule(runtimeState),
     "Если вопрос неясен, задай 1 уточняющий вопрос.",
     personaSelfGenderRule(persona),
+    `Имя пользователя: ${settings.userName}.`,
     `Пол пользователя: ${userGenderLabel(settings.userGender)}.`,
+    "Учитывай имя пользователя в обращении и персонализации ответа.",
     "Учитывай пол пользователя в обращении и согласовании форм.",
     "Не показывай persona_control пользователю как часть обычного текста.",
   ].join("\n");
@@ -352,6 +354,65 @@ interface NativeChatResult {
   comfyImageDescriptions?: string[];
   personaControl?: PersonaControlPayload;
   responseId?: string;
+}
+
+export interface GenericChatRequest {
+  model: string;
+  input: string;
+  systemPrompt: string;
+  maxOutputTokens: number;
+  temperature: number;
+  store?: boolean;
+  previousResponseId?: string;
+}
+
+export async function requestGenericChatCompletion(
+  settings: Pick<AppSettings, "lmBaseUrl" | "apiKey" | "lmAuth">,
+  request: GenericChatRequest,
+) {
+  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
+  const endpoint = `${baseUrl}/api/v1/chat`;
+  const payload: Record<string, unknown> = {
+    model: request.model,
+    input: request.input,
+    system_prompt: request.systemPrompt,
+    max_output_tokens: request.maxOutputTokens,
+    temperature: request.temperature,
+    store: request.store ?? false,
+  };
+  if (request.previousResponseId) {
+    payload.previous_response_id = request.previousResponseId;
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+  };
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`LMStudio request failed (${response.status}): ${body}`);
+  }
+
+  const data = (await response.json()) as NativeChatResponse;
+  const text = data.output
+    .filter((item) => item.type === "message")
+    .map((item) => item.content?.trim() ?? "")
+    .filter(Boolean)
+    .join("\n\n")
+    .trim();
+
+  return {
+    content: text,
+    responseId: data.response_id,
+    raw: data,
+  };
 }
 
 export async function requestChatCompletion(
@@ -646,6 +707,7 @@ export async function generateComfyPromptFromImageDescription(
     "Если в input есть LookPrompt cache, используй его как identity prior для стабильных черт (hair/face/eyes/body/outfit), но scene-specific детали бери из Image description.",
     "LookPrompt cache НЕ должен ломать требования Image description по эмоции/сцене/условиям.",
     "Одежда должна соответствовать ситуации!",
+    "ОБЯЗАТЕЛЬНО!: описывай детали сцены досконально - вид, одежда, окружение, действия, фокус на определенных частях тела и тд.",
     "При конфликте: scene-specific детали (эмоция, одежда, окружение, условия) берутся из Image description; стабильная идентичность (волосы/глаза/возрастной тип/телосложение) — из Appearance.",
     "Не добавляй детали, которых нет в исходном описании (например пирсинг/тату/аксессуары/фетиш-атрибуты, если они не указаны).",
     "ВАЖНО: Старайся покрыть тегами переданный Image description по максимуму, но без противоречий, чтобы передать все описанные детали! При этом - не выходи за общие лимиты!",

@@ -1,0 +1,783 @@
+import type {
+  AppSettings,
+  GroupEvent,
+  GroupMemoryPrivate,
+  GroupMemoryShared,
+  GroupMessage,
+  GroupParticipant,
+  GroupPersonaState,
+  GroupRelationEdge,
+  GroupRoom,
+  Persona,
+} from "./types";
+import type { PersonaControlPayload } from "./personaDynamics";
+import { requestGenericChatCompletion } from "./lmstudio";
+import { splitAssistantContent } from "./messageContent";
+import {
+  buildGroupOrchestratorSystemPrompt,
+  buildGroupOrchestratorUserInput,
+  buildGroupPersonaSystemPrompt,
+  buildGroupPersonaUserInput,
+} from "./groupPrompts";
+
+export interface GroupOrchestratorTickInput {
+  room: GroupRoom;
+  participants: GroupParticipant[];
+  messages: GroupMessage[];
+  events: GroupEvent[];
+  personas: Persona[];
+  settings: AppSettings;
+  userName: string;
+}
+
+export type GroupOrchestratorTickStatus = "spoke" | "waiting" | "skipped";
+
+export interface GroupOrchestratorTickDecision {
+  status: GroupOrchestratorTickStatus;
+  reason: string;
+  speakerPersonaId?: string;
+  messageText?: string;
+  waitForUser: boolean;
+  waitReason?: string;
+  debug: Record<string, unknown>;
+}
+
+export interface PersonaSpeechValidationResult {
+  valid: boolean;
+  reason?: string;
+}
+
+interface LlmOrchestratorDecision {
+  status?: string;
+  speakerPersonaId?: string;
+  waitForUser?: boolean;
+  waitReason?: string;
+  reason?: string;
+  intent?: string;
+}
+
+export interface GroupPersonaSpeechDraft {
+  visibleText: string;
+  comfyPrompt?: string;
+  comfyPrompts?: string[];
+  comfyImageDescription?: string;
+  comfyImageDescriptions?: string[];
+  personaControl?: PersonaControlPayload;
+  responseId?: string;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeToken(value: string) {
+  return value.trim().toLowerCase();
+}
+
+function parseJsonObjectFromText<T extends object>(value: string): T | null {
+  const text = value.trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(text.slice(start, end + 1)) as T;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function clip(value: string, max = 220) {
+  const text = value.trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function sanitizePersonaVisibleText(raw: string) {
+  return raw
+    .replace(/!\[[^\]]*]\([^)]+\)/gi, "")
+    .replace(/https?:\/\/[^\s)]+?\.(?:png|jpe?g|gif|webp)(?:\?[^\s)]*)?/gi, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function getLastUserMessage(messages: GroupMessage[], roomId: string) {
+  return [...messages]
+    .reverse()
+    .find(
+      (message) => message.roomId === roomId && message.authorType === "user",
+    );
+}
+
+function getLastSpeakerPersonaId(events: GroupEvent[]) {
+  const lastSpeakerEvent = [...events]
+    .reverse()
+    .find((event) => event.type === "speaker_selected");
+  const personaId = lastSpeakerEvent?.payload?.personaId;
+  return typeof personaId === "string" ? personaId : "";
+}
+
+function getMentionDrivenPersonaId(
+  lastUserMessage: GroupMessage | undefined,
+  participants: GroupParticipant[],
+) {
+  if (!lastUserMessage?.mentions?.length) return "";
+  const allowed = new Set(participants.map((item) => item.personaId));
+  const mention = lastUserMessage.mentions.find(
+    (item) => item.targetType === "persona" && allowed.has(item.targetId),
+  );
+  return mention?.targetId ?? "";
+}
+
+function buildRecentSpeakerIds(
+  events: GroupEvent[],
+  roomId: string,
+  limit = 12,
+) {
+  return [...events]
+    .filter(
+      (event) => event.roomId === roomId && event.type === "speaker_selected",
+    )
+    .map((event) => {
+      const personaId = event.payload?.personaId;
+      return typeof personaId === "string" ? personaId : "";
+    })
+    .filter(Boolean)
+    .slice(-limit)
+    .reverse();
+}
+
+function getLastRoomMessage(messages: GroupMessage[], roomId: string) {
+  return [...messages]
+    .filter((message) => message.roomId === roomId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
+function getLatestPendingImageMessage(messages: GroupMessage[], roomId: string) {
+  return [...messages]
+    .filter((message) => message.roomId === roomId && message.imageGenerationPending)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
+function estimatePersonaTypingDelayMs(message: GroupMessage) {
+  const textLength = message.content.trim().length;
+  const boundedLength = Math.max(18, Math.min(420, textLength));
+  const byLength = boundedLength * 32;
+  return Math.max(6500, Math.min(22000, byLength));
+}
+
+function buildPersonaMessageText(
+  room: GroupRoom,
+  speaker: Persona,
+  lastUserMessage: GroupMessage | undefined,
+  userName: string,
+) {
+  const firstPersonaIntent =
+    speaker.personalityPrompt.split(/[.!?]/)[0]?.trim() ||
+    "сохранить ход разговора";
+  const baseTopic = lastUserMessage?.content?.trim()
+    ? `Реагирую на последний вброс: "${lastUserMessage.content.trim().slice(0, 110)}".`
+    : "Поддерживаю развитие обсуждения в группе.";
+
+  if (room.mode === "personas_plus_user") {
+    return `${baseTopic} @${userName}, что думаешь об этом с позиции ${speaker.advanced.core.archetype || "моего подхода"}?`;
+  }
+
+  return `${baseTopic} Как ${speaker.name}, сейчас считаю важным ${firstPersonaIntent}.`;
+}
+
+export function buildFallbackPersonaMessageText(params: {
+  room: GroupRoom;
+  speaker: Persona;
+  messages: GroupMessage[];
+  userName: string;
+}) {
+  const lastUserMessage = getLastUserMessage(params.messages, params.room.id);
+  return buildPersonaMessageText(
+    params.room,
+    params.speaker,
+    lastUserMessage,
+    params.userName,
+  );
+}
+
+function buildParticipantNameMap(
+  participants: GroupParticipant[],
+  personas: Persona[],
+) {
+  const personaById = new Map(personas.map((persona) => [persona.id, persona]));
+  return participants
+    .map((participant) => {
+      const persona = personaById.get(participant.personaId);
+      if (!persona) return null;
+      return {
+        personaId: participant.personaId,
+        name: persona.name,
+      };
+    })
+    .filter((item): item is { personaId: string; name: string } =>
+      Boolean(item),
+    );
+}
+
+function summarizePersonaAppearance(persona: Persona) {
+  const parts = [
+    persona.appearance.hair,
+    persona.appearance.eyes,
+    persona.appearance.bodyType,
+    persona.appearance.clothingStyle,
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return clip(parts.join(", "), 120);
+}
+
+function buildOrchestratorParticipantProfiles(
+  participants: GroupParticipant[],
+  personas: Persona[],
+) {
+  const personaById = new Map(personas.map((persona) => [persona.id, persona]));
+  return participants
+    .map((participant) => {
+      const persona = personaById.get(participant.personaId);
+      if (!persona) return null;
+      return {
+        personaId: participant.personaId,
+        name: persona.name,
+        archetype: clip(persona.advanced.core.archetype || "", 60),
+        character: clip(persona.personalityPrompt || "", 120),
+        voiceTone: clip(persona.advanced.voice.tone || "", 40),
+        lexicalStyle: clip(persona.advanced.voice.lexicalStyle || "", 48),
+        sentenceLength: persona.advanced.voice.sentenceLength,
+        formality: persona.advanced.voice.formality,
+        expressiveness: persona.advanced.voice.expressiveness,
+        emoji: persona.advanced.voice.emoji,
+        initiative: persona.advanced.behavior.initiative,
+        curiosity: persona.advanced.behavior.curiosity,
+        empathy: persona.advanced.behavior.empathy,
+        appearance: summarizePersonaAppearance(persona),
+      };
+    })
+    .filter(
+      (
+        item,
+      ): item is {
+        personaId: string;
+        name: string;
+        archetype: string;
+        character: string;
+        voiceTone: string;
+        lexicalStyle: string;
+        sentenceLength: "short" | "balanced" | "long";
+        formality: number;
+        expressiveness: number;
+        emoji: number;
+        initiative: number;
+        curiosity: number;
+        empathy: number;
+        appearance: string;
+      } => Boolean(item),
+    );
+}
+
+function normalizeLlmStatus(
+  value: string | undefined,
+): GroupOrchestratorTickStatus | "" {
+  const token = normalizeToken(value || "");
+  if (token === "speak") return "spoke";
+  if (token === "wait") return "waiting";
+  if (token === "skip") return "skipped";
+  return "";
+}
+
+export function validatePersonaSpeaksOnlyForSelf(
+  speaker: Persona,
+  messageText: string,
+  personas: Persona[],
+): PersonaSpeechValidationResult {
+  const text = messageText.trim();
+  if (!text) {
+    return { valid: false, reason: "empty_message" };
+  }
+
+  const otherPersonaNames = personas
+    .map((persona) => persona.name.trim())
+    .filter(
+      (name) =>
+        name.length > 0 &&
+        normalizeToken(name) !== normalizeToken(speaker.name),
+    );
+
+  for (const name of otherPersonaNames) {
+    const namePattern = escapeRegExp(name);
+    const speakerPrefixRx = new RegExp(
+      `(^|\\n)\\s*@?${namePattern}\\s*[:\\-—]\\s*`,
+      "i",
+    );
+    if (speakerPrefixRx.test(text)) {
+      return {
+        valid: false,
+        reason: `multi_speaker_pattern_detected:${name}`,
+      };
+    }
+  }
+
+  return { valid: true };
+}
+
+export async function requestLlmOrchestratorDecision(
+  input: GroupOrchestratorTickInput,
+) {
+  const participantNames = buildParticipantNameMap(
+    input.participants,
+    input.personas,
+  );
+  const participantProfiles = buildOrchestratorParticipantProfiles(
+    input.participants,
+    input.personas,
+  );
+  const participantNameById = Object.fromEntries(
+    participantNames.map((item) => [item.personaId, item.name]),
+  );
+  if (participantProfiles.length === 0) return null;
+
+  const allowedPersonaIds = new Set(
+    participantProfiles.map((item) => item.personaId),
+  );
+  const lastUserMessage = getLastUserMessage(input.messages, input.room.id);
+  const mentionPriorityHints =
+    lastUserMessage?.mentions
+      ?.map((mention) => {
+        if (mention.targetType === "persona") {
+          const name = participantNameById[mention.targetId];
+          if (!name) return "";
+          return `persona:${name} (${mention.targetId})`;
+        }
+        if (mention.targetType === "user") {
+          return `user:${input.userName}`;
+        }
+        return "";
+      })
+      .filter(Boolean) ?? [];
+  const recentMessages = input.messages
+    .filter((message) => message.roomId === input.room.id)
+    .slice(-8)
+    .map((message) => ({
+      author: message.authorDisplayName,
+      authorType: message.authorType,
+      content: clip(message.content, 180),
+    }));
+  const recentEvents = input.events
+    .filter((event) => event.roomId === input.room.id)
+    .slice(-8)
+    .map((event) => ({
+      type: event.type,
+      payload: event.payload,
+    }));
+  const now = Date.now();
+  const participantRuntimeHints = input.participants
+    .filter((participant) =>
+      participantProfiles.some(
+        (profile) => profile.personaId === participant.personaId,
+      ),
+    )
+    .map((participant) => {
+      const profile = participantProfiles.find(
+        (item) => item.personaId === participant.personaId,
+      );
+      const cooldownMs = participant.muteUntil
+        ? Math.max(0, new Date(participant.muteUntil).getTime() - now)
+        : 0;
+      return `${profile?.name || participant.personaId} (${participant.personaId}): initiativeBias=${participant.initiativeBias}, aliveScore=${participant.aliveScore}, cooldownMs=${cooldownMs}`;
+    });
+
+  const systemPrompt = buildGroupOrchestratorSystemPrompt({
+    room: input.room,
+    userName: input.userName,
+    participants: participantProfiles,
+  });
+  const userInput = buildGroupOrchestratorUserInput({
+    userMessage: lastUserMessage?.content || "",
+    mentionPriorityHints,
+    participantRuntimeHints,
+    recentMessages,
+    recentEvents,
+  });
+
+  const response = await requestGenericChatCompletion(
+    {
+      lmBaseUrl: input.settings.lmBaseUrl,
+      lmAuth: input.settings.lmAuth,
+      apiKey: input.settings.apiKey,
+    },
+    {
+      model: input.settings.model,
+      input: userInput,
+      systemPrompt,
+      maxOutputTokens: Math.max(120, Math.min(320, input.settings.maxTokens)),
+      temperature: Math.max(0.15, Math.min(0.7, input.settings.temperature)),
+      store: false,
+    },
+  );
+
+  const parsed = parseJsonObjectFromText<LlmOrchestratorDecision>(
+    response.content,
+  );
+  if (!parsed) return null;
+
+  const status = normalizeLlmStatus(parsed.status);
+  if (!status) return null;
+
+  const speakerPersonaId = (parsed.speakerPersonaId || "").trim();
+  if (status === "spoke" && !allowedPersonaIds.has(speakerPersonaId)) {
+    return null;
+  }
+
+  return {
+    status,
+    speakerPersonaId: status === "spoke" ? speakerPersonaId : undefined,
+    waitForUser:
+      typeof parsed.waitForUser === "boolean"
+        ? parsed.waitForUser
+        : status === "waiting",
+    waitReason: (parsed.waitReason || "").trim() || undefined,
+    reason: (parsed.reason || "").trim() || "llm_orchestrator_decision",
+    intent: (parsed.intent || "").trim() || undefined,
+  };
+}
+
+export async function requestLlmPersonaMessage(params: {
+  room: GroupRoom;
+  speaker: Persona;
+  userName: string;
+  participantNames: string[];
+  messages: GroupMessage[];
+  personaState: GroupPersonaState | null;
+  relationEdges: GroupRelationEdge[];
+  participantNameById: Record<string, string>;
+  sharedMemories: GroupMemoryShared[];
+  privateMemories: GroupMemoryPrivate[];
+  recentEvents: GroupEvent[];
+  settings: AppSettings;
+  previousResponseId?: string;
+}) {
+  const lastUserMessage = [...params.messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.roomId === params.room.id && message.authorType === "user",
+    );
+  const mentionContext = {
+    addressedToCurrentPersona:
+      lastUserMessage?.mentions?.some(
+        (mention) =>
+          mention.targetType === "persona" &&
+          mention.targetId === params.speaker.id,
+      ) ?? false,
+    mentionedPersonaNames:
+      lastUserMessage?.mentions
+        ?.filter((mention) => mention.targetType === "persona")
+        .map((mention) => mention.label || mention.targetId)
+        .filter(Boolean) ?? [],
+    rawLabels:
+      lastUserMessage?.mentions?.map((mention) => `@${mention.label}`) ?? [],
+  };
+  const recentMessages = params.messages
+    .filter((message) => message.roomId === params.room.id)
+    .slice(params.previousResponseId ? -5 : -8)
+    .map((message) => ({
+      author: message.authorDisplayName,
+      authorType: message.authorType,
+      content: clip(message.content, params.previousResponseId ? 170 : 220),
+    }));
+
+  const systemPrompt = buildGroupPersonaSystemPrompt({
+    room: params.room,
+    persona: params.speaker,
+    userName: params.userName,
+    participantNames: params.participantNames,
+  });
+  const userInput = buildGroupPersonaUserInput({
+    userName: params.userName,
+    lastUserMessage: lastUserMessage?.content || "",
+    recentMessages,
+    personaState: params.personaState,
+    relationEdges: params.relationEdges,
+    participantNameById: params.participantNameById,
+    sharedMemories: params.sharedMemories,
+    privateMemories: params.privateMemories,
+    recentEvents: params.recentEvents,
+    mentionContext,
+  });
+
+  const response = await requestGenericChatCompletion(
+    {
+      lmBaseUrl: params.settings.lmBaseUrl,
+      lmAuth: params.settings.lmAuth,
+      apiKey: params.settings.apiKey,
+    },
+    {
+      model: params.settings.model,
+      input: userInput,
+      systemPrompt,
+      maxOutputTokens: Math.max(120, Math.min(500, params.settings.maxTokens)),
+      temperature: Math.max(0.25, Math.min(0.9, params.settings.temperature)),
+      store: true,
+      previousResponseId: params.previousResponseId,
+    },
+  );
+
+  const content = response.content.trim();
+  if (!content) {
+    return {
+      visibleText: "",
+    };
+  }
+
+  const parts = splitAssistantContent(content);
+  const prefix = `${params.speaker.name}:`;
+  let visibleText = parts.visibleText.trim();
+  if (visibleText.toLowerCase().startsWith(prefix.toLowerCase())) {
+    visibleText = visibleText.slice(prefix.length).trim();
+  }
+  visibleText = sanitizePersonaVisibleText(visibleText);
+
+  return {
+    visibleText,
+    comfyPrompt: parts.comfyPrompt,
+    comfyPrompts: parts.comfyPrompts,
+    comfyImageDescription: parts.comfyImageDescription,
+    comfyImageDescriptions: parts.comfyImageDescriptions,
+    personaControl: parts.personaControl,
+    responseId: response.responseId,
+  };
+}
+
+export function runGroupOrchestratorTick({
+  room,
+  participants,
+  messages,
+  events,
+  personas,
+  settings,
+  userName,
+}: GroupOrchestratorTickInput): GroupOrchestratorTickDecision {
+  if (room.status !== "active") {
+    return {
+      status: "skipped",
+      reason: "room_not_active",
+      waitForUser: room.waitingForUser,
+      waitReason: room.waitingReason,
+      debug: {
+        roomStatus: room.status,
+      },
+    };
+  }
+
+  if (room.mode === "personas_plus_user" && room.waitingForUser) {
+    return {
+      status: "waiting",
+      reason: "waiting_for_user",
+      waitForUser: true,
+      waitReason:
+        room.waitingReason ||
+        `Ожидается ответ пользователя (${userName.trim() || "Пользователь"})`,
+      debug: {
+        waitingForUser: room.waitingForUser,
+      },
+    };
+  }
+
+  const now = Date.now();
+  const pendingImageMessage = getLatestPendingImageMessage(messages, room.id);
+  if (pendingImageMessage) {
+    return {
+      status: "skipped",
+      reason: "pending_image_generation",
+      waitForUser: false,
+      debug: {
+        pendingMessageId: pendingImageMessage.id,
+        pendingAuthorType: pendingImageMessage.authorType,
+        pendingExpected: pendingImageMessage.imageGenerationExpected,
+        pendingCompleted: pendingImageMessage.imageGenerationCompleted,
+      },
+    };
+  }
+
+  const lastRoomMessage = getLastRoomMessage(messages, room.id);
+  if (lastRoomMessage) {
+    const elapsedMs = now - new Date(lastRoomMessage.createdAt).getTime();
+    const requiredDelayMs =
+      lastRoomMessage.authorType === "persona"
+        ? estimatePersonaTypingDelayMs(lastRoomMessage)
+        : 2000;
+    if (elapsedMs < requiredDelayMs) {
+      return {
+        status: "skipped",
+        reason: "typing_delay",
+        waitForUser: false,
+        debug: {
+          lastAuthorType: lastRoomMessage.authorType,
+          elapsedMs,
+          requiredDelayMs,
+        },
+      };
+    }
+  }
+
+  const activeParticipants = participants
+    .filter((item) => item.roomId === room.id)
+    .filter((item) => {
+      if (!item.muteUntil) return true;
+      return new Date(item.muteUntil).getTime() <= now;
+    })
+    .sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
+
+  if (activeParticipants.length === 0) {
+    return {
+      status: "skipped",
+      reason: "no_active_participants",
+      waitForUser: false,
+      debug: {
+        participantCount: participants.length,
+      },
+    };
+  }
+
+  const personaById = new Map(personas.map((persona) => [persona.id, persona]));
+  const lastUserMessage = getLastUserMessage(messages, room.id);
+  const mentionDrivenPersonaId =
+    lastUserMessage && lastRoomMessage?.id === lastUserMessage.id
+      ? getMentionDrivenPersonaId(lastUserMessage, activeParticipants)
+      : "";
+  const lastSpeakerPersonaId = getLastSpeakerPersonaId(events);
+  const recentSpeakers = buildRecentSpeakerIds(events, room.id, 14);
+  const frequencyByPersonaId = new Map<string, number>();
+  for (const personaId of recentSpeakers) {
+    frequencyByPersonaId.set(
+      personaId,
+      (frequencyByPersonaId.get(personaId) || 0) + 1,
+    );
+  }
+
+  const scoredParticipants = activeParticipants.map((participant) => {
+    const frequency = frequencyByPersonaId.get(participant.personaId) || 0;
+    const recentIndex = recentSpeakers.indexOf(participant.personaId);
+    const mentionBoost =
+      participant.personaId === mentionDrivenPersonaId ? 40 : 0;
+    const repeatPenalty =
+      participant.personaId === lastSpeakerPersonaId ? 35 : 0;
+    const frequencyPenalty = frequency * 8;
+    const dormancyBoost =
+      recentIndex < 0 ? 18 : recentIndex >= 6 ? 10 : recentIndex >= 3 ? 4 : 0;
+    const score = Math.round(
+      participant.initiativeBias * 0.45 +
+        participant.aliveScore * 0.35 +
+        20 +
+        mentionBoost +
+        dormancyBoost -
+        frequencyPenalty -
+        repeatPenalty,
+    );
+    return {
+      participant,
+      score,
+      explain: {
+        initiativeBias: participant.initiativeBias,
+        aliveScore: participant.aliveScore,
+        frequency,
+        recentIndex,
+        mentionBoost,
+        dormancyBoost,
+        frequencyPenalty,
+        repeatPenalty,
+      },
+    };
+  });
+
+  scoredParticipants.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (b.participant.aliveScore !== a.participant.aliveScore) {
+      return b.participant.aliveScore - a.participant.aliveScore;
+    }
+    return a.participant.joinedAt.localeCompare(b.participant.joinedAt);
+  });
+
+  let selectedParticipant = scoredParticipants[0]?.participant;
+  let selectedBy: "mention" | "score" | "anti_repeat" =
+    selectedParticipant?.personaId === mentionDrivenPersonaId &&
+    mentionDrivenPersonaId
+      ? "mention"
+      : "score";
+  if (
+    room.mode === "personas_only" &&
+    activeParticipants.length > 1 &&
+    selectedParticipant?.personaId === lastSpeakerPersonaId
+  ) {
+    const alternate = scoredParticipants.find(
+      (item) => item.participant.personaId !== lastSpeakerPersonaId,
+    )?.participant;
+    if (alternate) {
+      selectedParticipant = alternate;
+      selectedBy = "anti_repeat";
+    }
+  }
+  if (!selectedParticipant) {
+    return {
+      status: "skipped",
+      reason: "speaker_not_found",
+      waitForUser: false,
+      debug: {
+        participantCount: activeParticipants.length,
+      },
+    };
+  }
+
+  const speaker = personaById.get(selectedParticipant.personaId);
+  if (!speaker) {
+    return {
+      status: "skipped",
+      reason: "speaker_not_found",
+      waitForUser: false,
+      debug: {
+        selectedPersonaId: selectedParticipant.personaId,
+      },
+    };
+  }
+
+  const messageText = buildPersonaMessageText(
+    room,
+    speaker,
+    lastUserMessage,
+    userName,
+  );
+
+  return {
+    status: "spoke",
+    reason: "speaker_selected",
+    speakerPersonaId: speaker.id,
+    messageText,
+    waitForUser: room.mode === "personas_plus_user",
+    waitReason:
+      room.mode === "personas_plus_user"
+        ? `Ожидаем ответ пользователя (${userName.trim() || "Пользователь"}) после реплики ${speaker.name}`
+        : undefined,
+    debug: {
+      selectedBy,
+      mentionDrivenPersonaId,
+      lastSpeakerPersonaId,
+      scoreBoard: scoredParticipants.slice(0, 5).map((item) => ({
+        personaId: item.participant.personaId,
+        score: item.score,
+        explain: item.explain,
+      })),
+      model: settings.model,
+      participantCount: activeParticipants.length,
+    },
+  };
+}
