@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import type {
   AppSettings,
+  ChatEvent,
   ChatMessage,
+  ChatParticipant,
   ChatSession,
   ImageGenerationMeta,
   Persona,
@@ -20,6 +22,8 @@ interface ChatDetailsModalProps {
   open: boolean;
   chat: ChatSession | null;
   persona: Persona | null;
+  chatEvents: ChatEvent[];
+  chatParticipants: ChatParticipant[];
   messages: ChatMessage[];
   imageMetaByUrl: Record<string, ImageGenerationMeta>;
   memories: PersonaMemory[];
@@ -43,7 +47,7 @@ interface ChatDetailsModalProps {
   onClose: () => void;
 }
 
-type DetailsTab = "attachments" | "status";
+type DetailsTab = "attachments" | "status" | "events";
 
 interface ImageAttachment {
   src: string;
@@ -145,6 +149,8 @@ export function ChatDetailsModal({
   open,
   chat,
   persona,
+  chatEvents,
+  chatParticipants,
   messages,
   imageMetaByUrl,
   memories,
@@ -254,6 +260,13 @@ export function ChatDetailsModal({
           >
             Статус
           </button>
+          <button
+            type="button"
+            className={tab === "events" ? "active" : ""}
+            onClick={() => setTab("events")}
+          >
+            События
+          </button>
         </div>
 
         {tab === "attachments" ? (
@@ -292,16 +305,29 @@ export function ChatDetailsModal({
               </div>
             )}
           </section>
-        ) : (
+        ) : tab === "status" ? (
           <section className="chat-details-body status-tab">
             <div className="status-grid">
               <div className="status-card">
                 <h4>Общее</h4>
                 <p>Персона: {persona?.name ?? "—"}</p>
+                <p>Режим: {chat?.mode ?? "direct"}</p>
+                <p>Статус хода: {chat?.status ?? "idle"}</p>
                 <p>Сообщений: {messages.length}</p>
                 <p>Картинок: {attachments.length}</p>
+                <p>Участников: {chatParticipants.length}</p>
                 <p>Создан: {formatDateTime(chat?.createdAt ?? "")}</p>
                 <p>Обновлен: {formatDateTime(chat?.updatedAt ?? "")}</p>
+                {chatParticipants.length > 0 ? (
+                  <p>
+                    Состав:{" "}
+                    {chatParticipants
+                      .filter((participant) => participant.isActive)
+                      .sort((a, b) => a.order - b.order)
+                      .map((participant) => participant.displayName)
+                      .join(", ")}
+                  </p>
+                ) : null}
               </div>
 
               <div className="status-card">
@@ -407,6 +433,27 @@ export function ChatDetailsModal({
                 </div>
               )}
             </div>
+          </section>
+        ) : (
+          <section className="chat-details-body events-tab">
+            {chatEvents.length === 0 ? (
+              <p className="empty-state">Событий пока нет.</p>
+            ) : (
+              <div className="event-list">
+                {chatEvents
+                  .slice()
+                  .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                  .map((event) => (
+                    <article key={event.id} className="event-card">
+                      <div className="event-card-head">
+                        <strong>{event.eventType}</strong>
+                        <span>{formatDateTime(event.createdAt)}</span>
+                      </div>
+                      <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+                    </article>
+                  ))}
+              </div>
+            )}
           </section>
         )}
       </div>

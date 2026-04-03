@@ -543,6 +543,26 @@ export function SettingsModal({
                 />
                 Отображать детали изменения статуса
               </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.enableGroupChats}
+                  onChange={(e) =>
+                    setSettingsDraft((v) => ({ ...v, enableGroupChats: e.target.checked }))
+                  }
+                />
+                Включить групповые чаты (MVP)
+              </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.enableAdventureMode}
+                  onChange={(e) =>
+                    setSettingsDraft((v) => ({ ...v, enableAdventureMode: e.target.checked }))
+                  }
+                />
+                Включить режим приключений (в разработке)
+              </label>
             </>
           ) : null}
 

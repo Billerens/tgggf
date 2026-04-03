@@ -659,7 +659,7 @@ export function PersonaModal({
           </button>
         </div>
 
-        <div className="modal-tabs">
+        <div className="modal-tabs persona-modal-tabs">
           <button
             type="button"
             className={personaModalTab === "editor" ? "active" : ""}
@@ -672,7 +672,7 @@ export function PersonaModal({
             className={personaModalTab === "generator" ? "active" : ""}
             onClick={() => setPersonaModalTab("generator")}
           >
-            <Sparkles size={14} /> Генерация личности
+            <Sparkles size={14} /> Генерация
           </button>
         </div>
 

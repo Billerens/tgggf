@@ -1,4 +1,14 @@
 export type ChatRole = "system" | "user" | "assistant";
+export type ChatMode = "direct" | "group" | "adventure";
+export type ChatRunStatus = "idle" | "busy" | "error";
+export type ChatParticipantType = "user" | "persona" | "narrator";
+export type ChatMessageType = "text" | "system" | "narration" | "action_result";
+export type ChatAttachmentType = "image";
+export type ChatAttachmentVisibility = "all" | "targeted";
+export type AdventureExplicitnessPolicy =
+  | "fade_to_black"
+  | "balanced"
+  | "explicit";
 export type MoodId =
   | "calm"
   | "warm"
@@ -147,6 +157,10 @@ export interface Persona {
 export interface ChatSession {
   id: string;
   personaId: string;
+  mode: ChatMode;
+  status: ChatRunStatus;
+  activeTurnId?: string;
+  scenarioId?: string;
   title: string;
   lastResponseId?: string;
   chatStyleStrength?: number;
@@ -158,6 +172,8 @@ export interface ChatMessage {
   id: string;
   chatId: string;
   role: ChatRole;
+  messageType?: ChatMessageType;
+  authorParticipantId?: string;
   content: string;
   comfyPrompt?: string;
   comfyPrompts?: string[];
@@ -169,7 +185,168 @@ export interface ChatMessage {
   imageGenerationCompleted?: number;
   imageMetaByUrl?: Record<string, ImageGenerationMeta>;
   personaControlRaw?: string;
+  attachments?: ChatAttachment[];
+  turnId?: string;
+  eventId?: string;
   createdAt: string;
+}
+
+export interface ChatAttachment {
+  id: string;
+  type: ChatAttachmentType;
+  imageAssetId?: string;
+  caption?: string;
+  targetParticipantIds?: string[];
+  visibility: ChatAttachmentVisibility;
+  createdAt: string;
+}
+
+export interface ChatParticipant {
+  id: string;
+  chatId: string;
+  participantType: ChatParticipantType;
+  participantRefId: string;
+  displayName: string;
+  order: number;
+  isActive: boolean;
+  joinedAt: string;
+  updatedAt: string;
+}
+
+export type ChatEventType =
+  | "turn_started"
+  | "speaker_selected"
+  | "arbiter_decision"
+  | "message_created"
+  | "image_requested"
+  | "image_created"
+  | "turn_committed"
+  | "turn_failed"
+  | "support_offered"
+  | "boundary_crossed"
+  | "public_humiliation"
+  | "betrayal_hint"
+  | "apology_attempted"
+  | "apology_rejected"
+  | "trust_repair_step"
+  | "reconciliation_moment"
+  | "emotional_withdrawal"
+  | "status_challenge"
+  | "romantic_signal"
+  | "romantic_rejection"
+  | "relationship_commitment"
+  | "relationship_breakup"
+  | "cooling_off_period";
+
+export interface ChatEvent {
+  id: string;
+  chatId: string;
+  turnId: string;
+  eventType: ChatEventType;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type TurnJobStage =
+  | "turn_start"
+  | "planning"
+  | "decision"
+  | "actor_response"
+  | "image_action"
+  | "commit"
+  | "finalize";
+
+export type TurnJobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
+
+export interface TurnJob {
+  id: string;
+  chatId: string;
+  turnId: string;
+  mode: ChatMode;
+  stage: TurnJobStage;
+  payload: Record<string, unknown>;
+  status: TurnJobStatus;
+  retryCount: number;
+  createdAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export type RelationshipBondState =
+  | "neutral"
+  | "interest"
+  | "romance"
+  | "partnership"
+  | "estranged"
+  | "hostile";
+
+export type RelationshipRomanticIntent =
+  | "none"
+  | "curious"
+  | "attracted"
+  | "attached"
+  | "obsessed";
+
+export type RelationshipConsentAlignment =
+  | "unknown"
+  | "mutual"
+  | "one_sided"
+  | "withdrawn";
+
+export interface RelationshipEdge {
+  id: string;
+  chatId: string;
+  fromPersonaId: string;
+  toPersonaId: string;
+  bondState: RelationshipBondState;
+  romanticIntent: RelationshipRomanticIntent;
+  consentAlignment: RelationshipConsentAlignment;
+  trust: number;
+  safety: number;
+  respect: number;
+  affection: number;
+  attraction: number;
+  admiration: number;
+  gratitude: number;
+  dependency: number;
+  jealousy: number;
+  envy: number;
+  irritation: number;
+  contempt: number;
+  aversion: number;
+  fear: number;
+  tension: number;
+  intimacy: number;
+  distancePreference: number;
+  conflictHistoryScore: number;
+  repairReadiness: number;
+  lastSignificantEventId?: string;
+  lastBondShiftAt?: string;
+  updatedAt: string;
+}
+
+export interface AdventureScenario {
+  id: string;
+  title: string;
+  startContext: string;
+  initialGoal: string;
+  narratorStyle: string;
+  worldTone: "light" | "balanced" | "dark";
+  explicitnessPolicy: AdventureExplicitnessPolicy;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdventureState {
+  id: string;
+  chatId: string;
+  scenarioId: string;
+  currentScene: string;
+  sceneObjective: string;
+  openThreads: string[];
+  resolvedThreads: string[];
+  timelineSummary: string;
+  updatedAt: string;
 }
 
 export interface ImageGenerationMeta {
@@ -256,6 +433,8 @@ export interface AppSettings {
   userGender: UserGender;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
+  enableGroupChats: boolean;
+  enableAdventureMode: boolean;
   enhanceDetailLevelAll: EnhanceDetailLevel;
   enhanceDetailLevelPart: EnhanceDetailLevel;
   enhanceDetailStrengthTable: EnhanceDetailStrengthTable;

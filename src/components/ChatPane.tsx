@@ -4,6 +4,7 @@ import { getMoodLabel } from "../personaProfiles";
 import { dbApi } from "../db";
 import type {
   ChatMessage,
+  ChatParticipant,
   ChatSession,
   ImageGenerationMeta,
   Persona,
@@ -19,6 +20,7 @@ import { ImagePreviewModal } from "./ImagePreviewModal";
 interface ChatPaneProps {
   activeChat: ChatSession | null;
   activePersona: Persona | null;
+  chatParticipants: ChatParticipant[];
   activeChatId: string | null;
   messages: ChatMessage[];
   imageMetaByUrl: Record<string, ImageGenerationMeta>;
@@ -142,6 +144,7 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
 export function ChatPane({
   activeChat,
   activePersona,
+  chatParticipants,
   activeChatId,
   messages,
   imageMetaByUrl,
@@ -162,6 +165,9 @@ export function ChatPane({
 }: ChatPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
+  const [attachmentImageUrlsByAssetId, setAttachmentImageUrlsByAssetId] = useState<
+    Record<string, string>
+  >({});
   const [previewTarget, setPreviewTarget] = useState<{
     messageId: string;
     sourceUrl: string;
@@ -204,10 +210,59 @@ export function ChatPane({
   }, [messages]);
 
   useEffect(() => {
+    let cancelled = false;
+    const missingAssetIds = Array.from(
+      new Set(
+        messages
+          .flatMap((message) => message.attachments ?? [])
+          .map((attachment) => attachment.imageAssetId?.trim() ?? "")
+          .filter(Boolean)
+          .filter((assetId) => !attachmentImageUrlsByAssetId[assetId]),
+      ),
+    );
+    if (missingAssetIds.length === 0) {
+      return;
+    }
+    const loadMissingAssets = async () => {
+      const loaded: Record<string, string> = {};
+      await Promise.all(
+        missingAssetIds.map(async (assetId) => {
+          const asset = await dbApi.getImageAsset(assetId);
+          if (asset?.dataUrl) {
+            loaded[assetId] = asset.dataUrl;
+          }
+        }),
+      );
+      if (cancelled || Object.keys(loaded).length === 0) return;
+      setAttachmentImageUrlsByAssetId((current) => ({
+        ...current,
+        ...loaded,
+      }));
+    };
+    void loadMissingAssets();
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, attachmentImageUrlsByAssetId]);
+
+  const resolveMessageImageUrls = (message: ChatMessage) => {
+    const attachmentUrls = (message.attachments ?? [])
+      .filter((attachment) => attachment.type === "image" && Boolean(attachment.imageAssetId))
+      .map((attachment) =>
+        attachment.imageAssetId
+          ? attachmentImageUrlsByAssetId[attachment.imageAssetId]
+          : undefined,
+      )
+      .filter((value): value is string => Boolean(value));
+    const merged = [...(message.imageUrls ?? []), ...attachmentUrls];
+    return Array.from(new Set(merged));
+  };
+
+  useEffect(() => {
     if (!previewTarget || !previewSrc) return;
     const message = messages.find((candidate) => candidate.id === previewTarget.messageId);
     if (!message) return;
-    const imageUrls = message.imageUrls ?? [];
+    const imageUrls = resolveMessageImageUrls(message);
     if (imageUrls.length === 0) return;
 
     const preferredByIndex = imageUrls[previewTarget.sourceIndex] ?? "";
@@ -231,7 +286,7 @@ export function ChatPane({
           }
         : prev,
     );
-  }, [messages, imageMetaByUrl, previewTarget, previewSrc]);
+  }, [messages, imageMetaByUrl, previewTarget, previewSrc, attachmentImageUrlsByAssetId]);
 
   const relationshipBadge =
     activePersonaState
@@ -263,6 +318,16 @@ export function ChatPane({
   const previewEnhancePromptDefaults = previewTarget
     ? resolveSharedEnhancePromptDefaults(activePersona, previewResolvedMeta)
     : undefined;
+  const chatBusy = Boolean(isLoading || activeChat?.status === "busy");
+  const personaParticipantCount = chatParticipants.filter(
+    (participant) =>
+      participant.participantType === "persona" && participant.isActive,
+  ).length;
+  const showBubbleAuthor =
+    activeChat?.mode === "group" || activeChat?.mode === "adventure";
+  const participantsById = new Map(
+    chatParticipants.map((participant) => [participant.id, participant] as const),
+  );
 
   return (
     <main className="chat">
@@ -294,6 +359,15 @@ export function ChatPane({
                 </span>
                 {activePersona?.name ?? "Не выбрана"} <ChevronDown size={14} />
               </div>
+              {activeChat ? (
+                <span className="chat-mode-chip">
+                  {activeChat.mode === "direct"
+                    ? "Личный чат"
+                    : activeChat.mode === "group"
+                      ? `Группа • ${Math.max(personaParticipantCount, 0)}`
+                      : "Приключение"}
+                </span>
+              ) : null}
               {activePersonaState ? (
                 <div className="persona-state-badges" aria-label="Состояние персоны">
                   <span
@@ -352,6 +426,22 @@ export function ChatPane({
 
       <section className="messages">
         {messages.map((msg) => {
+          const authorLabel = showBubbleAuthor
+            ? (() => {
+                const participant =
+                  typeof msg.authorParticipantId === "string"
+                    ? participantsById.get(msg.authorParticipantId)
+                    : undefined;
+                if (participant?.displayName?.trim()) {
+                  return participant.displayName.trim();
+                }
+                if (msg.role === "user") return "Вы";
+                if (msg.role === "assistant") {
+                  return activePersona?.name.trim() || "Персона";
+                }
+                return "Система";
+              })()
+            : "";
           const parsedAssistant =
             msg.role === "assistant"
               ? splitAssistantContent(msg.content)
@@ -395,7 +485,7 @@ export function ChatPane({
                 parsedAssistant?.personaControl
               : undefined;
           const statusDetails = buildStatusDetails(personaControlToRender);
-          const imageUrlsToRender = msg.imageUrls ?? [];
+          const imageUrlsToRender = resolveMessageImageUrls(msg);
           const fallbackExpected = Math.max(
             1,
             comfyPromptsToRender.length ||
@@ -420,6 +510,7 @@ export function ChatPane({
 
           return (
             <article key={msg.id} className={`bubble ${msg.role}`}>
+              {authorLabel ? <div className="bubble-author">{authorLabel}</div> : null}
               {textToRender ? <p>{textToRender}</p> : null}
               {comfyImageDescriptionsToRender.map((description, index) => (
                 <section
@@ -492,10 +583,11 @@ export function ChatPane({
       <div className="composer-wrapper">
         <form className="composer" onSubmit={onSubmitMessage}>
           <textarea
-            placeholder="Введите сообщение..."
+            placeholder={chatBusy ? "Ожидайте завершения генерации..." : "Введите сообщение..."}
             value={messageInput}
             onChange={(e) => setMessageInput(e.target.value)}
             rows={1}
+            disabled={chatBusy}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -503,7 +595,7 @@ export function ChatPane({
               }
             }}
           />
-          <button type="submit" disabled={!messageInput.trim() || !activePersona || isLoading}>
+          <button type="submit" disabled={!messageInput.trim() || !activePersona || chatBusy}>
             <SendHorizontal size={20} />
           </button>
         </form>

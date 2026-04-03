@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { Logo } from "./Logo";
+import { Dropdown } from "./Dropdown";
 import { dbApi } from "../db";
 import type { ChatSession, GeneratorSession, Persona } from "../types";
 import type { SidebarTab } from "../ui/types";
@@ -29,6 +30,18 @@ interface SidebarProps {
   onOpenPersonas: () => void;
   onOpenSettings: () => void;
   onCreateChat: () => void;
+  onCreateGroupChat: (personaIds: string[], title?: string) => void;
+  onCreateAdventureChat: (
+    personaIds: string[],
+    scenario: {
+      title: string;
+      startContext: string;
+      initialGoal: string;
+      narratorStyle: string;
+      worldTone: "light" | "balanced" | "dark";
+      explicitnessPolicy: "fade_to_black" | "balanced" | "explicit";
+    },
+  ) => void;
   onCreateGenerationSession: () => void;
   onDeleteGenerationSession: (sessionId: string) => void;
   onSelectChat: (chatId: string) => void;
@@ -36,6 +49,7 @@ interface SidebarProps {
   onSelectPersona: (personaId: string) => void;
   onSelectGenerationPersona: (personaId: string) => void;
   onEditPersona: (persona: Persona) => void;
+  enableGroupChats: boolean;
   isMobileOpen: boolean;
   onCloseMobile: () => void;
   onToggleMobileTab: (tab: SidebarTab) => void;
@@ -47,6 +61,18 @@ interface PersonaPickerProps {
   selectedPersonaId: string | null;
   onSelect: (personaId: string) => void;
 }
+
+const ADVENTURE_WORLD_TONE_OPTIONS = [
+  { value: "light", label: "Светлый" },
+  { value: "balanced", label: "Сбалансированный" },
+  { value: "dark", label: "Тёмный" },
+] as const;
+
+const ADVENTURE_EXPLICITNESS_OPTIONS = [
+  { value: "fade_to_black", label: "Fade to black" },
+  { value: "balanced", label: "Balanced" },
+  { value: "explicit", label: "Explicit" },
+] as const;
 
 function PersonaPicker({ label, personas, selectedPersonaId, onSelect }: PersonaPickerProps) {
   const [open, setOpen] = useState(false);
@@ -172,6 +198,8 @@ export function Sidebar({
   onOpenPersonas,
   onOpenSettings,
   onCreateChat,
+  onCreateGroupChat,
+  onCreateAdventureChat,
   onCreateGenerationSession,
   onDeleteGenerationSession,
   onSelectChat,
@@ -179,11 +207,49 @@ export function Sidebar({
   onSelectPersona,
   onSelectGenerationPersona,
   onEditPersona,
+  enableGroupChats,
   isMobileOpen,
   onCloseMobile,
   onToggleMobileTab,
 }: SidebarProps) {
   const [avatarSrcByPersonaId, setAvatarSrcByPersonaId] = useState<Record<string, string>>({});
+  const [groupBuilderOpen, setGroupBuilderOpen] = useState(false);
+  const [groupTitle, setGroupTitle] = useState("");
+  const [groupPersonaIds, setGroupPersonaIds] = useState<string[]>([]);
+  const [groupPersonaPickerValue, setGroupPersonaPickerValue] = useState("");
+  const [adventureBuilderOpen, setAdventureBuilderOpen] = useState(false);
+  const [adventureTitle, setAdventureTitle] = useState("");
+  const [adventureStartContext, setAdventureStartContext] = useState("");
+  const [adventureInitialGoal, setAdventureInitialGoal] = useState("");
+  const [adventureNarratorStyle, setAdventureNarratorStyle] = useState("");
+  const [adventureWorldTone, setAdventureWorldTone] = useState<"light" | "balanced" | "dark">(
+    "balanced",
+  );
+  const [adventureExplicitnessPolicy, setAdventureExplicitnessPolicy] = useState<
+    "fade_to_black" | "balanced" | "explicit"
+  >("fade_to_black");
+  const [adventurePersonaIds, setAdventurePersonaIds] = useState<string[]>([]);
+  const [adventurePersonaPickerValue, setAdventurePersonaPickerValue] = useState("");
+
+  useEffect(() => {
+    if (!groupBuilderOpen) return;
+    if (!activePersonaId) return;
+    setGroupPersonaIds((current) =>
+      current.includes(activePersonaId)
+        ? current
+        : [activePersonaId, ...current.filter((id) => id !== activePersonaId)],
+    );
+  }, [activePersonaId, groupBuilderOpen]);
+
+  useEffect(() => {
+    if (!adventureBuilderOpen) return;
+    if (!activePersonaId) return;
+    setAdventurePersonaIds((current) =>
+      current.includes(activePersonaId)
+        ? current
+        : [activePersonaId, ...current.filter((id) => id !== activePersonaId)],
+    );
+  }, [activePersonaId, adventureBuilderOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -217,6 +283,124 @@ export function Sidebar({
     const raw = persona.avatarUrl.trim();
     if (!raw || raw.startsWith("idb://")) return "";
     return raw;
+  };
+
+  const directChats = chats.filter((chat) => chat.mode === "direct");
+  const groupChats = chats.filter((chat) => chat.mode === "group");
+  const adventureChats = chats.filter((chat) => chat.mode === "adventure");
+  const showGroupSection = enableGroupChats || groupChats.length > 0;
+  const personaById = new Map(personas.map((persona) => [persona.id, persona]));
+  const uniqueGroupPersonaIds = Array.from(new Set(groupPersonaIds.filter(Boolean)));
+  const uniqueAdventurePersonaIds = Array.from(new Set(adventurePersonaIds.filter(Boolean)));
+  const getPersonaFeature = (persona: Persona) => persona.advanced.core.archetype || "Персона";
+  const groupPersonaOptions = personas
+    .filter((persona) => !uniqueGroupPersonaIds.includes(persona.id))
+    .map((persona) => ({
+      value: persona.id,
+      label: persona.name,
+      description: getPersonaFeature(persona),
+      avatarSrc: resolveAvatarSrc(persona) || undefined,
+    }));
+  const adventurePersonaOptions = personas
+    .filter((persona) => !uniqueAdventurePersonaIds.includes(persona.id))
+    .map((persona) => ({
+      value: persona.id,
+      label: persona.name,
+      description: getPersonaFeature(persona),
+      avatarSrc: resolveAvatarSrc(persona) || undefined,
+    }));
+
+  const addGroupPersona = (personaId: string) => {
+    if (!personaId) return;
+    setGroupPersonaIds((current) =>
+      current.includes(personaId) ? current : [...current, personaId],
+    );
+    setGroupPersonaPickerValue("");
+  };
+
+  const removeGroupPersona = (personaId: string) => {
+    if (personaId === activePersonaId) return;
+    setGroupPersonaIds((current) => current.filter((id) => id !== personaId));
+    setGroupPersonaPickerValue("");
+  };
+
+  const addAdventurePersona = (personaId: string) => {
+    if (!personaId) return;
+    setAdventurePersonaIds((current) =>
+      current.includes(personaId) ? current : [...current, personaId],
+    );
+    setAdventurePersonaPickerValue("");
+  };
+
+  const removeAdventurePersona = (personaId: string) => {
+    if (personaId === activePersonaId) return;
+    setAdventurePersonaIds((current) => current.filter((id) => id !== personaId));
+    setAdventurePersonaPickerValue("");
+  };
+
+  const renderSelectedPersonaTag = (personaId: string, onRemove: (id: string) => void) => {
+    const persona = personaById.get(personaId);
+    if (!persona) return null;
+    const isCreator = persona.id === activePersonaId;
+    const avatarSrc = resolveAvatarSrc(persona);
+    const avatarLetter = persona.name.trim().charAt(0).toUpperCase() || "?";
+
+    return (
+      <span key={persona.id} className={`selected-persona-tag ${isCreator ? "locked" : ""}`}>
+        <span className="selected-persona-tag-avatar" aria-hidden="true">
+          {avatarSrc ? <img src={avatarSrc} alt="" loading="lazy" /> : <span>{avatarLetter}</span>}
+        </span>
+        <span className="selected-persona-tag-text">
+          <strong>{persona.name}{isCreator ? " (основная)" : ""}</strong>
+          <small>{getPersonaFeature(persona)}</small>
+        </span>
+        {!isCreator ? (
+          <button
+            type="button"
+            className="selected-persona-tag-remove"
+            onClick={() => onRemove(persona.id)}
+            aria-label={`Удалить ${persona.name}`}
+          >
+            ×
+          </button>
+        ) : null}
+      </span>
+    );
+  };
+
+  const renderChatItem = (chat: ChatSession) => {
+    const chatPersona = personas.find((persona) => persona.id === chat.personaId) ?? null;
+    const avatarLetter = (chatPersona?.name || "?").trim().charAt(0).toUpperCase();
+    const subtitle =
+      chat.mode === "direct"
+        ? formatDate(chat.updatedAt)
+        : `${chat.mode === "group" ? "Групповой чат" : "Приключение"} • ${formatDate(chat.updatedAt)}`;
+
+    return (
+      <button
+        key={chat.id}
+        type="button"
+        className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
+        onClick={() => {
+          onSelectChat(chat.id);
+          onCloseMobile();
+        }}
+      >
+        <div className="sidebar-item-main">
+          <div className="sidebar-avatar" aria-hidden="true">
+            {resolveAvatarSrc(chatPersona) ? (
+              <img src={resolveAvatarSrc(chatPersona)} alt="" loading="lazy" />
+            ) : (
+              <span>{avatarLetter}</span>
+            )}
+          </div>
+          <div className="sidebar-item-text">
+            <strong>{chat.title}</strong>
+            <span>{subtitle}</span>
+          </div>
+        </div>
+      </button>
+    );
   };
 
   return (
@@ -288,35 +472,84 @@ export function Sidebar({
               <button type="button" className="primary" onClick={onCreateChat} disabled={!activePersonaId}>
                 <Plus size={16} /> Новый чат
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!activePersonaId) return;
+                  if (!enableGroupChats) {
+                    onOpenSettings();
+                    return;
+                  }
+                  setAdventureBuilderOpen(false);
+                  setGroupBuilderOpen(true);
+                  setGroupTitle("");
+                  setGroupPersonaIds([activePersonaId]);
+                  setGroupPersonaPickerValue("");
+                }}
+                disabled={!activePersonaId}
+                title={
+                  enableGroupChats
+                    ? "Создать групповой чат"
+                    : "Групповые чаты выключены. Нажмите, чтобы открыть настройки."
+                }
+              >
+                <Users size={16} /> {enableGroupChats ? "Новая группа" : "Включить группы"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!activePersonaId) return;
+                  setGroupBuilderOpen(false);
+                  setAdventureBuilderOpen(true);
+                  setAdventureTitle("");
+                  setAdventureStartContext("");
+                  setAdventureInitialGoal("");
+                  setAdventureNarratorStyle("");
+                  setAdventureWorldTone("balanced");
+                  setAdventureExplicitnessPolicy("fade_to_black");
+                  setAdventurePersonaIds([activePersonaId]);
+                  setAdventurePersonaPickerValue("");
+                }}
+                disabled={!activePersonaId}
+              >
+                <MessageCircle size={16} /> Новое приключение
+              </button>
             </div>
-            {chats.map((chat) => (
-              (() => {
-                const chatPersona = personas.find((persona) => persona.id === chat.personaId) ?? null;
-                const avatarLetter = (chatPersona?.name || "?").trim().charAt(0).toUpperCase();
-                return (
-                  <button
-                    key={chat.id}
-                    type="button"
-                    className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
-                    onClick={() => {
-                      onSelectChat(chat.id);
-                      onCloseMobile();
-                    }}
-                  >
-                    <div className="sidebar-item-main">
-                      <div className="sidebar-avatar" aria-hidden="true">
-                        {resolveAvatarSrc(chatPersona) ? <img src={resolveAvatarSrc(chatPersona)} alt="" loading="lazy" /> : <span>{avatarLetter}</span>}
-                      </div>
-                      <div className="sidebar-item-text">
-                        <strong>{chat.title}</strong>
-                        <span>{formatDate(chat.updatedAt)}</span>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })()
-            ))}
-            {chats.length === 0 ? <p className="empty-state">Чатов пока нет</p> : null}
+            {!enableGroupChats ? (
+              <small className="sidebar-inline-hint">
+                Групповые чаты выключены. Включите их в настройках.
+              </small>
+            ) : null}
+            <div className="chat-mode-sections">
+              <section className="chat-mode-section">
+                <p className="chat-mode-title">Личные чаты</p>
+                {directChats.length > 0 ? (
+                  directChats.map(renderChatItem)
+                ) : (
+                  <p className="empty-state chat-mode-empty">Личных чатов пока нет</p>
+                )}
+              </section>
+
+              {showGroupSection ? (
+                <section className="chat-mode-section">
+                  <p className="chat-mode-title">Групповые</p>
+                  {groupChats.length > 0 ? (
+                    groupChats.map(renderChatItem)
+                  ) : (
+                    <p className="empty-state chat-mode-empty">Групповых чатов пока нет</p>
+                  )}
+                </section>
+              ) : null}
+
+              <section className="chat-mode-section">
+                <p className="chat-mode-title">Приключения</p>
+                {adventureChats.length > 0 ? (
+                  adventureChats.map(renderChatItem)
+                ) : (
+                  <p className="empty-state chat-mode-empty">Приключений пока нет</p>
+                )}
+              </section>
+            </div>
           </div>
         ) : sidebarTab === "personas" ? (
           <div className="sidebar-list">
@@ -460,6 +693,213 @@ export function Sidebar({
           Настройки
         </button>
       </nav>
+
+      {groupBuilderOpen ? (
+        <div
+          className="overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="group-create-title"
+          onClick={() => setGroupBuilderOpen(false)}
+        >
+          <div className="modal adventure-create-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3 id="group-create-title">Новая группа</h3>
+              <button type="button" onClick={() => setGroupBuilderOpen(false)}>
+                <X size={14} /> Закрыть
+              </button>
+            </div>
+            <form
+              className="form adventure-create-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const uniqueIds = Array.from(new Set(groupPersonaIds.filter(Boolean)));
+                if (uniqueIds.length < 2) return;
+                onCreateGroupChat(uniqueIds, groupTitle.trim() || undefined);
+                setGroupBuilderOpen(false);
+              }}
+            >
+              <label>
+                Название группы (опционально)
+                <input
+                  value={groupTitle}
+                  onChange={(event) => setGroupTitle(event.target.value)}
+                  placeholder="Например: Вечер у костра"
+                />
+              </label>
+              <label>
+                Участники группы
+                <Dropdown
+                  value={groupPersonaPickerValue}
+                  onChange={addGroupPersona}
+                  options={groupPersonaOptions}
+                  placeholder={
+                    groupPersonaOptions.length > 0
+                      ? "Добавить персону"
+                      : "Все персоны добавлены"
+                  }
+                  disabled={groupPersonaOptions.length === 0}
+                />
+              </label>
+              <div className="selected-persona-tags">
+                {uniqueGroupPersonaIds.map((personaId) =>
+                  renderSelectedPersonaTag(personaId, removeGroupPersona),
+                )}
+              </div>
+              <small style={{ color: "var(--text-secondary)" }}>
+                Для группы нужно минимум 2 персоны.
+              </small>
+              <div className="adventure-create-actions">
+                <button type="button" onClick={() => setGroupBuilderOpen(false)}>
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={uniqueGroupPersonaIds.length < 2}
+                >
+                  Создать группу
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {adventureBuilderOpen ? (
+        <div
+          className="overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="adventure-create-title"
+          onClick={() => setAdventureBuilderOpen(false)}
+        >
+          <div className="modal adventure-create-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h3 id="adventure-create-title">Новое приключение</h3>
+              <button type="button" onClick={() => setAdventureBuilderOpen(false)}>
+                <X size={14} /> Закрыть
+              </button>
+            </div>
+            <form
+              className="form adventure-create-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const uniqueIds = Array.from(new Set(adventurePersonaIds.filter(Boolean)));
+                onCreateAdventureChat(uniqueIds, {
+                  title: adventureTitle.trim(),
+                  startContext: adventureStartContext.trim(),
+                  initialGoal: adventureInitialGoal.trim(),
+                  narratorStyle: adventureNarratorStyle.trim(),
+                  worldTone: adventureWorldTone,
+                  explicitnessPolicy: adventureExplicitnessPolicy,
+                });
+                setAdventureBuilderOpen(false);
+              }}
+            >
+              <label>
+                Название приключения
+                <input
+                  value={adventureTitle}
+                  onChange={(event) => setAdventureTitle(event.target.value)}
+                  placeholder="Например: Тайна заброшенного маяка"
+                />
+              </label>
+              <label>
+                Стартовый контекст
+                <textarea
+                  value={adventureStartContext}
+                  onChange={(event) => setAdventureStartContext(event.target.value)}
+                  rows={4}
+                  placeholder="Опишите сцену, место и исходные обстоятельства."
+                />
+              </label>
+              <label>
+                Цель сцены
+                <input
+                  value={adventureInitialGoal}
+                  onChange={(event) => setAdventureInitialGoal(event.target.value)}
+                  placeholder="Например: Найти пропавший ключ до рассвета"
+                />
+              </label>
+              <label>
+                Стиль рассказчика
+                <input
+                  value={adventureNarratorStyle}
+                  onChange={(event) => setAdventureNarratorStyle(event.target.value)}
+                  placeholder="Кинематографичный, напряженный, с акцентом на эмоции"
+                />
+              </label>
+              <label>
+                Тон мира
+                <Dropdown
+                  value={adventureWorldTone}
+                  onChange={(nextValue) =>
+                    setAdventureWorldTone(nextValue as "light" | "balanced" | "dark")
+                  }
+                  options={ADVENTURE_WORLD_TONE_OPTIONS.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  }))}
+                />
+              </label>
+              <label>
+                Политика явности
+                <Dropdown
+                  value={adventureExplicitnessPolicy}
+                  onChange={(nextValue) =>
+                    setAdventureExplicitnessPolicy(
+                      nextValue as "fade_to_black" | "balanced" | "explicit",
+                    )
+                  }
+                  options={ADVENTURE_EXPLICITNESS_OPTIONS.map((option) => ({
+                    value: option.value,
+                    label: option.label,
+                  }))}
+                />
+              </label>
+              <label>
+                Участники приключения
+                <Dropdown
+                  value={adventurePersonaPickerValue}
+                  onChange={addAdventurePersona}
+                  options={adventurePersonaOptions}
+                  placeholder={
+                    adventurePersonaOptions.length > 0
+                      ? "Добавить персону"
+                      : "Все персоны добавлены"
+                  }
+                  disabled={adventurePersonaOptions.length === 0}
+                />
+              </label>
+              <div className="selected-persona-tags">
+                {uniqueAdventurePersonaIds.map((personaId) =>
+                  renderSelectedPersonaTag(personaId, removeAdventurePersona),
+                )}
+              </div>
+              <small style={{ color: "var(--text-secondary)" }}>
+                Заполните контекст и цель сцены для старта приключения.
+              </small>
+              <div className="adventure-create-actions">
+                <button type="button" onClick={() => setAdventureBuilderOpen(false)}>
+                  Отмена
+                </button>
+                <button
+                  type="submit"
+                  className="primary"
+                  disabled={
+                    adventureStartContext.trim().length === 0 ||
+                    adventureInitialGoal.trim().length === 0 ||
+                    uniqueAdventurePersonaIds.length < 1
+                  }
+                >
+                  Запустить приключение
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

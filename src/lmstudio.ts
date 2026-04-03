@@ -31,6 +31,7 @@ export interface ChatCompletionContext {
   runtimeState?: PersonaRuntimeState;
   memoryCard?: LayeredMemoryContextCard;
   recentMessages?: Array<{ role: "user" | "assistant"; content: string }>;
+  conversationSummary?: string[];
 }
 
 function sentenceLengthRule(
@@ -219,6 +220,10 @@ export function buildSystemPrompt(
     ...(context?.memoryCard?.episodic.map((m) => m.content) || []),
     ...(context?.memoryCard?.longTerm.map((m) => m.content) || []),
   ];
+  const conversationSummary = (context?.conversationSummary || [])
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-6);
   const memoryContext = formatMemoryContextWithUsage(memories);
 
   return [
@@ -327,6 +332,9 @@ export function buildSystemPrompt(
       ? `Текущее состояние: mood=${runtimeState.mood}; trust=${runtimeState.trust}; energy=${runtimeState.energy}; engagement=${runtimeState.engagement}; lust=${runtimeState.lust}; fear=${runtimeState.fear}; affection=${runtimeState.affection}; tension=${runtimeState.tension}; relationshipType=${runtimeState.relationshipType}; relationshipDepth=${runtimeState.relationshipDepth}; stage=${runtimeState.relationshipStage}.`
       : "Текущее состояние: нет данных, начни нейтрально-тепло.",
     "",
+    ...(conversationSummary.length > 0
+      ? ["=== DIALOG SUMMARY ===", ...conversationSummary, ""]
+      : []),
     "=== MEMORY CONTEXT ===",
     memoryContext,
     "",
@@ -352,6 +360,379 @@ interface NativeChatResult {
   comfyImageDescriptions?: string[];
   personaControl?: PersonaControlPayload;
   responseId?: string;
+}
+
+export interface GroupDirectorCandidate {
+  participantId: string;
+  personaId: string;
+  displayName: string;
+}
+
+export interface GroupDirectorRecentMessage {
+  role: "system" | "user" | "assistant";
+  authorName: string;
+  content: string;
+}
+
+export interface GroupDirectorDecision {
+  speakerParticipantId: string;
+  reason: string;
+  confidence: number;
+}
+
+interface GroupDirectorRequest {
+  userMessage: string;
+  candidates: GroupDirectorCandidate[];
+  recentMessages: GroupDirectorRecentMessage[];
+  blockedParticipantIds?: string[];
+}
+
+export interface AdventureArbiterScenarioInput {
+  title: string;
+  startContext: string;
+  initialGoal: string;
+  narratorStyle: string;
+  worldTone: "light" | "balanced" | "dark";
+  explicitnessPolicy: "fade_to_black" | "balanced" | "explicit";
+}
+
+export interface AdventureArbiterStateInput {
+  currentScene: string;
+  sceneObjective: string;
+  openThreads: string[];
+  resolvedThreads: string[];
+  timelineSummary: string;
+}
+
+export interface AdventureArbiterRecentMessage {
+  role: "system" | "user" | "assistant";
+  authorName: string;
+  content: string;
+}
+
+export interface AdventureArbiterRequest {
+  userMessage: string;
+  scenario: AdventureArbiterScenarioInput;
+  state: AdventureArbiterStateInput;
+  participants: string[];
+  recentMessages: AdventureArbiterRecentMessage[];
+}
+
+export interface AdventureArbiterDecision {
+  narration: string;
+  currentScene: string;
+  sceneObjective: string;
+  openThreads: string[];
+  resolvedThreads: string[];
+  timelineSummary: string;
+  rationale: string;
+  confidence: number;
+}
+
+function parseJsonObjectBlock(text: string) {
+  const trimmed = text.trim();
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // try fallback below
+  }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    const chunk = trimmed.slice(start, end + 1);
+    const parsed = JSON.parse(chunk) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  }
+  throw new Error("Director returned invalid JSON.");
+}
+
+function parseStringArrayField(value: unknown, fallback: string[]) {
+  if (!Array.isArray(value)) return fallback;
+  const normalized = Array.from(
+    new Set(
+      value
+        .map((item) => toTrimmedString(item))
+        .filter(Boolean),
+    ),
+  );
+  return normalized.length > 0 ? normalized.slice(0, 12) : fallback;
+}
+
+export async function requestGroupDirectorDecision(
+  settings: Pick<AppSettings, "lmBaseUrl" | "model" | "apiKey" | "lmAuth">,
+  request: GroupDirectorRequest,
+): Promise<GroupDirectorDecision> {
+  if (request.candidates.length === 0) {
+    throw new Error("Director candidates list is empty.");
+  }
+  const blocked = new Set(
+    (request.blockedParticipantIds ?? []).map((value) => value.trim()).filter(Boolean),
+  );
+  const candidatesList = request.candidates.map((candidate) => ({
+    participantId: candidate.participantId.trim(),
+    personaId: candidate.personaId.trim(),
+    displayName: candidate.displayName.trim() || "Персона",
+  }));
+  const allowedCandidates = candidatesList.filter(
+    (candidate) => !blocked.has(candidate.participantId),
+  );
+  if (allowedCandidates.length === 0) {
+    throw new Error("Director has no non-blocked candidates.");
+  }
+
+  const baseUrl = settings.lmBaseUrl.replace(/\/+$/, "");
+  const endpoint = `${baseUrl}/api/v1/chat`;
+  const systemPrompt = [
+    "Ты Director группового AI-чата.",
+    "Твоя задача: выбрать одного следующего спикера из списка candidates.",
+    "Верни только JSON-объект без markdown и без пояснений.",
+    'Формат строго: {"speakerParticipantId":"...","reason":"...","confidence":0.0}',
+    "speakerParticipantId должен быть строго одним из candidates.participantId и не входить в blockedParticipantIds.",
+    "Учитывай последнее сообщение пользователя, контекст и динамику очередности.",
+    "Старайся распределять реплики по участникам, избегая монополии одного спикера.",
+  ].join("\n");
+
+  const recentLines = request.recentMessages
+    .slice(-10)
+    .map((message) => {
+      const role =
+        message.role === "assistant"
+          ? "assistant"
+          : message.role === "user"
+            ? "user"
+            : "system";
+      const author = message.authorName.trim() || (role === "user" ? "Вы" : "Участник");
+      const content = message.content.replace(/\s+/g, " ").trim().slice(0, 240);
+      return `${author} [${role}]: ${content}`;
+    });
+
+  const input = [
+    `userMessage: ${request.userMessage.replace(/\s+/g, " ").trim()}`,
+    "candidates:",
+    ...candidatesList.map(
+      (candidate) =>
+        `- participantId=${candidate.participantId}; personaId=${candidate.personaId}; displayName=${candidate.displayName}`,
+    ),
+    `blockedParticipantIds: ${Array.from(blocked).join(", ") || "(none)"}`,
+    "recentMessages:",
+    ...(recentLines.length > 0 ? recentLines : ["(empty)"]),
+  ].join("\n");
+
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+    },
+    body: JSON.stringify({
+      model: settings.model,
+      input,
+      system_prompt: systemPrompt,
+      max_output_tokens: 220,
+      temperature: 0.2,
+      store: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Director request failed (${response.status}): ${body}`);
+  }
+
+  const data = (await response.json()) as NativeChatResponse;
+  const rawContent = data.output
+    .filter((item) => item.type === "message")
+    .map((item) => item.content?.trim() ?? "")
+    .filter(Boolean)
+    .join("\n");
+  const parsed = parseJsonObjectBlock(rawContent);
+  const speakerParticipantId = toTrimmedString(parsed.speakerParticipantId);
+  const reason = toTrimmedString(parsed.reason) || "director_llm";
+  const confidenceRaw = Number(parsed.confidence);
+  const confidence = Number.isFinite(confidenceRaw)
+    ? Math.max(0, Math.min(1, confidenceRaw))
+    : 0.5;
+
+  const isAllowed = allowedCandidates.some(
+    (candidate) => candidate.participantId === speakerParticipantId,
+  );
+  if (!isAllowed) {
+    throw new Error("Director selected an invalid or blocked participant.");
+  }
+
+  return {
+    speakerParticipantId,
+    reason,
+    confidence,
+  };
+}
+
+export async function requestAdventureArbiterDecision(
+  settings: Pick<AppSettings, "lmBaseUrl" | "model" | "apiKey" | "lmAuth">,
+  request: AdventureArbiterRequest,
+): Promise<AdventureArbiterDecision> {
+  const baseUrl = settings.lmBaseUrl.replace(/\/+$/, "");
+  const endpoint = `${baseUrl}/api/v1/chat`;
+  const participantNames = Array.from(
+    new Set(request.participants.map((value) => value.trim()).filter(Boolean)),
+  );
+  const jsonSchemaReminder =
+    '{"narration":"...","currentScene":"...","sceneObjective":"...","openThreads":["..."],"resolvedThreads":["..."],"timelineSummary":"...","rationale":"...","confidence":0.0}';
+  const recentLines = request.recentMessages
+    .slice(-10)
+    .map((message) => {
+      const role =
+        message.role === "assistant"
+          ? "assistant"
+          : message.role === "user"
+            ? "user"
+            : "system";
+      const author = message.authorName.trim() || (role === "user" ? "Вы" : "Участник");
+      const content = message.content.replace(/\s+/g, " ").trim().slice(0, 280);
+      return `${author} [${role}]: ${content}`;
+    });
+  const baseInput = [
+    `userMessage: ${request.userMessage.replace(/\s+/g, " ").trim()}`,
+    `participants: ${participantNames.join(", ") || "(none)"}`,
+    "scenario:",
+    `- title: ${request.scenario.title}`,
+    `- startContext: ${request.scenario.startContext}`,
+    `- initialGoal: ${request.scenario.initialGoal}`,
+    `- narratorStyle: ${request.scenario.narratorStyle}`,
+    `- worldTone: ${request.scenario.worldTone}`,
+    `- explicitnessPolicy: ${request.scenario.explicitnessPolicy}`,
+    "state:",
+    `- currentScene: ${request.state.currentScene}`,
+    `- sceneObjective: ${request.state.sceneObjective}`,
+    `- openThreads: ${request.state.openThreads.join("; ") || "(none)"}`,
+    `- resolvedThreads: ${request.state.resolvedThreads.join("; ") || "(none)"}`,
+    `- timelineSummary: ${request.state.timelineSummary}`,
+    "recentMessages:",
+    ...(recentLines.length > 0 ? recentLines : ["(empty)"]),
+  ].join("\n");
+  const runArbiterStage = async (
+    stage: "propose" | "review" | "arbitrate",
+    systemPrompt: string,
+    input: string,
+    temperature: number,
+  ) => {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        input,
+        system_prompt: systemPrompt,
+        max_output_tokens: 900,
+        temperature,
+        store: false,
+      }),
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(
+        `Adventure arbiter ${stage} failed (${response.status}): ${body}`,
+      );
+    }
+    const data = (await response.json()) as NativeChatResponse;
+    const rawContent = data.output
+      .filter((item) => item.type === "message")
+      .map((item) => item.content?.trim() ?? "")
+      .filter(Boolean)
+      .join("\n");
+    if (!rawContent) {
+      throw new Error(`Adventure arbiter ${stage} returned empty output.`);
+    }
+    return parseJsonObjectBlock(rawContent);
+  };
+
+  const proposePrompt = [
+    "Ты stage=propose в протоколе adventure-оркестрации.",
+    "Подготовь черновой исход сцены и обновление состояния.",
+    "Верни только JSON без markdown.",
+    `Строгий формат: ${jsonSchemaReminder}`,
+    "Учитывай контекст, эмоциональную инерцию и асимметрию отношений.",
+    "Не используй RPG-цифры и броски.",
+  ].join("\n");
+  const reviewPrompt = [
+    "Ты stage=review в протоколе adventure-оркестрации.",
+    "Проверь предложенный JSON на связность, тон и граничные правила.",
+    "Если explicitnessPolicy=fade_to_black, убирай явные подробности и оставляй импликацию.",
+    "Если explicitnessPolicy=balanced, допускай умеренную чувственность без графичности.",
+    "Если explicitnessPolicy=explicit, допускай подробности только при consensual контексте.",
+    "Запрещено non-consensual sexual content.",
+    "Исправь proposal при нарушениях и верни только JSON.",
+    `Строгий формат: ${jsonSchemaReminder}`,
+  ].join("\n");
+  const arbitratePrompt = [
+    "Ты stage=arbitrate в протоколе adventure-оркестрации.",
+    "Собери финальное решение из proposal/review, приоритет у review если есть расхождения.",
+    "Верни только JSON без markdown.",
+    `Строгий формат: ${jsonSchemaReminder}`,
+    "Сохраняй художественную связность и краткость rationale.",
+  ].join("\n");
+
+  const proposal = await runArbiterStage("propose", proposePrompt, baseInput, 0.5);
+  const reviewInput = [
+    baseInput,
+    "proposalDraft:",
+    JSON.stringify(proposal),
+  ].join("\n\n");
+  const review = await runArbiterStage("review", reviewPrompt, reviewInput, 0.25);
+  const arbitrateInput = [
+    baseInput,
+    "proposalDraft:",
+    JSON.stringify(proposal),
+    "reviewDraft:",
+    JSON.stringify(review),
+  ].join("\n\n");
+  const parsed = await runArbiterStage(
+    "arbitrate",
+    arbitratePrompt,
+    arbitrateInput,
+    0.2,
+  );
+
+  const narration = toTrimmedString(parsed.narration);
+  const currentScene =
+    toTrimmedString(parsed.currentScene) || request.state.currentScene;
+  const sceneObjective =
+    toTrimmedString(parsed.sceneObjective) || request.state.sceneObjective;
+  const openThreads = parseStringArrayField(parsed.openThreads, request.state.openThreads);
+  const resolvedThreads = parseStringArrayField(
+    parsed.resolvedThreads,
+    request.state.resolvedThreads,
+  );
+  const timelineSummary =
+    toTrimmedString(parsed.timelineSummary) || request.state.timelineSummary;
+  const rationale = toTrimmedString(parsed.rationale) || "Arbiter decision.";
+  const confidenceRaw = Number(parsed.confidence);
+  const confidence = Number.isFinite(confidenceRaw)
+    ? Math.max(0, Math.min(1, confidenceRaw))
+    : 0.6;
+
+  if (!narration) {
+    throw new Error("Adventure arbiter returned empty narration.");
+  }
+
+  return {
+    narration,
+    currentScene,
+    sceneObjective,
+    openThreads,
+    resolvedThreads,
+    timelineSummary,
+    rationale,
+    confidence,
+  };
 }
 
 export async function requestChatCompletion(

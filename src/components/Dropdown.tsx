@@ -4,6 +4,8 @@ import { ChevronDown } from "lucide-react";
 export interface DropdownOption {
   value: string;
   label: string;
+  description?: string;
+  avatarSrc?: string;
 }
 
 interface DropdownProps {
@@ -55,9 +57,29 @@ export function Dropdown({
         aria-haspopup="listbox"
         aria-expanded={open}
       >
-        <span className={selectedOption ? "dropdown-selected-label" : "dropdown-placeholder"}>
-          {selectedOption ? selectedOption.label : placeholder}
-        </span>
+        {selectedOption ? (
+          selectedOption.avatarSrc || selectedOption.description ? (
+            <span className="dropdown-selected-rich">
+              {selectedOption.avatarSrc ? (
+                <span className="dropdown-option-avatar" aria-hidden="true">
+                  <img src={selectedOption.avatarSrc} alt="" loading="lazy" />
+                </span>
+              ) : null}
+              <span className="dropdown-option-text">
+                <span className="dropdown-selected-label">{selectedOption.label}</span>
+                {selectedOption.description ? (
+                  <span className="dropdown-option-description">
+                    {selectedOption.description}
+                  </span>
+                ) : null}
+              </span>
+            </span>
+          ) : (
+            <span className="dropdown-selected-label">{selectedOption.label}</span>
+          )
+        ) : (
+          <span className="dropdown-placeholder">{placeholder}</span>
+        )}
         <ChevronDown size={14} className={`dropdown-chevron ${open ? "open" : ""}`} />
       </button>
       {open ? (
@@ -74,7 +96,23 @@ export function Dropdown({
               role="option"
               aria-selected={option.value === value}
             >
-              {option.label}
+              {option.avatarSrc || option.description ? (
+                <span className="dropdown-option-content">
+                  {option.avatarSrc ? (
+                    <span className="dropdown-option-avatar" aria-hidden="true">
+                      <img src={option.avatarSrc} alt="" loading="lazy" />
+                    </span>
+                  ) : null}
+                  <span className="dropdown-option-text">
+                    <span className="dropdown-option-label">{option.label}</span>
+                    {option.description ? (
+                      <span className="dropdown-option-description">{option.description}</span>
+                    ) : null}
+                  </span>
+                </span>
+              ) : (
+                option.label
+              )}
             </button>
           ))}
         </div>

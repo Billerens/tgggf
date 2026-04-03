@@ -53,6 +53,8 @@ export default function App() {
     personas,
     chats,
     messages,
+    activeChatEvents,
+    activeChatParticipants,
     activePersonaState,
     activeMemories,
     activePersonaId,
@@ -67,6 +69,8 @@ export default function App() {
     savePersona,
     deletePersona,
     createChat,
+    createGroupChat,
+    createAdventureChat,
     deleteChat,
     setChatStyleStrength,
     sendMessage,
@@ -505,6 +509,12 @@ export default function App() {
           onOpenPersonas={() => setShowPersonaModal(true)}
           onOpenSettings={() => setShowSettingsModal(true)}
           onCreateChat={() => void createChat()}
+          onCreateGroupChat={(personaIds, title) =>
+            void createGroupChat(personaIds, title)
+          }
+          onCreateAdventureChat={(personaIds, scenario) =>
+            void createAdventureChat(personaIds, scenario)
+          }
           onCreateGenerationSession={() => void createGenerationSession()}
           onDeleteGenerationSession={(sessionId) =>
             void deleteGenerationSession(sessionId)
@@ -514,6 +524,7 @@ export default function App() {
           onSelectPersona={(personaId) => void selectPersona(personaId)}
           onSelectGenerationPersona={setGenerationPersonaId}
           onEditPersona={startEditPersona}
+          enableGroupChats={settings.enableGroupChats}
           isMobileOpen={mobileSidebarOpen}
           onCloseMobile={() => setMobileSidebarOpen(false)}
           onToggleMobileTab={onToggleMobileTab}
@@ -552,6 +563,7 @@ export default function App() {
           <ChatPane
             activeChat={activeChat}
             activePersona={activePersona}
+            chatParticipants={activeChatParticipants}
             activeChatId={activeChatId}
             messages={messages}
             imageMetaByUrl={chatImageMetaByUrl}
@@ -582,6 +594,8 @@ export default function App() {
           open={showChatDetailsModal}
           chat={activeChat}
           persona={activePersona}
+          chatEvents={activeChatEvents}
+          chatParticipants={activeChatParticipants}
           messages={messages}
           imageMetaByUrl={chatImageMetaByUrl}
           memories={activeMemories}

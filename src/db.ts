@@ -2,9 +2,18 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import { normalizeMemoryRecord } from "./personaDynamics";
 import { normalizePersonaRecord } from "./personaProfiles";
 import type {
+  AdventureExplicitnessPolicy,
+  AdventureScenario,
+  AdventureState,
   AppSettings,
   AuthMode,
+  ChatEvent,
+  ChatEventType,
+  ChatMode,
+  ChatParticipant,
+  ChatParticipantType,
   ChatMessage,
+  ChatRunStatus,
   ChatSession,
   EndpointAuthConfig,
   EnhanceDetailLevel,
@@ -14,8 +23,19 @@ import type {
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
+  RelationshipBondState,
+  RelationshipConsentAlignment,
+  RelationshipEdge,
+  RelationshipRomanticIntent,
+  TurnJob,
+  TurnJobStage,
+  TurnJobStatus,
   UserGender,
 } from "./types";
+
+interface PersonaRuntimeStateRecord extends PersonaRuntimeState {
+  id: string;
+}
 
 interface TgGfDb extends DBSchema {
   personas: {
@@ -37,6 +57,16 @@ interface TgGfDb extends DBSchema {
     value: PersonaRuntimeState;
     indexes: { "by-persona": string; "by-updatedAt": string };
   };
+  personaStatesV2: {
+    key: string;
+    value: PersonaRuntimeStateRecord;
+    indexes: {
+      "by-chat": string;
+      "by-persona": string;
+      "by-updatedAt": string;
+      "by-chat-persona": [string, string];
+    };
+  };
   memories: {
     key: string;
     value: PersonaMemory;
@@ -56,16 +86,143 @@ interface TgGfDb extends DBSchema {
     value: ImageAsset;
     indexes: { "by-createdAt": string };
   };
+  chatParticipants: {
+    key: string;
+    value: ChatParticipant;
+    indexes: {
+      "by-chat": string;
+      "by-type": ChatParticipantType;
+      "by-ref": string;
+      "by-updatedAt": string;
+    };
+  };
+  chatEvents: {
+    key: string;
+    value: ChatEvent;
+    indexes: { "by-chat": string; "by-turn": string; "by-createdAt": string };
+  };
+  turnJobs: {
+    key: string;
+    value: TurnJob;
+    indexes: { "by-chat": string; "by-status": TurnJobStatus; "by-createdAt": string };
+  };
+  relationshipEdges: {
+    key: string;
+    value: RelationshipEdge;
+    indexes: {
+      "by-chat": string;
+      "by-from": string;
+      "by-to": string;
+      "by-updatedAt": string;
+    };
+  };
+  adventureScenarios: {
+    key: string;
+    value: AdventureScenario;
+    indexes: { "by-updatedAt": string };
+  };
+  adventureStates: {
+    key: string;
+    value: AdventureState;
+    indexes: { "by-chat": string; "by-scenario": string; "by-updatedAt": string };
+  };
 }
 
+type StoreName =
+  | "personas"
+  | "chats"
+  | "messages"
+  | "personaStates"
+  | "personaStatesV2"
+  | "memories"
+  | "settings"
+  | "generatorSessions"
+  | "imageAssets"
+  | "chatParticipants"
+  | "chatEvents"
+  | "turnJobs"
+  | "relationshipEdges"
+  | "adventureScenarios"
+  | "adventureStates";
+
 const DB_NAME = "tg-gf-db";
-const DB_VERSION = 4;
+const DB_VERSION = 7;
 const SETTINGS_KEY = "main";
-const DEV_PROXY_BASE_URL = "/lmstudio";
+const DEV_PROXY_BASE_URL = "/lmstudioloc/";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
-const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
+const DEFAULT_COMFY_BASE_URL = "/comfyloc/";
 
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
+const CHAT_MODES: ChatMode[] = ["direct", "group", "adventure"];
+const CHAT_RUN_STATUSES: ChatRunStatus[] = ["idle", "busy", "error"];
+const CHAT_PARTICIPANT_TYPES: ChatParticipantType[] = ["user", "persona", "narrator"];
+const CHAT_EVENT_TYPES: ChatEventType[] = [
+  "turn_started",
+  "speaker_selected",
+  "arbiter_decision",
+  "message_created",
+  "image_requested",
+  "image_created",
+  "turn_committed",
+  "turn_failed",
+  "support_offered",
+  "boundary_crossed",
+  "public_humiliation",
+  "betrayal_hint",
+  "apology_attempted",
+  "apology_rejected",
+  "trust_repair_step",
+  "reconciliation_moment",
+  "emotional_withdrawal",
+  "status_challenge",
+  "romantic_signal",
+  "romantic_rejection",
+  "relationship_commitment",
+  "relationship_breakup",
+  "cooling_off_period",
+];
+const TURN_JOB_STAGES: TurnJobStage[] = [
+  "turn_start",
+  "planning",
+  "decision",
+  "actor_response",
+  "image_action",
+  "commit",
+  "finalize",
+];
+const TURN_JOB_STATUSES: TurnJobStatus[] = [
+  "queued",
+  "running",
+  "done",
+  "failed",
+  "cancelled",
+];
+const RELATIONSHIP_BOND_STATES: RelationshipBondState[] = [
+  "neutral",
+  "interest",
+  "romance",
+  "partnership",
+  "estranged",
+  "hostile",
+];
+const RELATIONSHIP_ROMANTIC_INTENTS: RelationshipRomanticIntent[] = [
+  "none",
+  "curious",
+  "attracted",
+  "attached",
+  "obsessed",
+];
+const RELATIONSHIP_CONSENT_ALIGNMENTS: RelationshipConsentAlignment[] = [
+  "unknown",
+  "mutual",
+  "one_sided",
+  "withdrawn",
+];
+const ADVENTURE_EXPLICITNESS_POLICIES: AdventureExplicitnessPolicy[] = [
+  "fade_to_black",
+  "balanced",
+  "explicit",
+];
 const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = ["soft", "medium", "strong"];
 const DEFAULT_ENHANCE_DETAIL_STRENGTH_TABLE: EnhanceDetailStrengthTable = {
   soft: {
@@ -214,6 +371,8 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   }
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
+  merged.enableGroupChats = Boolean(merged.enableGroupChats);
+  merged.enableAdventureMode = Boolean(merged.enableAdventureMode);
   if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelAll)) {
     merged.enhanceDetailLevelAll = DEFAULT_SETTINGS.enhanceDetailLevelAll;
   }
@@ -228,6 +387,22 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
 
 function normalizeChatSession(chat: ChatSession): ChatSession {
   const next: ChatSession = { ...chat };
+  next.mode = CHAT_MODES.includes(next.mode) ? next.mode : "direct";
+  next.status = CHAT_RUN_STATUSES.includes(next.status)
+    ? next.status
+    : "idle";
+  const normalizedTurnId = toTrimmedString(next.activeTurnId);
+  if (normalizedTurnId) {
+    next.activeTurnId = normalizedTurnId;
+  } else {
+    delete next.activeTurnId;
+  }
+  const normalizedScenarioId = toTrimmedString(next.scenarioId);
+  if (normalizedScenarioId) {
+    next.scenarioId = normalizedScenarioId;
+  } else {
+    delete next.scenarioId;
+  }
   if (typeof next.chatStyleStrength === "number" && Number.isFinite(next.chatStyleStrength)) {
     next.chatStyleStrength = Math.max(0, Math.min(1, Number(next.chatStyleStrength)));
   } else {
@@ -281,6 +456,203 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
   return next;
 }
 
+function normalize01(value: unknown, fallback = 0): number {
+  const next = Number(value);
+  if (!Number.isFinite(next)) return fallback;
+  return Math.max(0, Math.min(1, next));
+}
+
+function normalizeIso(value: unknown, fallback?: string): string {
+  const raw = toTrimmedString(value);
+  if (raw) return raw;
+  return fallback ?? new Date().toISOString();
+}
+
+function buildPersonaStateRecordId(chatId: string, personaId: string) {
+  return `${chatId.trim()}:${personaId.trim()}`;
+}
+
+function toPersonaStateRecord(state: PersonaRuntimeState): PersonaRuntimeStateRecord {
+  const chatId = state.chatId.trim();
+  const personaId = state.personaId.trim();
+  return {
+    ...state,
+    chatId,
+    personaId,
+    id: buildPersonaStateRecordId(chatId, personaId),
+    mood: state.mood,
+    trust: normalize01(state.trust),
+    energy: normalize01(state.energy),
+    engagement: normalize01(state.engagement),
+    lust: normalize01(state.lust),
+    fear: normalize01(state.fear),
+    affection: normalize01(state.affection),
+    tension: normalize01(state.tension),
+    relationshipDepth: normalize01(state.relationshipDepth),
+    activeTopics: Array.isArray(state.activeTopics)
+      ? state.activeTopics.map((item) => toTrimmedString(item)).filter(Boolean)
+      : [],
+    updatedAt: normalizeIso(state.updatedAt),
+  };
+}
+
+function fromPersonaStateRecord(record: PersonaRuntimeStateRecord): PersonaRuntimeState {
+  return {
+    chatId: record.chatId,
+    personaId: record.personaId,
+    mood: record.mood,
+    trust: record.trust,
+    energy: record.energy,
+    engagement: record.engagement,
+    lust: record.lust,
+    fear: record.fear,
+    affection: record.affection,
+    tension: record.tension,
+    relationshipType: record.relationshipType,
+    relationshipDepth: record.relationshipDepth,
+    relationshipStage: record.relationshipStage,
+    activeTopics: record.activeTopics,
+    updatedAt: record.updatedAt,
+  };
+}
+
+function normalizeChatParticipant(participant: ChatParticipant): ChatParticipant {
+  const participantType = CHAT_PARTICIPANT_TYPES.includes(participant.participantType)
+    ? participant.participantType
+    : "persona";
+  return {
+    ...participant,
+    chatId: participant.chatId.trim(),
+    participantType,
+    participantRefId: participant.participantRefId.trim(),
+    displayName: toTrimmedString(participant.displayName) || "Participant",
+    order: Number.isFinite(participant.order)
+      ? Math.max(0, Math.floor(participant.order))
+      : 0,
+    isActive: Boolean(participant.isActive),
+    joinedAt: normalizeIso(participant.joinedAt),
+    updatedAt: normalizeIso(participant.updatedAt),
+  };
+}
+
+function normalizeChatEvent(event: ChatEvent): ChatEvent {
+  return {
+    ...event,
+    chatId: event.chatId.trim(),
+    turnId: event.turnId.trim(),
+    eventType: CHAT_EVENT_TYPES.includes(event.eventType)
+      ? event.eventType
+      : "turn_failed",
+    payload:
+      event.payload && typeof event.payload === "object"
+        ? event.payload
+        : {},
+    createdAt: normalizeIso(event.createdAt),
+  };
+}
+
+function normalizeTurnJob(job: TurnJob): TurnJob {
+  return {
+    ...job,
+    chatId: job.chatId.trim(),
+    turnId: job.turnId.trim(),
+    mode: CHAT_MODES.includes(job.mode) ? job.mode : "direct",
+    stage: TURN_JOB_STAGES.includes(job.stage) ? job.stage : "planning",
+    payload:
+      job.payload && typeof job.payload === "object"
+        ? job.payload
+        : {},
+    status: TURN_JOB_STATUSES.includes(job.status) ? job.status : "queued",
+    retryCount: Number.isFinite(job.retryCount)
+      ? Math.max(0, Math.floor(job.retryCount))
+      : 0,
+    createdAt: normalizeIso(job.createdAt),
+    startedAt: toTrimmedString(job.startedAt) || undefined,
+    finishedAt: toTrimmedString(job.finishedAt) || undefined,
+  };
+}
+
+function normalizeRelationshipEdge(edge: RelationshipEdge): RelationshipEdge {
+  return {
+    ...edge,
+    chatId: edge.chatId.trim(),
+    fromPersonaId: edge.fromPersonaId.trim(),
+    toPersonaId: edge.toPersonaId.trim(),
+    bondState: RELATIONSHIP_BOND_STATES.includes(edge.bondState)
+      ? edge.bondState
+      : "neutral",
+    romanticIntent: RELATIONSHIP_ROMANTIC_INTENTS.includes(edge.romanticIntent)
+      ? edge.romanticIntent
+      : "none",
+    consentAlignment: RELATIONSHIP_CONSENT_ALIGNMENTS.includes(edge.consentAlignment)
+      ? edge.consentAlignment
+      : "unknown",
+    trust: normalize01(edge.trust),
+    safety: normalize01(edge.safety),
+    respect: normalize01(edge.respect),
+    affection: normalize01(edge.affection),
+    attraction: normalize01(edge.attraction),
+    admiration: normalize01(edge.admiration),
+    gratitude: normalize01(edge.gratitude),
+    dependency: normalize01(edge.dependency),
+    jealousy: normalize01(edge.jealousy),
+    envy: normalize01(edge.envy),
+    irritation: normalize01(edge.irritation),
+    contempt: normalize01(edge.contempt),
+    aversion: normalize01(edge.aversion),
+    fear: normalize01(edge.fear),
+    tension: normalize01(edge.tension),
+    intimacy: normalize01(edge.intimacy),
+    distancePreference: normalize01(edge.distancePreference),
+    conflictHistoryScore: normalize01(edge.conflictHistoryScore),
+    repairReadiness: normalize01(edge.repairReadiness),
+    lastSignificantEventId: toTrimmedString(edge.lastSignificantEventId) || undefined,
+    lastBondShiftAt: toTrimmedString(edge.lastBondShiftAt) || undefined,
+    updatedAt: normalizeIso(edge.updatedAt),
+  };
+}
+
+function normalizeAdventureScenario(scenario: AdventureScenario): AdventureScenario {
+  return {
+    ...scenario,
+    title: toTrimmedString(scenario.title) || "Scenario",
+    startContext: toTrimmedString(scenario.startContext),
+    initialGoal: toTrimmedString(scenario.initialGoal),
+    narratorStyle: toTrimmedString(scenario.narratorStyle),
+    worldTone:
+      scenario.worldTone === "light" ||
+      scenario.worldTone === "balanced" ||
+      scenario.worldTone === "dark"
+        ? scenario.worldTone
+        : "balanced",
+    explicitnessPolicy: ADVENTURE_EXPLICITNESS_POLICIES.includes(
+      scenario.explicitnessPolicy,
+    )
+      ? scenario.explicitnessPolicy
+      : "fade_to_black",
+    createdAt: normalizeIso(scenario.createdAt),
+    updatedAt: normalizeIso(scenario.updatedAt),
+  };
+}
+
+function normalizeAdventureState(state: AdventureState): AdventureState {
+  return {
+    ...state,
+    chatId: state.chatId.trim(),
+    scenarioId: state.scenarioId.trim(),
+    currentScene: toTrimmedString(state.currentScene),
+    sceneObjective: toTrimmedString(state.sceneObjective),
+    openThreads: Array.isArray(state.openThreads)
+      ? state.openThreads.map((item) => toTrimmedString(item)).filter(Boolean)
+      : [],
+    resolvedThreads: Array.isArray(state.resolvedThreads)
+      ? state.resolvedThreads.map((item) => toTrimmedString(item)).filter(Boolean)
+      : [],
+    timelineSummary: toTrimmedString(state.timelineSummary),
+    updatedAt: normalizeIso(state.updatedAt),
+  };
+}
+
 const DEFAULT_SETTINGS: AppSettings = {
   lmBaseUrl: resolveDefaultBaseUrl(),
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
@@ -311,10 +683,27 @@ const DEFAULT_SETTINGS: AppSettings = {
   userGender: "unspecified",
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
+  enableGroupChats: false,
+  enableAdventureMode: false,
   enhanceDetailLevelAll: "medium",
   enhanceDetailLevelPart: "strong",
   enhanceDetailStrengthTable: normalizeEnhanceDetailStrengthTable(undefined),
 };
+
+function runUpgradeMigrations(_oldVersion: number) {
+  // v5 introduces chat mode/status and feature flags normalization in application layer.
+  // v6 introduces new data-layer stores for group/adventure features.
+  // v7 re-applies object store creation to repair partial v6 schema states.
+  // Existing records are backfilled lazily by normalizeChatSession / normalizeSettings /
+  // personaState fallback migration in dbApi.
+}
+
+function filterExistingStoreNames<T extends readonly StoreName[]>(
+  db: IDBPDatabase<TgGfDb>,
+  names: T,
+) {
+  return names.filter((name): name is StoreName => db.objectStoreNames.contains(name));
+}
 
 let dbPromise: Promise<IDBPDatabase<TgGfDb>> | null = null;
 
@@ -331,7 +720,7 @@ function isVersionDowngradeError(error: unknown) {
 function getDb() {
   if (!dbPromise) {
     dbPromise = openDB<TgGfDb>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion) {
         if (!db.objectStoreNames.contains("personas")) {
           db.createObjectStore("personas", { keyPath: "id" });
         }
@@ -352,6 +741,14 @@ function getDb() {
           const personaStates = db.createObjectStore("personaStates", { keyPath: "chatId" });
           personaStates.createIndex("by-persona", "personaId");
           personaStates.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("personaStatesV2")) {
+          const personaStatesV2 = db.createObjectStore("personaStatesV2", { keyPath: "id" });
+          personaStatesV2.createIndex("by-chat", "chatId");
+          personaStatesV2.createIndex("by-persona", "personaId");
+          personaStatesV2.createIndex("by-updatedAt", "updatedAt");
+          personaStatesV2.createIndex("by-chat-persona", ["chatId", "personaId"]);
         }
 
         if (!db.objectStoreNames.contains("memories")) {
@@ -375,6 +772,50 @@ function getDb() {
           const imageAssets = db.createObjectStore("imageAssets", { keyPath: "id" });
           imageAssets.createIndex("by-createdAt", "createdAt");
         }
+
+        if (!db.objectStoreNames.contains("chatParticipants")) {
+          const participants = db.createObjectStore("chatParticipants", { keyPath: "id" });
+          participants.createIndex("by-chat", "chatId");
+          participants.createIndex("by-type", "participantType");
+          participants.createIndex("by-ref", "participantRefId");
+          participants.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("chatEvents")) {
+          const events = db.createObjectStore("chatEvents", { keyPath: "id" });
+          events.createIndex("by-chat", "chatId");
+          events.createIndex("by-turn", "turnId");
+          events.createIndex("by-createdAt", "createdAt");
+        }
+
+        if (!db.objectStoreNames.contains("turnJobs")) {
+          const turnJobs = db.createObjectStore("turnJobs", { keyPath: "id" });
+          turnJobs.createIndex("by-chat", "chatId");
+          turnJobs.createIndex("by-status", "status");
+          turnJobs.createIndex("by-createdAt", "createdAt");
+        }
+
+        if (!db.objectStoreNames.contains("relationshipEdges")) {
+          const relationshipEdges = db.createObjectStore("relationshipEdges", { keyPath: "id" });
+          relationshipEdges.createIndex("by-chat", "chatId");
+          relationshipEdges.createIndex("by-from", "fromPersonaId");
+          relationshipEdges.createIndex("by-to", "toPersonaId");
+          relationshipEdges.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("adventureScenarios")) {
+          const adventureScenarios = db.createObjectStore("adventureScenarios", { keyPath: "id" });
+          adventureScenarios.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("adventureStates")) {
+          const adventureStates = db.createObjectStore("adventureStates", { keyPath: "id" });
+          adventureStates.createIndex("by-chat", "chatId");
+          adventureStates.createIndex("by-scenario", "scenarioId");
+          adventureStates.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        runUpgradeMigrations(oldVersion);
       },
     }).catch((error) => {
       if (!isVersionDowngradeError(error)) {
@@ -391,27 +832,29 @@ function getDb() {
 export const dbApi = {
   async clearAllData() {
     const db = await getDb();
-    const tx = db.transaction(
-      [
-        "personas",
-        "chats",
-        "messages",
-        "personaStates",
-        "memories",
-        "settings",
-        "generatorSessions",
-        "imageAssets",
-      ],
-      "readwrite",
-    );
-    await tx.objectStore("personas").clear();
-    await tx.objectStore("chats").clear();
-    await tx.objectStore("messages").clear();
-    await tx.objectStore("personaStates").clear();
-    await tx.objectStore("memories").clear();
-    await tx.objectStore("settings").clear();
-    await tx.objectStore("generatorSessions").clear();
-    await tx.objectStore("imageAssets").clear();
+    const requested = [
+      "personas",
+      "chats",
+      "messages",
+      "personaStates",
+      "personaStatesV2",
+      "memories",
+      "settings",
+      "generatorSessions",
+      "imageAssets",
+      "chatParticipants",
+      "chatEvents",
+      "turnJobs",
+      "relationshipEdges",
+      "adventureScenarios",
+      "adventureStates",
+    ] as const;
+    const existing = filterExistingStoreNames(db, requested);
+    if (existing.length === 0) return;
+    const tx = db.transaction(existing, "readwrite");
+    for (const storeName of existing) {
+      await tx.objectStore(storeName).clear();
+    }
     await tx.done;
   },
 
@@ -430,40 +873,174 @@ export const dbApi = {
 
   async deletePersona(personaId: string) {
     const db = await getDb();
-    const tx = db.transaction(
-      ["personas", "chats", "messages", "personaStates", "memories", "generatorSessions"],
-      "readwrite",
-    );
-    await tx.objectStore("personas").delete(personaId);
-    const personaStateKeys = await tx.objectStore("personaStates").index("by-persona").getAllKeys(personaId);
-    for (const key of personaStateKeys) {
-      await tx.objectStore("personaStates").delete(key);
-    }
-    const memoryKeys = await tx.objectStore("memories").index("by-persona").getAllKeys(personaId);
-    for (const key of memoryKeys) {
-      await tx.objectStore("memories").delete(key);
+    const requested = [
+      "personas",
+      "chats",
+      "messages",
+      "personaStates",
+      "personaStatesV2",
+      "memories",
+      "generatorSessions",
+      "chatParticipants",
+      "chatEvents",
+      "turnJobs",
+      "relationshipEdges",
+      "adventureStates",
+    ] as const;
+    const existing = filterExistingStoreNames(db, requested);
+    if (existing.length === 0) return;
+    const tx = db.transaction(existing, "readwrite");
+    const existingSet = new Set<string>(existing.map((name) => String(name)));
+    const hasStore = (name: StoreName) => existingSet.has(String(name));
+
+    const personasStore = hasStore("personas") ? tx.objectStore("personas") : null;
+    const chatsStore = hasStore("chats") ? tx.objectStore("chats") : null;
+    const messagesStore = hasStore("messages") ? tx.objectStore("messages") : null;
+    const personaStatesStore = hasStore("personaStates") ? tx.objectStore("personaStates") : null;
+    const personaStatesV2Store = hasStore("personaStatesV2")
+      ? tx.objectStore("personaStatesV2")
+      : null;
+    const memoriesStore = hasStore("memories") ? tx.objectStore("memories") : null;
+    const generatorSessionsStore = hasStore("generatorSessions")
+      ? tx.objectStore("generatorSessions")
+      : null;
+    const chatParticipantsStore = hasStore("chatParticipants")
+      ? tx.objectStore("chatParticipants")
+      : null;
+    const chatEventsStore = hasStore("chatEvents") ? tx.objectStore("chatEvents") : null;
+    const turnJobsStore = hasStore("turnJobs") ? tx.objectStore("turnJobs") : null;
+    const relationshipEdgesStore = hasStore("relationshipEdges")
+      ? tx.objectStore("relationshipEdges")
+      : null;
+    const adventureStatesStore = hasStore("adventureStates")
+      ? tx.objectStore("adventureStates")
+      : null;
+
+    if (personasStore) {
+      await personasStore.delete(personaId);
     }
 
-    const chats = await tx.objectStore("chats").index("by-persona").getAll(personaId);
+    if (personaStatesStore) {
+      const personaStateKeys = await personaStatesStore.index("by-persona").getAllKeys(personaId);
+      for (const key of personaStateKeys) {
+        await personaStatesStore.delete(key);
+      }
+    }
+
+    if (personaStatesV2Store) {
+      const personaStateKeysV2 = await personaStatesV2Store
+        .index("by-persona")
+        .getAllKeys(personaId);
+      for (const key of personaStateKeysV2) {
+        await personaStatesV2Store.delete(key);
+      }
+    }
+
+    if (memoriesStore) {
+      const memoryKeys = await memoriesStore.index("by-persona").getAllKeys(personaId);
+      for (const key of memoryKeys) {
+        await memoriesStore.delete(key);
+      }
+    }
+
+    if (relationshipEdgesStore) {
+      const relationshipFromKeys = await relationshipEdgesStore
+        .index("by-from")
+        .getAllKeys(personaId);
+      for (const key of relationshipFromKeys) {
+        await relationshipEdgesStore.delete(key);
+      }
+      const relationshipToKeys = await relationshipEdgesStore
+        .index("by-to")
+        .getAllKeys(personaId);
+      for (const key of relationshipToKeys) {
+        await relationshipEdgesStore.delete(key);
+      }
+    }
+
+    if (chatParticipantsStore) {
+      const participantRowsByRef = await chatParticipantsStore
+        .index("by-ref")
+        .getAll(personaId);
+      for (const participant of participantRowsByRef) {
+        if (participant.participantType !== "persona") continue;
+        await chatParticipantsStore.delete(participant.id);
+      }
+    }
+
+    const chats = chatsStore ? await chatsStore.index("by-persona").getAll(personaId) : [];
     for (const chat of chats) {
-      await tx.objectStore("chats").delete(chat.id);
-      const messages = await tx.objectStore("messages").index("by-chat").getAll(chat.id);
-      for (const msg of messages) {
-        await tx.objectStore("messages").delete(msg.id);
+      if (chatsStore) {
+        await chatsStore.delete(chat.id);
       }
-      await tx.objectStore("personaStates").delete(chat.id);
-      const memories = await tx.objectStore("memories").index("by-chat").getAll(chat.id);
-      for (const memory of memories) {
-        await tx.objectStore("memories").delete(memory.id);
+      if (messagesStore) {
+        const messages = await messagesStore.index("by-chat").getAll(chat.id);
+        for (const msg of messages) {
+          await messagesStore.delete(msg.id);
+        }
+      }
+      if (personaStatesStore) {
+        await personaStatesStore.delete(chat.id);
+      }
+      if (personaStatesV2Store) {
+        const stateKeysV2ByChat = await personaStatesV2Store
+          .index("by-chat")
+          .getAllKeys(chat.id);
+        for (const key of stateKeysV2ByChat) {
+          await personaStatesV2Store.delete(key);
+        }
+      }
+      if (memoriesStore) {
+        const memories = await memoriesStore.index("by-chat").getAll(chat.id);
+        for (const memory of memories) {
+          await memoriesStore.delete(memory.id);
+        }
+      }
+      if (chatParticipantsStore) {
+        const participantKeys = await chatParticipantsStore
+          .index("by-chat")
+          .getAllKeys(chat.id);
+        for (const key of participantKeys) {
+          await chatParticipantsStore.delete(key);
+        }
+      }
+      if (chatEventsStore) {
+        const eventKeys = await chatEventsStore.index("by-chat").getAllKeys(chat.id);
+        for (const key of eventKeys) {
+          await chatEventsStore.delete(key);
+        }
+      }
+      if (turnJobsStore) {
+        const turnJobKeys = await turnJobsStore.index("by-chat").getAllKeys(chat.id);
+        for (const key of turnJobKeys) {
+          await turnJobsStore.delete(key);
+        }
+      }
+      if (relationshipEdgesStore) {
+        const relationshipKeysByChat = await relationshipEdgesStore
+          .index("by-chat")
+          .getAllKeys(chat.id);
+        for (const key of relationshipKeysByChat) {
+          await relationshipEdgesStore.delete(key);
+        }
+      }
+      if (adventureStatesStore) {
+        const adventureStateKeys = await adventureStatesStore
+          .index("by-chat")
+          .getAllKeys(chat.id);
+        for (const key of adventureStateKeys) {
+          await adventureStatesStore.delete(key);
+        }
       }
     }
 
-    const generatorSessionKeys = await tx
-      .objectStore("generatorSessions")
-      .index("by-persona")
-      .getAllKeys(personaId);
-    for (const key of generatorSessionKeys) {
-      await tx.objectStore("generatorSessions").delete(key);
+    if (generatorSessionsStore) {
+      const generatorSessionKeys = await generatorSessionsStore
+        .index("by-persona")
+        .getAllKeys(personaId);
+      for (const key of generatorSessionKeys) {
+        await generatorSessionsStore.delete(key);
+      }
     }
 
     await tx.done;
@@ -472,6 +1049,32 @@ export const dbApi = {
   async getChats(personaId: string) {
     const db = await getDb();
     const rows = await db.getAllFromIndex("chats", "by-persona", personaId);
+    const normalized = rows.map((row) => normalizeChatSession(row));
+    await Promise.all(normalized.map((row) => db.put("chats", row)));
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async getChatsForPersona(personaId: string) {
+    const db = await getDb();
+    const normalizedPersonaId = personaId.trim();
+    if (!normalizedPersonaId) return [];
+    const ownRows = await db.getAllFromIndex("chats", "by-persona", normalizedPersonaId);
+    const participantRows = await db.getAllFromIndex(
+      "chatParticipants",
+      "by-ref",
+      normalizedPersonaId,
+    );
+    const chatIds = new Set<string>(ownRows.map((row) => row.id));
+    for (const participant of participantRows) {
+      if (participant.participantType !== "persona") continue;
+      if (!participant.chatId?.trim()) continue;
+      chatIds.add(participant.chatId.trim());
+    }
+    const rows = (
+      await Promise.all(
+        Array.from(chatIds).map((chatId) => db.get("chats", chatId)),
+      )
+    ).filter((row): row is ChatSession => Boolean(row));
     const normalized = rows.map((row) => normalizeChatSession(row));
     await Promise.all(normalized.map((row) => db.put("chats", row)));
     return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -490,18 +1093,170 @@ export const dbApi = {
     await db.put("chats", normalizeChatSession(chat));
   },
 
+  async getChatById(chatId: string) {
+    const db = await getDb();
+    const row = await db.get("chats", chatId.trim());
+    if (!row) return null;
+    const normalized = normalizeChatSession(row);
+    await db.put("chats", normalized);
+    return normalized;
+  },
+
+  async acquireChatTurnLock(chatId: string) {
+    const db = await getDb();
+    const tx = db.transaction("chats", "readwrite");
+    const key = chatId.trim();
+    const row = await tx.store.get(key);
+    if (!row) {
+      await tx.done;
+      return null;
+    }
+    const current = normalizeChatSession(row);
+    if (current.status === "busy") {
+      await tx.done;
+      return null;
+    }
+    const turnId = crypto.randomUUID();
+    const locked: ChatSession = {
+      ...current,
+      status: "busy",
+      activeTurnId: turnId,
+      updatedAt: new Date().toISOString(),
+    };
+    await tx.store.put(locked);
+    await tx.done;
+    return { turnId, chat: locked };
+  },
+
+  async releaseChatTurnLock(
+    chatId: string,
+    turnId: string,
+    nextStatus: Exclude<ChatRunStatus, "busy"> = "idle",
+  ) {
+    const db = await getDb();
+    const tx = db.transaction("chats", "readwrite");
+    const key = chatId.trim();
+    const row = await tx.store.get(key);
+    if (!row) {
+      await tx.done;
+      return null;
+    }
+    const current = normalizeChatSession(row);
+    if (current.activeTurnId !== turnId) {
+      await tx.done;
+      return null;
+    }
+    const released: ChatSession = {
+      ...current,
+      status: nextStatus,
+      activeTurnId: undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    await tx.store.put(released);
+    await tx.done;
+    return released;
+  },
+
   async deleteChat(chatId: string) {
     const db = await getDb();
-    const tx = db.transaction(["chats", "messages", "personaStates", "memories"], "readwrite");
-    await tx.objectStore("chats").delete(chatId);
-    const messages = await tx.objectStore("messages").index("by-chat").getAll(chatId);
-    for (const msg of messages) {
-      await tx.objectStore("messages").delete(msg.id);
+    const requested = [
+      "chats",
+      "messages",
+      "personaStates",
+      "personaStatesV2",
+      "memories",
+      "chatParticipants",
+      "chatEvents",
+      "turnJobs",
+      "relationshipEdges",
+      "adventureStates",
+    ] as const;
+    const existing = filterExistingStoreNames(db, requested);
+    if (existing.length === 0) return;
+    const tx = db.transaction(existing, "readwrite");
+    const existingSet = new Set<string>(existing.map((name) => String(name)));
+    const hasStore = (name: StoreName) => existingSet.has(String(name));
+
+    const chatsStore = hasStore("chats") ? tx.objectStore("chats") : null;
+    const messagesStore = hasStore("messages") ? tx.objectStore("messages") : null;
+    const personaStatesStore = hasStore("personaStates") ? tx.objectStore("personaStates") : null;
+    const personaStatesV2Store = hasStore("personaStatesV2")
+      ? tx.objectStore("personaStatesV2")
+      : null;
+    const memoriesStore = hasStore("memories") ? tx.objectStore("memories") : null;
+    const chatParticipantsStore = hasStore("chatParticipants")
+      ? tx.objectStore("chatParticipants")
+      : null;
+    const chatEventsStore = hasStore("chatEvents") ? tx.objectStore("chatEvents") : null;
+    const turnJobsStore = hasStore("turnJobs") ? tx.objectStore("turnJobs") : null;
+    const relationshipEdgesStore = hasStore("relationshipEdges")
+      ? tx.objectStore("relationshipEdges")
+      : null;
+    const adventureStatesStore = hasStore("adventureStates")
+      ? tx.objectStore("adventureStates")
+      : null;
+
+    if (chatsStore) {
+      await chatsStore.delete(chatId);
     }
-    await tx.objectStore("personaStates").delete(chatId);
-    const memories = await tx.objectStore("memories").index("by-chat").getAll(chatId);
-    for (const memory of memories) {
-      await tx.objectStore("memories").delete(memory.id);
+    if (messagesStore) {
+      const messages = await messagesStore.index("by-chat").getAll(chatId);
+      for (const msg of messages) {
+        await messagesStore.delete(msg.id);
+      }
+    }
+    if (personaStatesStore) {
+      await personaStatesStore.delete(chatId);
+    }
+    if (personaStatesV2Store) {
+      const personaStatesV2Keys = await personaStatesV2Store
+        .index("by-chat")
+        .getAllKeys(chatId);
+      for (const key of personaStatesV2Keys) {
+        await personaStatesV2Store.delete(key);
+      }
+    }
+    if (memoriesStore) {
+      const memories = await memoriesStore.index("by-chat").getAll(chatId);
+      for (const memory of memories) {
+        await memoriesStore.delete(memory.id);
+      }
+    }
+    if (chatParticipantsStore) {
+      const participantKeys = await chatParticipantsStore
+        .index("by-chat")
+        .getAllKeys(chatId);
+      for (const key of participantKeys) {
+        await chatParticipantsStore.delete(key);
+      }
+    }
+    if (chatEventsStore) {
+      const eventKeys = await chatEventsStore.index("by-chat").getAllKeys(chatId);
+      for (const key of eventKeys) {
+        await chatEventsStore.delete(key);
+      }
+    }
+    if (turnJobsStore) {
+      const turnJobKeys = await turnJobsStore.index("by-chat").getAllKeys(chatId);
+      for (const key of turnJobKeys) {
+        await turnJobsStore.delete(key);
+      }
+    }
+    if (relationshipEdgesStore) {
+      const relationshipKeys = await relationshipEdgesStore
+        .index("by-chat")
+        .getAllKeys(chatId);
+      for (const key of relationshipKeys) {
+        await relationshipEdgesStore.delete(key);
+      }
+    }
+    if (adventureStatesStore) {
+      const adventureStateKeys = await adventureStatesStore
+        .index("by-chat")
+        .getAllKeys(chatId);
+      for (const key of adventureStateKeys) {
+        await adventureStatesStore.delete(key);
+      }
     }
     await tx.done;
   },
@@ -523,20 +1278,133 @@ export const dbApi = {
     await db.put("messages", message);
   },
 
-  async getPersonaState(chatId: string) {
+  async commitTurnArtifacts({
+    chat,
+    messages,
+    events,
+    turnJob,
+    adventureState,
+  }: {
+    chat?: ChatSession;
+    messages?: ChatMessage[];
+    events?: ChatEvent[];
+    turnJob?: TurnJob;
+    adventureState?: AdventureState;
+  }) {
+    const messageBatch = (messages ?? []).filter(Boolean);
+    const eventBatch = (events ?? []).filter(Boolean);
+    if (
+      !chat &&
+      !turnJob &&
+      !adventureState &&
+      messageBatch.length === 0 &&
+      eventBatch.length === 0
+    ) {
+      return;
+    }
+
     const db = await getDb();
-    return db.get("personaStates", chatId);
+    const txStores: StoreName[] = [
+      "chats",
+      "messages",
+      "chatEvents",
+      "turnJobs",
+    ];
+    if (adventureState) {
+      txStores.push("adventureStates");
+    }
+    const tx = db.transaction(txStores, "readwrite");
+
+    if (chat) {
+      await tx.objectStore("chats").put(normalizeChatSession(chat));
+    }
+
+    if (messageBatch.length > 0) {
+      const messagesStore = tx.objectStore("messages");
+      for (const message of messageBatch) {
+        await messagesStore.put(message);
+      }
+    }
+
+    if (eventBatch.length > 0) {
+      const eventsStore = tx.objectStore("chatEvents");
+      for (const event of eventBatch) {
+        await eventsStore.put(normalizeChatEvent(event));
+      }
+    }
+
+    if (turnJob) {
+      await tx.objectStore("turnJobs").put(normalizeTurnJob(turnJob));
+    }
+
+    if (adventureState) {
+      await tx.objectStore("adventureStates").put(normalizeAdventureState(adventureState));
+    }
+
+    await tx.done;
+  },
+
+  async getPersonaState(chatId: string, personaId?: string) {
+    const db = await getDb();
+    const normalizedChatId = chatId.trim();
+    const normalizedPersonaId = toTrimmedString(personaId);
+    if (normalizedPersonaId) {
+      const recordId = buildPersonaStateRecordId(normalizedChatId, normalizedPersonaId);
+      const v2Record = await db.get("personaStatesV2", recordId);
+      if (v2Record) return fromPersonaStateRecord(v2Record);
+      const legacyRecord = await db.get("personaStates", normalizedChatId);
+      if (legacyRecord?.personaId === normalizedPersonaId) {
+        await db.put("personaStatesV2", toPersonaStateRecord(legacyRecord));
+        return legacyRecord;
+      }
+      return undefined;
+    }
+    const v2Rows = await db.getAllFromIndex("personaStatesV2", "by-chat", normalizedChatId);
+    if (v2Rows.length > 0) {
+      v2Rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      return fromPersonaStateRecord(v2Rows[0]);
+    }
+    const legacyRecord = await db.get("personaStates", normalizedChatId);
+    if (legacyRecord) {
+      await db.put("personaStatesV2", toPersonaStateRecord(legacyRecord));
+    }
+    return legacyRecord ?? undefined;
+  },
+
+  async getPersonaStatesByChat(chatId: string) {
+    const db = await getDb();
+    const normalizedChatId = chatId.trim();
+    const rows = await db.getAllFromIndex("personaStatesV2", "by-chat", normalizedChatId);
+    const mapped = rows.map((row) => fromPersonaStateRecord(row));
+    if (mapped.length > 0) {
+      return mapped.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    }
+    const legacyRecord = await db.get("personaStates", normalizedChatId);
+    if (!legacyRecord) return [];
+    await db.put("personaStatesV2", toPersonaStateRecord(legacyRecord));
+    return [legacyRecord];
   },
 
   async getAllPersonaStates() {
     const db = await getDb();
-    const rows = await db.getAll("personaStates");
-    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const rows = await db.getAll("personaStatesV2");
+    if (rows.length > 0) {
+      return rows
+        .map((row) => fromPersonaStateRecord(row))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    }
+    const legacyRows = await db.getAll("personaStates");
+    if (legacyRows.length > 0) {
+      const records = legacyRows.map((row) => toPersonaStateRecord(row));
+      await Promise.all(records.map((record) => db.put("personaStatesV2", record)));
+      return legacyRows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    }
+    return [];
   },
 
   async savePersonaState(state: PersonaRuntimeState) {
     const db = await getDb();
-    await db.put("personaStates", state);
+    await db.put("personaStatesV2", toPersonaStateRecord(state));
   },
 
   async getMemories(chatId: string) {
@@ -664,6 +1532,176 @@ export const dbApi = {
     const tx = db.transaction("imageAssets", "readwrite");
     for (const imageId of uniqueIds) {
       await tx.store.delete(imageId);
+    }
+    await tx.done;
+  },
+
+  async getChatParticipants(chatId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("chatParticipants", "by-chat", chatId.trim());
+    return rows
+      .map((row) => normalizeChatParticipant(row))
+      .sort((a, b) => a.order - b.order || a.joinedAt.localeCompare(b.joinedAt));
+  },
+
+  async saveChatParticipant(participant: ChatParticipant) {
+    const db = await getDb();
+    await db.put("chatParticipants", normalizeChatParticipant(participant));
+  },
+
+  async saveChatParticipants(participants: ChatParticipant[]) {
+    if (participants.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("chatParticipants", "readwrite");
+    for (const participant of participants) {
+      await tx.store.put(normalizeChatParticipant(participant));
+    }
+    await tx.done;
+  },
+
+  async deleteChatParticipants(chatId: string) {
+    const db = await getDb();
+    const tx = db.transaction("chatParticipants", "readwrite");
+    const keys = await tx.store.index("by-chat").getAllKeys(chatId.trim());
+    for (const key of keys) {
+      await tx.store.delete(key);
+    }
+    await tx.done;
+  },
+
+  async getChatEvents(chatId: string, limit?: number) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("chatEvents", "by-chat", chatId.trim());
+    const normalized = rows
+      .map((row) => normalizeChatEvent(row))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+      return normalized.slice(-Math.floor(limit));
+    }
+    return normalized;
+  },
+
+  async saveChatEvent(event: ChatEvent) {
+    const db = await getDb();
+    await db.put("chatEvents", normalizeChatEvent(event));
+  },
+
+  async saveChatEvents(events: ChatEvent[]) {
+    if (events.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("chatEvents", "readwrite");
+    for (const event of events) {
+      await tx.store.put(normalizeChatEvent(event));
+    }
+    await tx.done;
+  },
+
+  async deleteChatEvents(chatId: string) {
+    const db = await getDb();
+    const tx = db.transaction("chatEvents", "readwrite");
+    const keys = await tx.store.index("by-chat").getAllKeys(chatId.trim());
+    for (const key of keys) {
+      await tx.store.delete(key);
+    }
+    await tx.done;
+  },
+
+  async getTurnJobs(chatId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("turnJobs", "by-chat", chatId.trim());
+    return rows
+      .map((row) => normalizeTurnJob(row))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  },
+
+  async saveTurnJob(job: TurnJob) {
+    const db = await getDb();
+    await db.put("turnJobs", normalizeTurnJob(job));
+  },
+
+  async deleteTurnJob(jobId: string) {
+    const db = await getDb();
+    await db.delete("turnJobs", jobId.trim());
+  },
+
+  async getRelationshipEdges(chatId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("relationshipEdges", "by-chat", chatId.trim());
+    return rows
+      .map((row) => normalizeRelationshipEdge(row))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async saveRelationshipEdge(edge: RelationshipEdge) {
+    const db = await getDb();
+    await db.put("relationshipEdges", normalizeRelationshipEdge(edge));
+  },
+
+  async saveRelationshipEdges(edges: RelationshipEdge[]) {
+    if (edges.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("relationshipEdges", "readwrite");
+    for (const edge of edges) {
+      await tx.store.put(normalizeRelationshipEdge(edge));
+    }
+    await tx.done;
+  },
+
+  async deleteRelationshipEdges(chatId: string) {
+    const db = await getDb();
+    const tx = db.transaction("relationshipEdges", "readwrite");
+    const keys = await tx.store.index("by-chat").getAllKeys(chatId.trim());
+    for (const key of keys) {
+      await tx.store.delete(key);
+    }
+    await tx.done;
+  },
+
+  async getAdventureScenarios() {
+    const db = await getDb();
+    const rows = await db.getAll("adventureScenarios");
+    return rows
+      .map((row) => normalizeAdventureScenario(row))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async getAdventureScenario(scenarioId: string) {
+    const db = await getDb();
+    const row = await db.get("adventureScenarios", scenarioId.trim());
+    if (!row) return null;
+    return normalizeAdventureScenario(row);
+  },
+
+  async saveAdventureScenario(scenario: AdventureScenario) {
+    const db = await getDb();
+    await db.put("adventureScenarios", normalizeAdventureScenario(scenario));
+  },
+
+  async deleteAdventureScenario(scenarioId: string) {
+    const db = await getDb();
+    await db.delete("adventureScenarios", scenarioId.trim());
+  },
+
+  async getAdventureState(chatId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("adventureStates", "by-chat", chatId.trim());
+    const normalized = rows
+      .map((row) => normalizeAdventureState(row))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return normalized[0] ?? null;
+  },
+
+  async saveAdventureState(state: AdventureState) {
+    const db = await getDb();
+    await db.put("adventureStates", normalizeAdventureState(state));
+  },
+
+  async deleteAdventureState(chatId: string) {
+    const db = await getDb();
+    const tx = db.transaction("adventureStates", "readwrite");
+    const keys = await tx.store.index("by-chat").getAllKeys(chatId.trim());
+    for (const key of keys) {
+      await tx.store.delete(key);
     }
     await tx.done;
   },

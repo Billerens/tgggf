@@ -766,6 +766,54 @@ export function buildRecentMessages(messages: ChatMessage[], limit = 6) {
     .slice(-limit)
     .map((message) => ({
       role: message.role as "user" | "assistant",
-      content: message.content,
+      content: message.content.replace(/\s+/g, " ").trim().slice(0, 260),
     }));
+}
+
+export function buildConversationSummary(
+  messages: ChatMessage[],
+  recentWindow = 8,
+  maxItems = 5,
+) {
+  const conversation = messages.filter(
+    (message) => message.role === "user" || message.role === "assistant",
+  );
+  if (conversation.length <= recentWindow) return [] as string[];
+
+  const historical = conversation.slice(0, -recentWindow);
+  const safeMaxItems = Math.max(1, Math.floor(maxItems));
+  const stride = Math.max(1, Math.ceil(historical.length / safeMaxItems));
+  const summary: string[] = [];
+  const seen = new Set<string>();
+
+  for (
+    let index = 0;
+    index < historical.length && summary.length < safeMaxItems;
+    index += stride
+  ) {
+    const message = historical[index];
+    const content = message.content.replace(/\s+/g, " ").trim().slice(0, 180);
+    if (!content) continue;
+    const line = `${message.role === "user" ? "Пользователь" : "Персона"}: ${content}`;
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    summary.push(line);
+  }
+
+  if (summary.length < safeMaxItems) {
+    const tail = historical[historical.length - 1];
+    if (tail) {
+      const tailContent = tail.content.replace(/\s+/g, " ").trim().slice(0, 180);
+      if (tailContent) {
+        const tailLine = `${tail.role === "user" ? "Пользователь" : "Персона"}: ${tailContent}`;
+        const tailKey = tailLine.toLowerCase();
+        if (!seen.has(tailKey)) {
+          summary.push(tailLine);
+        }
+      }
+    }
+  }
+
+  return summary.slice(0, safeMaxItems);
 }
