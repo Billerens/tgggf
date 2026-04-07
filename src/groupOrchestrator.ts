@@ -25,6 +25,7 @@ export interface GroupOrchestratorTickInput {
   participants: GroupParticipant[];
   messages: GroupMessage[];
   events: GroupEvent[];
+  relationEdges: GroupRelationEdge[];
   personas: Persona[];
   settings: AppSettings;
   userName: string;
@@ -137,7 +138,7 @@ function getMentionDrivenPersonaId(
 function buildRecentSpeakerIds(
   events: GroupEvent[],
   roomId: string,
-  limit = 12,
+  limit = 24,
 ) {
   return [...events]
     .filter(
@@ -410,13 +411,10 @@ export async function requestLlmOrchestratorDecision(
   });
 
   const response = await requestGenericChatCompletion(
+    input.settings,
+    "group_orchestrator",
     {
-      lmBaseUrl: input.settings.lmBaseUrl,
-      lmAuth: input.settings.lmAuth,
-      apiKey: input.settings.apiKey,
-    },
-    {
-      model: input.settings.model,
+      model: input.settings.groupOrchestratorModel || input.settings.model,
       input: userInput,
       systemPrompt,
       maxOutputTokens: Math.max(120, Math.min(320, input.settings.maxTokens)),
@@ -516,13 +514,10 @@ export async function requestLlmPersonaMessage(params: {
   });
 
   const response = await requestGenericChatCompletion(
+    params.settings,
+    "group_persona",
     {
-      lmBaseUrl: params.settings.lmBaseUrl,
-      lmAuth: params.settings.lmAuth,
-      apiKey: params.settings.apiKey,
-    },
-    {
-      model: params.settings.model,
+      model: params.settings.groupPersonaModel || params.settings.model,
       input: userInput,
       systemPrompt,
       maxOutputTokens: Math.max(120, Math.min(500, params.settings.maxTokens)),
@@ -563,6 +558,7 @@ export function runGroupOrchestratorTick({
   participants,
   messages,
   events,
+  relationEdges,
   personas,
   settings,
   userName,
@@ -656,32 +652,89 @@ export function runGroupOrchestratorTick({
       ? getMentionDrivenPersonaId(lastUserMessage, activeParticipants)
       : "";
   const lastSpeakerPersonaId = getLastSpeakerPersonaId(events);
-  const recentSpeakers = buildRecentSpeakerIds(events, room.id, 14);
+  const recentSpeakers = buildRecentSpeakerIds(events, room.id, 24);
+  const recentWindowSize = Math.max(
+    8,
+    Math.min(24, activeParticipants.length * 4),
+  );
+  const recentWindow = recentSpeakers.slice(0, recentWindowSize);
   const frequencyByPersonaId = new Map<string, number>();
-  for (const personaId of recentSpeakers) {
+  for (const personaId of recentWindow) {
     frequencyByPersonaId.set(
       personaId,
       (frequencyByPersonaId.get(personaId) || 0) + 1,
     );
   }
+  const allSpeakerCounts = new Map<string, number>();
+  for (const event of events) {
+    if (event.roomId !== room.id || event.type !== "speaker_selected") continue;
+    const personaId = event.payload?.personaId;
+    if (typeof personaId !== "string" || !personaId) continue;
+    allSpeakerCounts.set(personaId, (allSpeakerCounts.get(personaId) || 0) + 1);
+  }
+  const minAllSpeakerCount =
+    activeParticipants.length > 0
+      ? Math.min(
+          ...activeParticipants.map(
+            (participant) =>
+              allSpeakerCounts.get(participant.personaId) || 0,
+          ),
+        )
+      : 0;
+  const relationByTargetId = new Map<string, GroupRelationEdge>();
+  if (lastSpeakerPersonaId) {
+    for (const edge of relationEdges) {
+      if (
+        edge.roomId === room.id &&
+        edge.fromPersonaId === lastSpeakerPersonaId
+      ) {
+        relationByTargetId.set(edge.toPersonaId, edge);
+      }
+    }
+  }
 
   const scoredParticipants = activeParticipants.map((participant) => {
-    const frequency = frequencyByPersonaId.get(participant.personaId) || 0;
-    const recentIndex = recentSpeakers.indexOf(participant.personaId);
+    const recentFrequency = frequencyByPersonaId.get(participant.personaId) || 0;
+    const allTimeFrequency = allSpeakerCounts.get(participant.personaId) || 0;
+    const recentIndex = recentWindow.indexOf(participant.personaId);
     const mentionBoost =
       participant.personaId === mentionDrivenPersonaId ? 40 : 0;
     const repeatPenalty =
-      participant.personaId === lastSpeakerPersonaId ? 35 : 0;
-    const frequencyPenalty = frequency * 8;
+      participant.personaId === lastSpeakerPersonaId ? 46 : 0;
+    const recentDominancePenalty =
+      recentFrequency * 12 +
+      (recentFrequency >= Math.ceil(recentWindowSize * 0.45) ? 18 : 0);
+    const historicalGap = Math.max(0, minAllSpeakerCount + 1 - allTimeFrequency);
+    const fairnessBoost = historicalGap * 14;
+    const neverSpokeBoost =
+      allTimeFrequency === 0 && mentionBoost === 0 ? 10 : 0;
+    const relationEdge = relationByTargetId.get(participant.personaId);
+    const relationBias = relationEdge
+      ? Math.round(
+          (relationEdge.affinity - 50) * 0.2 +
+            (relationEdge.trust - 50) * 0.15 +
+            (relationEdge.respect - 50) * 0.1 -
+            (relationEdge.tension - 20) * 0.2,
+        )
+      : 0;
     const dormancyBoost =
-      recentIndex < 0 ? 18 : recentIndex >= 6 ? 10 : recentIndex >= 3 ? 4 : 0;
+      recentIndex < 0
+        ? 16
+        : recentIndex >= 7
+          ? 10
+          : recentIndex >= 4
+            ? 5
+            : 0;
     const score = Math.round(
-      participant.initiativeBias * 0.45 +
-        participant.aliveScore * 0.35 +
-        20 +
+      participant.initiativeBias * 0.25 +
+        participant.aliveScore * 0.2 +
+        22 +
         mentionBoost +
+        fairnessBoost +
+        neverSpokeBoost +
+        relationBias +
         dormancyBoost -
-        frequencyPenalty -
+        recentDominancePenalty -
         repeatPenalty,
     );
     return {
@@ -690,11 +743,15 @@ export function runGroupOrchestratorTick({
       explain: {
         initiativeBias: participant.initiativeBias,
         aliveScore: participant.aliveScore,
-        frequency,
+        recentFrequency,
+        allTimeFrequency,
         recentIndex,
         mentionBoost,
+        fairnessBoost,
+        neverSpokeBoost,
+        relationBias,
         dormancyBoost,
-        frequencyPenalty,
+        recentDominancePenalty,
         repeatPenalty,
       },
     };

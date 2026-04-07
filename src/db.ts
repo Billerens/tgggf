@@ -20,6 +20,7 @@ import type {
   GroupSnapshot,
   GeneratorSession,
   ImageAsset,
+  LlmProvider,
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
@@ -118,8 +119,11 @@ const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
+const LLM_PROVIDERS: LlmProvider[] = ["lmstudio", "openrouter", "huggingface"];
 const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = ["soft", "medium", "strong"];
 const DEFAULT_ENHANCE_DETAIL_STRENGTH_TABLE: EnhanceDetailStrengthTable = {
   soft: {
@@ -236,7 +240,32 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
     merged.lmBaseUrl = trimmedBaseUrl;
   }
 
+  merged.openRouterBaseUrl =
+    toTrimmedString(merged.openRouterBaseUrl) || DEFAULT_SETTINGS.openRouterBaseUrl;
+  merged.huggingFaceBaseUrl =
+    toTrimmedString(merged.huggingFaceBaseUrl) || DEFAULT_SETTINGS.huggingFaceBaseUrl;
+
+  merged.oneToOneProvider = LLM_PROVIDERS.includes(merged.oneToOneProvider)
+    ? merged.oneToOneProvider
+    : DEFAULT_SETTINGS.oneToOneProvider;
+  merged.groupOrchestratorProvider = LLM_PROVIDERS.includes(merged.groupOrchestratorProvider)
+    ? merged.groupOrchestratorProvider
+    : DEFAULT_SETTINGS.groupOrchestratorProvider;
+  merged.groupPersonaProvider = LLM_PROVIDERS.includes(merged.groupPersonaProvider)
+    ? merged.groupPersonaProvider
+    : DEFAULT_SETTINGS.groupPersonaProvider;
+  merged.imagePromptProvider = LLM_PROVIDERS.includes(merged.imagePromptProvider)
+    ? merged.imagePromptProvider
+    : DEFAULT_SETTINGS.imagePromptProvider;
+  merged.personaGenerationProvider = LLM_PROVIDERS.includes(merged.personaGenerationProvider)
+    ? merged.personaGenerationProvider
+    : DEFAULT_SETTINGS.personaGenerationProvider;
+
   merged.model = toTrimmedString(merged.model) || DEFAULT_SETTINGS.model;
+  merged.groupOrchestratorModel =
+    toTrimmedString(merged.groupOrchestratorModel) || merged.model || DEFAULT_SETTINGS.model;
+  merged.groupPersonaModel =
+    toTrimmedString(merged.groupPersonaModel) || merged.model || DEFAULT_SETTINGS.model;
   merged.imagePromptModel =
     toTrimmedString(merged.imagePromptModel) || merged.model || DEFAULT_SETTINGS.model;
   merged.personaGenerationModel =
@@ -249,6 +278,14 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   merged.chatStyleStrength = Math.max(0, Math.min(1, Number(merged.chatStyleStrength)));
   merged.apiKey = toTrimmedString(merged.apiKey);
   merged.lmAuth = normalizeAuthConfig(merged.lmAuth, DEFAULT_SETTINGS.lmAuth);
+  merged.openRouterAuth = normalizeAuthConfig(
+    merged.openRouterAuth,
+    DEFAULT_SETTINGS.openRouterAuth,
+  );
+  merged.huggingFaceAuth = normalizeAuthConfig(
+    merged.huggingFaceAuth,
+    DEFAULT_SETTINGS.huggingFaceAuth,
+  );
   merged.comfyAuth = normalizeAuthConfig(
     merged.comfyAuth,
     DEFAULT_SETTINGS.comfyAuth,
@@ -259,6 +296,20 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   if (!merged.lmAuth.token && merged.apiKey) {
     merged.lmAuth = {
       ...merged.lmAuth,
+      mode: "bearer",
+      token: merged.apiKey,
+    };
+  }
+  if (!merged.openRouterAuth.token && merged.apiKey) {
+    merged.openRouterAuth = {
+      ...merged.openRouterAuth,
+      mode: "bearer",
+      token: merged.apiKey,
+    };
+  }
+  if (!merged.huggingFaceAuth.token && merged.apiKey) {
+    merged.huggingFaceAuth = {
+      ...merged.huggingFaceAuth,
       mode: "bearer",
       token: merged.apiKey,
     };
@@ -338,9 +389,18 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
 
 const DEFAULT_SETTINGS: AppSettings = {
   lmBaseUrl: resolveDefaultBaseUrl(),
+  openRouterBaseUrl: DEFAULT_OPENROUTER_BASE_URL,
+  huggingFaceBaseUrl: DEFAULT_HUGGINGFACE_BASE_URL,
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
   saveComfyOutputs: false,
+  oneToOneProvider: "lmstudio",
+  groupOrchestratorProvider: "lmstudio",
+  groupPersonaProvider: "lmstudio",
+  imagePromptProvider: "lmstudio",
+  personaGenerationProvider: "lmstudio",
   model: "local-model",
+  groupOrchestratorModel: "local-model",
+  groupPersonaModel: "local-model",
   imagePromptModel: "local-model",
   personaGenerationModel: "local-model",
   temperature: 0.7,
@@ -348,6 +408,22 @@ const DEFAULT_SETTINGS: AppSettings = {
   chatStyleStrength: 0.9,
   apiKey: "",
   lmAuth: {
+    mode: "none",
+    token: "",
+    username: "",
+    password: "",
+    headerName: "Authorization",
+    headerPrefix: "Bearer",
+  },
+  openRouterAuth: {
+    mode: "none",
+    token: "",
+    username: "",
+    password: "",
+    headerName: "Authorization",
+    headerPrefix: "Bearer",
+  },
+  huggingFaceAuth: {
     mode: "none",
     token: "",
     username: "",
@@ -1082,6 +1158,69 @@ export const dbApi = {
   async saveGroupSnapshot(snapshot: GroupSnapshot) {
     const db = await getDb();
     await db.put("groupSnapshots", snapshot);
+  },
+
+  async exportRawSnapshot() {
+    const db = await getDb();
+    const snapshot: Record<string, Array<{ key: unknown; value: unknown }>> = {};
+    const storeNames = Array.from(db.objectStoreNames);
+    for (const storeName of storeNames) {
+      const tx = db.transaction(storeName as never, "readonly");
+      const store = tx.store;
+      const [keys, values] = await Promise.all([store.getAllKeys(), store.getAll()]);
+      snapshot[storeName] = values.map((value, index) => ({
+        key: keys[index],
+        value,
+      }));
+      await tx.done;
+    }
+    return snapshot;
+  },
+
+  async importRawSnapshot(
+    snapshot: Record<string, unknown[]>,
+    mode: "merge" | "replace" = "merge",
+  ) {
+    if (mode === "replace") {
+      await this.clearAllData();
+    }
+
+    const db = await getDb();
+    const storeNames = Array.from(db.objectStoreNames);
+
+    for (const storeName of storeNames) {
+      const rows = Array.isArray(snapshot[storeName])
+        ? snapshot[storeName]
+        : [];
+      if (rows.length === 0) continue;
+      const tx = db.transaction(storeName as never, "readwrite");
+      const hasInlineKey = tx.store.keyPath !== null;
+      for (const row of rows) {
+        const isEntryShape =
+          row && typeof row === "object" && "value" in (row as Record<string, unknown>);
+        if (isEntryShape) {
+          const entry = row as { key?: unknown; value: unknown };
+          if (!hasInlineKey && entry.key !== undefined) {
+            await tx.store.put(entry.value as never, entry.key as never);
+          } else if (!hasInlineKey && storeName === "settings") {
+            await tx.store.put(entry.value as never, SETTINGS_KEY as never);
+          } else {
+            await tx.store.put(entry.value as never);
+          }
+          continue;
+        }
+
+        if (!hasInlineKey && storeName === "settings") {
+          await tx.store.put(row as never, SETTINGS_KEY as never);
+          continue;
+        }
+
+        if (hasInlineKey) {
+          await tx.store.put(row as never);
+        }
+      }
+      await tx.done;
+    }
   },
 };
 

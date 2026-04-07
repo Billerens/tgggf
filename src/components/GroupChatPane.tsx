@@ -7,13 +7,16 @@ import {
   type ReactNode,
 } from "react";
 import {
-  ChevronDown,
+  Image,
   Pause,
   Play,
+  RefreshCcw,
+  ScrollText,
   SendHorizontal,
   StepForward,
   Trash2,
   Users,
+  X,
 } from "lucide-react";
 import { dbApi } from "../db";
 import { splitAssistantContent } from "../messageContent";
@@ -51,6 +54,11 @@ interface GroupChatPaneProps {
   onRunIteration: () => void;
   onDeleteRoom: () => void;
   onSubmitMessage: (event: FormEvent) => void;
+  onRetryMessageImages: (
+    messageId: string,
+    blockIndexes?: number[],
+  ) => Promise<void> | void;
+  onRegenerateMessageResponse: (messageId: string) => Promise<void> | void;
 }
 
 function renderMessageWithMentions(
@@ -383,6 +391,312 @@ function buildRelationDetails(
   return lines.join("\n").trim();
 }
 
+type GroupLogViewMode = "literary" | "technical" | "deltas";
+
+const ORCHESTRATOR_REASON_LABELS: Record<string, string> = {
+  room_not_active: "Комната не активна",
+  waiting_for_user: "Ожидание ответа пользователя",
+  pending_image_generation: "Ожидание генерации изображения",
+  typing_delay: "Пауза перед ответом",
+  no_active_participants: "Нет активных участников",
+  speaker_not_found: "Спикер не найден",
+  speaker_selected: "Спикер выбран",
+  llm_generation_failed: "Ошибка генерации ответа",
+  empty_llm_speech: "Модель вернула пустой ответ",
+  invalid_raw_speaker_pattern: "Нарушен формат реплики",
+  duplicate_llm_speech: "Дубликат реплики",
+  user_replied: "Пользователь ответил",
+  user_message: "Сообщение пользователя получено",
+  tick_started: "Запущен тик оркестратора",
+  orchestrator_resumed: "Оркестратор продолжил работу",
+  manual_pause: "Пауза включена вручную",
+  manual_resume: "Пауза снята вручную",
+  tick_exception: "Исключение в тике оркестратора",
+};
+
+interface LiteraryLogEntry {
+  id: string;
+  createdAt: string;
+  title: string;
+  reason: string;
+  reasonType: string;
+  details: string;
+}
+
+interface StatusDeltaLogEntry {
+  id: string;
+  createdAt: string;
+  title: string;
+  details: string;
+  reason: string;
+  reasonType: string;
+}
+
+function payloadString(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function payloadNumber(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function extractEventReason(event: GroupEvent) {
+  const payload = event.payload ?? {};
+  const reason = payloadString(payload, "reason");
+  return reason.trim();
+}
+
+function toSystemReasonType(reason: string) {
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized) return "";
+  if (ORCHESTRATOR_REASON_LABELS[normalized]) return normalized;
+  const codeMatch = /^[a-z0-9_]+$/u.test(normalized);
+  if (codeMatch) return normalized;
+  const prefixMatch = normalized.match(/^([a-z0-9_]+):/u);
+  if (prefixMatch?.[1]) return prefixMatch[1];
+  return "";
+}
+
+function formatReasonLabel(reason: string) {
+  if (!reason) return "";
+  const normalized = reason.trim();
+  if (!normalized) return "";
+  const fromCatalog = ORCHESTRATOR_REASON_LABELS[normalized];
+  if (fromCatalog) return fromCatalog;
+  return normalized.replace(/[_-]+/g, " ");
+}
+
+function isPauseReason(reason: string) {
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized) return false;
+  if (
+    normalized === "typing_delay" ||
+    normalized === "manual_pause" ||
+    normalized === "manual_resume" ||
+    normalized === "bootstrap_pause"
+  ) {
+    return true;
+  }
+  return normalized.includes("pause") || normalized.includes("пауз");
+}
+
+function isNonLiteraryReason(reason: string) {
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized) return false;
+  if (
+    normalized === "pending_image_generation" ||
+    normalized === "image_generation_pending"
+  ) {
+    return true;
+  }
+  return normalized.includes("ожидание генерации изображения");
+}
+
+function buildLiteraryLogEntries(events: GroupEvent[]) {
+  const entries: LiteraryLogEntry[] = [];
+  for (const event of events) {
+    const payload = event.payload ?? {};
+    if (event.type === "orchestrator_tick_started") {
+      const reason = payloadString(payload, "reason");
+      if (!reason) continue;
+      if (isPauseReason(reason) || isNonLiteraryReason(reason)) continue;
+      const source = payloadString(payload, "source");
+      const status = payloadString(payload, "status");
+      const details = [
+        source ? `Источник: ${source}` : "",
+        status ? `Статус: ${status}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Тик оркестратора",
+        reason,
+        reasonType: toSystemReasonType(reason),
+        details,
+      });
+      continue;
+    }
+    if (event.type === "room_waiting_user") {
+      const reason = payloadString(payload, "reason");
+      if (!reason) continue;
+      if (isPauseReason(reason) || isNonLiteraryReason(reason)) continue;
+      const userName = payloadString(payload, "userName");
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Ожидание пользователя",
+        reason,
+        reasonType: toSystemReasonType(reason),
+        details: userName ? `Ожидается: ${userName}` : "",
+      });
+      continue;
+    }
+    if (event.type === "room_resumed") {
+      const reason = payloadString(payload, "reason");
+      if (!reason) continue;
+      if (isPauseReason(reason) || isNonLiteraryReason(reason)) continue;
+      const by = payloadString(payload, "by");
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Возобновление комнаты",
+        reason,
+        reasonType: toSystemReasonType(reason),
+        details: by ? `Инициатор: ${by}` : "",
+      });
+      continue;
+    }
+    if (event.type === "orchestrator_invariant_blocked") {
+      const reason = payloadString(payload, "reason");
+      if (!reason) continue;
+      if (isPauseReason(reason) || isNonLiteraryReason(reason)) continue;
+      const speakerPersonaId = payloadString(payload, "speakerPersonaId");
+      const details = speakerPersonaId
+        ? `Персона: ${speakerPersonaId}`
+        : "Нарушение инварианта";
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Блокировка инварианта",
+        reason,
+        reasonType: toSystemReasonType(reason),
+        details,
+      });
+    }
+  }
+  return entries.slice(-80);
+}
+
+function buildStatusDeltaLogEntries(events: GroupEvent[]) {
+  const entries: StatusDeltaLogEntry[] = [];
+  for (const event of events) {
+    const payload = event.payload ?? {};
+    if (event.type === "orchestrator_tick_started") {
+      const status = payloadString(payload, "status");
+      const reason = payloadString(payload, "reason");
+      if (!status && !reason) continue;
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: `Статус тика: ${status || "unknown"}`,
+        details: reason ? `reason: ${reason}` : "",
+        reason,
+        reasonType: toSystemReasonType(reason),
+      });
+      continue;
+    }
+    if (event.type === "room_waiting_user") {
+      const reason = payloadString(payload, "reason");
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "waitingForUser: false -> true",
+        details: reason ? `reason: ${reason}` : "",
+        reason,
+        reasonType: toSystemReasonType(reason),
+      });
+      continue;
+    }
+    if (event.type === "room_resumed") {
+      const status = payloadString(payload, "status");
+      const reason = payloadString(payload, "reason");
+      const title = status
+        ? `Статус комнаты -> ${status}`
+        : "waitingForUser: true -> false";
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title,
+        details: reason ? `reason: ${reason}` : "",
+        reason,
+        reasonType: toSystemReasonType(reason),
+      });
+      continue;
+    }
+    if (event.type === "room_paused") {
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Статус комнаты: active -> paused",
+        details: "",
+        reason: "",
+        reasonType: "",
+      });
+      continue;
+    }
+    if (event.type === "speaker_selected") {
+      const personaName = payloadString(payload, "personaName");
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Фаза: orchestrating -> committing",
+        details: personaName ? `Спикер: ${personaName}` : "",
+        reason: "",
+        reasonType: "",
+      });
+      continue;
+    }
+    if (event.type === "orchestrator_invariant_blocked") {
+      const reason = payloadString(payload, "reason");
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Фаза: generating -> error",
+        details: reason ? `reason: ${reason}` : "",
+        reason,
+        reasonType: toSystemReasonType(reason),
+      });
+      continue;
+    }
+    if (event.type === "message_image_requested") {
+      const expected = payloadNumber(payload, "expected");
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Генерация изображений: pending",
+        details: Number.isFinite(expected) ? `expected: ${expected}` : "",
+        reason: "",
+        reasonType: "",
+      });
+      continue;
+    }
+    if (event.type === "message_image_generated") {
+      entries.push({
+        id: event.id,
+        createdAt: event.createdAt,
+        title: "Генерация изображений: completed",
+        details: "",
+        reason: "",
+        reasonType: "",
+      });
+    }
+  }
+  return entries.slice(-120).reverse();
+}
+
+function buildImageRetryBlockOptions(message: GroupMessage) {
+  const descriptionBlocks = (message.comfyImageDescriptions ??
+    (message.comfyImageDescription ? [message.comfyImageDescription] : []))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const promptBlocks = (message.comfyPrompts ??
+    (message.comfyPrompt ? [message.comfyPrompt] : []))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const count = Math.max(descriptionBlocks.length, promptBlocks.length);
+  return Array.from({ length: count }, (_, index) => {
+    const source = descriptionBlocks[index] || promptBlocks[index] || "";
+    return {
+      index,
+      label: source ? compactText(source, 96) : `Блок #${index + 1}`,
+    };
+  });
+}
+
 export function GroupChatPane({
   activeRoom,
   participants,
@@ -400,9 +714,15 @@ export function GroupChatPane({
   onRunIteration,
   onDeleteRoom,
   onSubmitMessage,
+  onRetryMessageImages,
+  onRegenerateMessageResponse,
 }: GroupChatPaneProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
-  const [eventLogOpen, setEventLogOpen] = useState(false);
+  const [eventLogModalOpen, setEventLogModalOpen] = useState(false);
+  const [eventLogMode, setEventLogMode] = useState<GroupLogViewMode>(
+    "technical",
+  );
+  const [hiddenReasonTypes, setHiddenReasonTypes] = useState<string[]>([]);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<
     ImageGenerationMeta | undefined
@@ -415,6 +735,11 @@ export function GroupChatPane({
   const [avatarByPersonaId, setAvatarByPersonaId] = useState<
     Record<string, string>
   >({});
+  const [imageRetryDialog, setImageRetryDialog] = useState<{
+    messageId: string;
+    options: Array<{ index: number; label: string }>;
+    selected: number[];
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -502,9 +827,47 @@ export function GroupChatPane({
   }, [messages, previewTarget, previewSrc]);
 
   const participantCount = participants.length;
-  const visibleEvents = useMemo(
+  const technicalEvents = useMemo(
     () => [...events].slice(-40).reverse(),
     [events],
+  );
+  const literaryEntries = useMemo(() => buildLiteraryLogEntries(events), [events]);
+  const deltaEntries = useMemo(() => buildStatusDeltaLogEntries(events), [events]);
+  const availableReasonTypes = useMemo(() => {
+    const reasons = new Set<string>();
+    for (const event of events) {
+      const reason = extractEventReason(event);
+      const reasonType = toSystemReasonType(reason);
+      if (reasonType) reasons.add(reasonType);
+    }
+    return Array.from(reasons).sort((a, b) =>
+      formatReasonLabel(a).localeCompare(formatReasonLabel(b), "ru"),
+    );
+  }, [events]);
+  const hiddenReasonSet = useMemo(
+    () => new Set(hiddenReasonTypes),
+    [hiddenReasonTypes],
+  );
+  const filteredTechnicalEvents = useMemo(
+    () =>
+      technicalEvents.filter((event) => {
+        const reason = extractEventReason(event);
+        const reasonType = toSystemReasonType(reason);
+        if (!reasonType) return true;
+        return !hiddenReasonSet.has(reasonType);
+      }),
+    [technicalEvents, hiddenReasonSet],
+  );
+  const filteredLiteraryEntries = useMemo(
+    () => literaryEntries.filter((entry) => !hiddenReasonSet.has(entry.reasonType)),
+    [literaryEntries, hiddenReasonSet],
+  );
+  const filteredDeltaEntries = useMemo(
+    () =>
+      deltaEntries.filter((entry) =>
+        entry.reasonType ? !hiddenReasonSet.has(entry.reasonType) : true,
+      ),
+    [deltaEntries, hiddenReasonSet],
   );
   const modeLabel =
     activeRoom?.mode === "personas_plus_user"
@@ -574,6 +937,24 @@ export function GroupChatPane({
     }
     return next;
   }, [events]);
+  const imageIssueByMessageId = useMemo(() => {
+    const issues = new Map<string, string>();
+    for (const event of events) {
+      if (event.type !== "message_image_generated") continue;
+      const payload = event.payload ?? {};
+      const messageId = payloadString(payload, "messageId");
+      const status = payloadString(payload, "status");
+      if (!messageId || !status) continue;
+      if (
+        status === "generation_failed" ||
+        status === "prompt_generation_failed" ||
+        status === "no_prompts"
+      ) {
+        issues.set(messageId, status);
+      }
+    }
+    return issues;
+  }, [events]);
 
   const resolveAvatar = (message: GroupMessage) => {
     if (message.authorType === "persona" && message.authorPersonaId) {
@@ -604,6 +985,19 @@ export function GroupChatPane({
     .filter((value): value is { id: string; name: string; avatarSrc: string } =>
       Boolean(value),
     );
+
+  useEffect(() => {
+    if (!eventLogModalOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setEventLogModalOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [eventLogModalOpen]);
 
   return (
     <main className="chat group-chat">
@@ -680,17 +1074,11 @@ export function GroupChatPane({
           </button>
           <button
             type="button"
-            className={`mini ${eventLogOpen ? "active" : ""}`}
-            onClick={() => setEventLogOpen((prev) => !prev)}
-            title="Показать лог событий оркестратора"
+            className={`mini ${eventLogModalOpen ? "active" : ""}`}
+            onClick={() => setEventLogModalOpen(true)}
+            title="Открыть настройки отображения лога"
           >
-            <ChevronDown
-              size={14}
-              style={{
-                transform: eventLogOpen ? "rotate(180deg)" : "none",
-                transition: "transform 0.15s ease",
-              }}
-            />
+            <ScrollText size={14} />
             <span>Лог {events.length}</span>
           </button>
           {activeRoom ? (
@@ -706,22 +1094,163 @@ export function GroupChatPane({
           ) : null}
         </div>
       </header>
-      {eventLogOpen ? (
-        <section className="group-event-log" aria-label="Лог событий группы">
-          {visibleEvents.length === 0 ? (
-            <p className="empty-state">Событий пока нет.</p>
-          ) : (
-            visibleEvents.map((event) => (
-              <article key={event.id} className="group-event-item">
-                <div className="group-event-head">
-                  <strong>{event.type}</strong>
-                  <time>{formatShortTime(event.createdAt)}</time>
-                </div>
-                <pre>{formatEventPayload(event.payload)}</pre>
-              </article>
-            ))
-          )}
-        </section>
+      {eventLogModalOpen ? (
+        <div
+          className="overlay"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setEventLogModalOpen(false)}
+        >
+          <div
+            className="modal large group-log-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <div>
+                <h3>Лог оркестратора</h3>
+                <p className="modal-subtitle">Режим отображения событий группы</p>
+              </div>
+              <button type="button" onClick={() => setEventLogModalOpen(false)}>
+                <X size={14} /> Закрыть
+              </button>
+            </div>
+            <div className="group-log-mode-tabs" role="tablist" aria-label="Режимы лога">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={eventLogMode === "literary"}
+                className={eventLogMode === "literary" ? "active" : ""}
+                onClick={() => setEventLogMode("literary")}
+              >
+                Литературный
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={eventLogMode === "technical"}
+                className={eventLogMode === "technical" ? "active" : ""}
+                onClick={() => setEventLogMode("technical")}
+              >
+                Технический
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={eventLogMode === "deltas"}
+                className={eventLogMode === "deltas" ? "active" : ""}
+                onClick={() => setEventLogMode("deltas")}
+              >
+                Дельты
+              </button>
+            </div>
+            <div className="group-log-filters">
+              <div className="group-log-filter-field">
+                <span className="group-log-filter-title">Не показывать type `reason`</span>
+                {availableReasonTypes.length === 0 ? (
+                  <div className="group-log-filter-empty">
+                    Нет reason в текущем логе
+                  </div>
+                ) : (
+                  <div className="group-log-reason-checklist">
+                    {availableReasonTypes.map((reason) => (
+                      <label key={reason} className="group-log-reason-option">
+                        <input
+                          type="checkbox"
+                          checked={hiddenReasonSet.has(reason)}
+                          onChange={(event) => {
+                            const checked = event.currentTarget.checked;
+                            setHiddenReasonTypes((prev) => {
+                              if (checked) {
+                                return prev.includes(reason) ? prev : [...prev, reason];
+                              }
+                              return prev.filter((value) => value !== reason);
+                            });
+                          }}
+                        />
+                        <span>{formatReasonLabel(reason)}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="mini"
+                onClick={() => setHiddenReasonTypes(availableReasonTypes)}
+                disabled={
+                  availableReasonTypes.length === 0 ||
+                  hiddenReasonTypes.length >= availableReasonTypes.length
+                }
+              >
+                Выбрать все
+              </button>
+              <button
+                type="button"
+                className="mini"
+                onClick={() => setHiddenReasonTypes([])}
+                disabled={hiddenReasonTypes.length === 0}
+              >
+                Сбросить фильтр
+              </button>
+            </div>
+            <section className="group-log-body" aria-label="Содержимое лога">
+              {eventLogMode === "technical" ? (
+                filteredTechnicalEvents.length === 0 ? (
+                  <p className="empty-state">Событий пока нет.</p>
+                ) : (
+                  filteredTechnicalEvents.map((event) => (
+                    <article key={event.id} className="group-event-item">
+                      <div className="group-event-head">
+                        <strong>{event.type}</strong>
+                        <time>{formatShortTime(event.createdAt)}</time>
+                      </div>
+                      <pre>{formatEventPayload(event.payload)}</pre>
+                    </article>
+                  ))
+                )
+              ) : null}
+
+              {eventLogMode === "literary" ? (
+                filteredLiteraryEntries.length === 0 ? (
+                  <p className="empty-state">
+                    Для литературного режима пока нет reasons оркестратора.
+                  </p>
+                ) : (
+                  filteredLiteraryEntries.map((entry, index) => (
+                    <article key={entry.id} className="group-log-literary-item">
+                      <div className="group-event-head">
+                        <strong>
+                          {index + 1}. {entry.title}
+                        </strong>
+                        <time>{formatShortTime(entry.createdAt)}</time>
+                      </div>
+                      <p className="group-log-reason">{formatReasonLabel(entry.reason)}</p>
+                      {entry.details ? (
+                        <p className="group-log-details">{entry.details}</p>
+                      ) : null}
+                    </article>
+                  ))
+                )
+              ) : null}
+
+              {eventLogMode === "deltas" ? (
+                filteredDeltaEntries.length === 0 ? (
+                  <p className="empty-state">Изменений статусов пока нет.</p>
+                ) : (
+                  filteredDeltaEntries.map((entry) => (
+                    <article key={entry.id} className="group-log-delta-item">
+                      <div className="group-event-head">
+                        <strong>{entry.title}</strong>
+                        <time>{formatShortTime(entry.createdAt)}</time>
+                      </div>
+                      {entry.details ? <pre>{entry.details}</pre> : null}
+                    </article>
+                  ))
+                )
+              ) : null}
+            </section>
+          </div>
+        </div>
       ) : null}
 
       <section className="messages group-messages">
@@ -787,10 +1316,25 @@ export function GroupChatPane({
               (message.comfyPrompt ? 1 : 0) ||
               (message.comfyImageDescription ? 1 : 0),
           );
+          const hasTrackedImageGeneration =
+            message.imageGenerationExpected !== undefined ||
+            message.imageGenerationCompleted !== undefined ||
+            message.imageGenerationPending;
           const expectedCount =
-            message.imageGenerationExpected ?? fallbackExpected;
+            message.imageGenerationExpected ??
+            (hasTrackedImageGeneration ? fallbackExpected : 0);
           const completedCount =
-            message.imageGenerationCompleted ?? imageAttachments.length;
+            message.imageGenerationCompleted ??
+            (hasTrackedImageGeneration ? imageAttachments.length : 0);
+          const hasCountMismatchIssue =
+            hasTrackedImageGeneration &&
+            !message.imageGenerationPending &&
+            expectedCount > completedCount;
+          const hasImageIssue =
+            imageIssueByMessageId.has(message.id) ||
+            hasCountMismatchIssue;
+          const showRecoveryActions =
+            message.authorType === "persona" && hasImageIssue;
           const imageSkeletonCount = Math.max(
             0,
             expectedCount - completedCount,
@@ -833,7 +1377,51 @@ export function GroupChatPane({
                 </strong>
               </div>
 
-              <div className={`bubble ${bubbleRole}`}>
+              <div
+                className={`bubble ${bubbleRole} ${
+                  showRecoveryActions ? "has-recovery-actions" : ""
+                }`}
+              >
+                {showRecoveryActions ? (
+                  <div className="group-bubble-actions">
+                    <button
+                      type="button"
+                      className="icon-btn group-bubble-action-btn"
+                      onClick={() => {
+                        const options = buildImageRetryBlockOptions(message);
+                        if (options.length <= 1) {
+                          void onRetryMessageImages(
+                            message.id,
+                            options.length === 1 ? [0] : undefined,
+                          );
+                          return;
+                        }
+                        setImageRetryDialog({
+                          messageId: message.id,
+                          options,
+                          selected: options.map((option) => option.index),
+                        });
+                      }}
+                      disabled={controlsDisabled}
+                      title="Перегенерировать изображения"
+                      aria-label="Перегенерировать изображения"
+                    >
+                      <Image size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn group-bubble-action-btn"
+                      onClick={() => {
+                        void onRegenerateMessageResponse(message.id);
+                      }}
+                      disabled={controlsDisabled}
+                      title="Перегенерировать ответ"
+                      aria-label="Перегенерировать ответ"
+                    >
+                      <RefreshCcw size={14} />
+                    </button>
+                  </div>
+                ) : null}
                 {textToRender ? (
                   <p>
                     {renderMessageWithMentions(
@@ -974,6 +1562,77 @@ export function GroupChatPane({
           </button>
         </form>
       </div>
+      {imageRetryDialog ? (
+        <div
+          className="overlay"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setImageRetryDialog(null)}
+        >
+          <div
+            className="modal group-retry-images-modal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>Выбор блоков изображений</h3>
+              <button type="button" onClick={() => setImageRetryDialog(null)}>
+                <X size={14} /> Закрыть
+              </button>
+            </div>
+            <div className="group-retry-images-body">
+              {imageRetryDialog.options.map((option) => (
+                <label key={option.index} className="group-retry-option">
+                  <input
+                    type="checkbox"
+                    checked={imageRetryDialog.selected.includes(option.index)}
+                    onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      setImageRetryDialog((prev) => {
+                        if (!prev) return prev;
+                        return {
+                          ...prev,
+                          selected: checked
+                            ? prev.selected.includes(option.index)
+                              ? prev.selected
+                              : [...prev.selected, option.index]
+                            : prev.selected.filter((value) => value !== option.index),
+                        };
+                      });
+                    }}
+                  />
+                  <span>
+                    #{option.index + 1} {option.label}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <div className="group-retry-images-actions">
+              <button
+                type="button"
+                className="mini"
+                onClick={() => setImageRetryDialog(null)}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={imageRetryDialog.selected.length === 0}
+                onClick={() => {
+                  const payload = imageRetryDialog;
+                  setImageRetryDialog(null);
+                  void onRetryMessageImages(
+                    payload.messageId,
+                    payload.selected.slice().sort((a, b) => a - b),
+                  );
+                }}
+              >
+                Перегенерировать
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <ImagePreviewModal
         src={previewSrc}
         meta={previewMeta}

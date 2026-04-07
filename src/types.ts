@@ -57,6 +57,7 @@ export type GroupMemoryLayer = "short_term" | "episodic" | "long_term";
 export type UserGender = "unspecified" | "male" | "female" | "nonbinary";
 export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
 export type AuthMode = "none" | "bearer" | "token" | "basic" | "custom";
+export type LlmProvider = "lmstudio" | "openrouter" | "huggingface";
 export type EnhanceDetailLevel = "soft" | "medium" | "strong";
 
 export interface EnhanceDetailLevelConfig {
@@ -432,9 +433,18 @@ export interface PersonaMemory {
 
 export interface AppSettings {
   lmBaseUrl: string;
+  openRouterBaseUrl: string;
+  huggingFaceBaseUrl: string;
   comfyBaseUrl: string;
   saveComfyOutputs: boolean;
+  oneToOneProvider: LlmProvider;
+  groupOrchestratorProvider: LlmProvider;
+  groupPersonaProvider: LlmProvider;
+  imagePromptProvider: LlmProvider;
+  personaGenerationProvider: LlmProvider;
   model: string;
+  groupOrchestratorModel: string;
+  groupPersonaModel: string;
   imagePromptModel: string;
   personaGenerationModel: string;
   temperature: number;
@@ -442,6 +452,8 @@ export interface AppSettings {
   chatStyleStrength: number;
   apiKey: string;
   lmAuth: EndpointAuthConfig;
+  openRouterAuth: EndpointAuthConfig;
+  huggingFaceAuth: EndpointAuthConfig;
   comfyAuth: EndpointAuthConfig;
   userName: string;
   userGender: UserGender;

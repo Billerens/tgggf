@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import type { GeneratedPersonaDraft } from "./lmstudio";
 import {
   generatePersonaDrafts,
+  resolveProviderModelCatalogTarget,
 } from "./lmstudio";
 import {
   type ComfyImageGenerationMeta,
@@ -45,6 +46,8 @@ import { useGroupStore } from "./groupStore";
 import {
   buildBackupPayload,
   exportBackupFile,
+  exportRawBackupFile,
+  type BackupExportFormat,
   type BackupImportMode,
   importBackupPayload,
   parseBackupFile,
@@ -90,6 +93,8 @@ export default function App() {
     sendUserGroupMessage,
     setActiveGroupRoomStatus,
     runActiveGroupIteration,
+    retryGroupMessageImages,
+    regenerateGroupMessageResponse,
   } = useGroupStore();
 
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chats");
@@ -173,7 +178,8 @@ export default function App() {
   const { pwaInstallStatus, onInstallPwa } = useAppInstallPrompt();
   const {
     availableModels,
-    modelsLoading,
+    availableModelsByProvider,
+    modelsLoadingByProvider,
     comfyCheckpoints,
     checkpointsLoading,
     loadModels,
@@ -491,7 +497,7 @@ export default function App() {
 
   const onExportData = async (params: {
     scope: "all" | "personas" | "all_chats" | "chat" | "generation_sessions";
-    format: "json" | "zip";
+    format: BackupExportFormat;
     chatId?: string;
   }) => {
     setExportBusy(true);
@@ -503,22 +509,39 @@ export default function App() {
       return null;
     });
     try {
-      const payload = await buildBackupPayload({
-        scope: params.scope,
-        chatId: params.chatId,
-      });
-      const preparedFile = await exportBackupFile(payload, params.format);
+      const isRaw = params.format === "raw_json" || params.format === "raw_zip";
+      let preparedFile:
+        | Awaited<ReturnType<typeof exportRawBackupFile>>
+        | Awaited<ReturnType<typeof exportBackupFile>>;
+      let payload: Awaited<ReturnType<typeof buildBackupPayload>> | null = null;
+
+      if (isRaw) {
+        preparedFile = await exportRawBackupFile(
+          params.format as Extract<BackupExportFormat, "raw_json" | "raw_zip">,
+        );
+      } else {
+        payload = await buildBackupPayload({
+          scope: params.scope,
+          chatId: params.chatId,
+        });
+        preparedFile = await exportBackupFile(
+          payload,
+          params.format as Extract<BackupExportFormat, "json" | "zip">,
+        );
+      }
       const downloadUrl = URL.createObjectURL(preparedFile.blob);
       setReadyExportFile({
         fileName: preparedFile.fileName,
         url: downloadUrl,
       });
-      const meta = payload.meta;
+      const meta = payload?.meta;
       setDataTransferMessage(
         [
-          `Экспорт готов: ${payload.exportScope}`,
+          `Экспорт готов: ${isRaw ? "raw_idb_snapshot" : payload?.exportScope || params.scope}`,
           `Файл подготовлен: ${preparedFile.fileName}. Нажми "Скачать экспорт".`,
-          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}`,
+          isRaw
+            ? "RAW snapshot: все stores из IndexedDB сохранены без логической нормализации."
+            : `personas=${meta?.personas ?? 0}, chats=${meta?.chats ?? 0}, messages=${meta?.messages ?? 0}, states=${meta?.personaStates ?? 0}, memories=${meta?.memories ?? 0}, sessions=${meta?.generatorSessions ?? 0}, imageAssets=${meta?.imageAssets ?? 0}, groupRooms=${meta?.groupRooms ?? 0}, groupMessages=${meta?.groupMessages ?? 0}, groupEvents=${meta?.groupEvents ?? 0}`,
         ].join("\n"),
       );
     } catch (error) {
@@ -539,7 +562,7 @@ export default function App() {
         [
           `Импорт завершен из "${file.name}"`,
           `Режим: ${mode === "replace" ? "замена текущих данных" : "добавление/объединение"}`,
-          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}, settings=${meta.includesSettings ? "yes" : "no"}`,
+          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}, groupRooms=${meta.groupRooms}, groupMessages=${meta.groupMessages}, groupEvents=${meta.groupEvents}, settings=${meta.includesSettings ? "yes" : "no"}, raw=${meta.rawSnapshot ? "yes" : "no"}`,
         ].join("\n"),
       );
     } catch (error) {
@@ -637,6 +660,22 @@ export default function App() {
               void deleteGroupRoom(activeGroupRoomId);
             }}
             onSubmitMessage={onGroupMessageSubmit}
+            onRetryMessageImages={(messageId, blockIndexes) =>
+              void retryGroupMessageImages({
+                messageId,
+                blockIndexes,
+                personas,
+                settings,
+              })
+            }
+            onRegenerateMessageResponse={(messageId) =>
+              void regenerateGroupMessageResponse({
+                messageId,
+                personas,
+                settings,
+                userName: settings.userName,
+              })
+            }
           />
         ) : (
           <ChatPane
@@ -690,8 +729,8 @@ export default function App() {
           open={showSettingsModal}
           settingsDraft={settingsDraft}
           pwaInstallStatus={pwaInstallStatus}
-          availableModels={availableModels}
-          modelsLoading={modelsLoading}
+          availableModelsByProvider={availableModelsByProvider}
+          modelsLoadingByProvider={modelsLoadingByProvider}
           exportableChats={exportableChatOptions}
           exportBusy={exportBusy}
           importBusy={importBusy}
@@ -700,13 +739,13 @@ export default function App() {
           exportDownloadFileName={readyExportFile?.fileName ?? null}
           setSettingsDraft={setSettingsDraft}
           onInstallPwa={() => void onInstallPwa()}
-          onRefreshModels={() =>
-            void loadModels(
-              settingsDraft.lmBaseUrl,
-              settingsDraft.apiKey,
-              settingsDraft.lmAuth,
-            )
-          }
+          onRefreshModels={(provider) => {
+            const target = resolveProviderModelCatalogTarget(
+              settingsDraft,
+              provider,
+            );
+            void loadModels(provider, target.baseUrl, target.auth);
+          }}
           onExportData={onExportData}
           onImportData={onImportData}
           onClose={() => setShowSettingsModal(false)}

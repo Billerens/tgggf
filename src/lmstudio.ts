@@ -1,6 +1,7 @@
 import type {
   AppSettings,
   EndpointAuthConfig,
+  LlmProvider,
   NativeChatResponse,
   Persona,
   PersonaAdvancedProfile,
@@ -357,7 +358,7 @@ interface NativeChatResult {
 }
 
 export interface GenericChatRequest {
-  model: string;
+  model?: string;
   input: string;
   systemPrompt: string;
   maxOutputTokens: number;
@@ -366,27 +367,164 @@ export interface GenericChatRequest {
   previousResponseId?: string;
 }
 
-export async function requestGenericChatCompletion(
-  settings: Pick<AppSettings, "lmBaseUrl" | "apiKey" | "lmAuth">,
-  request: GenericChatRequest,
-) {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const payload: Record<string, unknown> = {
-    model: request.model,
-    input: request.input,
-    system_prompt: request.systemPrompt,
-    max_output_tokens: request.maxOutputTokens,
-    temperature: request.temperature,
-    store: request.store ?? false,
-  };
-  if (request.previousResponseId) {
-    payload.previous_response_id = request.previousResponseId;
-  }
+export type ModelRoutingTask =
+  | "one_to_one_chat"
+  | "group_orchestrator"
+  | "group_persona"
+  | "image_prompt"
+  | "persona_generation";
 
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
+
+function normalizeProvider(value: unknown): LlmProvider {
+  return value === "openrouter" || value === "huggingface"
+    ? value
+    : "lmstudio";
+}
+
+function resolveProviderForTask(
+  settings: AppSettings,
+  task: ModelRoutingTask,
+): LlmProvider {
+  if (task === "group_orchestrator") {
+    return normalizeProvider(settings.groupOrchestratorProvider);
+  }
+  if (task === "group_persona") {
+    return normalizeProvider(settings.groupPersonaProvider);
+  }
+  if (task === "image_prompt") {
+    return normalizeProvider(settings.imagePromptProvider);
+  }
+  if (task === "persona_generation") {
+    return normalizeProvider(settings.personaGenerationProvider);
+  }
+  return normalizeProvider(settings.oneToOneProvider);
+}
+
+function resolveModelForTask(settings: AppSettings, task: ModelRoutingTask) {
+  if (task === "group_orchestrator") {
+    return toTrimmedString(settings.groupOrchestratorModel) || settings.model;
+  }
+  if (task === "group_persona") {
+    return toTrimmedString(settings.groupPersonaModel) || settings.model;
+  }
+  if (task === "image_prompt") {
+    return resolveImagePromptModel(settings);
+  }
+  if (task === "persona_generation") {
+    return resolvePersonaGenerationModel(settings);
+  }
+  return toTrimmedString(settings.model);
+}
+
+function resolveProviderBaseUrl(settings: AppSettings, provider: LlmProvider) {
+  if (provider === "openrouter") {
+    return (
+      toTrimmedString(settings.openRouterBaseUrl) ||
+      DEFAULT_OPENROUTER_BASE_URL
+    );
+  }
+  if (provider === "huggingface") {
+    return (
+      toTrimmedString(settings.huggingFaceBaseUrl) ||
+      DEFAULT_HUGGINGFACE_BASE_URL
+    );
+  }
+  return toTrimmedString(settings.lmBaseUrl);
+}
+
+function resolveProviderAuth(settings: AppSettings, provider: LlmProvider) {
+  if (provider === "openrouter") return settings.openRouterAuth;
+  if (provider === "huggingface") return settings.huggingFaceAuth;
+  return settings.lmAuth;
+}
+
+function parseOpenAiMessageContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .map((chunk) => {
+      if (typeof chunk === "string") return chunk.trim();
+      if (!chunk || typeof chunk !== "object") return "";
+      const text = (chunk as Record<string, unknown>).text;
+      if (typeof text === "string") return text.trim();
+      const maybeContent = (chunk as Record<string, unknown>).content;
+      return typeof maybeContent === "string" ? maybeContent.trim() : "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+async function requestProviderChatCompletion(
+  settings: AppSettings,
+  provider: LlmProvider,
+  request: Required<GenericChatRequest>,
+) {
+  const baseUrl = normalizeBaseUrl(resolveProviderBaseUrl(settings, provider));
+  const auth = resolveProviderAuth(settings, provider);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+    ...buildAuthHeaders(auth, settings.apiKey),
+  };
+
+  if (provider === "openrouter" && typeof window !== "undefined") {
+    headers["HTTP-Referer"] = window.location.origin;
+    headers["X-Title"] = "tg-gf";
+  }
+
+  if (provider === "lmstudio") {
+    const endpoint = `${baseUrl}/api/v1/chat`;
+    const payload: Record<string, unknown> = {
+      model: request.model,
+      input: request.input,
+      system_prompt: request.systemPrompt,
+      max_output_tokens: request.maxOutputTokens,
+      temperature: request.temperature,
+      store: request.store,
+    };
+    if (request.previousResponseId) {
+      payload.previous_response_id = request.previousResponseId;
+    }
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`LMStudio request failed (${response.status}): ${body}`);
+    }
+
+    const data = (await response.json()) as NativeChatResponse;
+    const text = data.output
+      .filter((item) => item.type === "message")
+      .map((item) => item.content?.trim() ?? "")
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
+    return {
+      content: text,
+      responseId: data.response_id,
+      raw: data,
+    };
+  }
+
+  const endpoint = `${baseUrl}/chat/completions`;
+  const payload: Record<string, unknown> = {
+    model: request.model,
+    messages: [
+      { role: "system", content: request.systemPrompt },
+      { role: "user", content: request.input },
+    ],
+    max_tokens: request.maxOutputTokens,
+    temperature: request.temperature,
+    stream: false,
   };
 
   const response = await fetch(endpoint, {
@@ -397,22 +535,41 @@ export async function requestGenericChatCompletion(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`LMStudio request failed (${response.status}): ${body}`);
+    throw new Error(
+      `${provider} request failed (${response.status}): ${body}`,
+    );
   }
 
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content?.trim() ?? "")
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
+  const data = (await response.json()) as {
+    id?: string;
+    choices?: Array<{
+      message?: {
+        content?: unknown;
+      };
+    }>;
+  };
+  const content = parseOpenAiMessageContent(data.choices?.[0]?.message?.content);
 
   return {
-    content: text,
-    responseId: data.response_id,
+    content,
+    responseId: typeof data.id === "string" ? data.id : undefined,
     raw: data,
   };
+}
+
+export async function requestGenericChatCompletion(
+  settings: AppSettings,
+  task: ModelRoutingTask,
+  request: GenericChatRequest,
+) {
+  const provider = resolveProviderForTask(settings, task);
+  const model = toTrimmedString(request.model) || resolveModelForTask(settings, task);
+  return requestProviderChatCompletion(settings, provider, {
+    ...request,
+    model,
+    store: request.store ?? false,
+    previousResponseId: request.previousResponseId ?? "",
+  });
 }
 
 export async function requestChatCompletion(
@@ -422,43 +579,17 @@ export async function requestChatCompletion(
   previousResponseId?: string,
   context?: ChatCompletionContext,
 ): Promise<NativeChatResult> {
-  const baseUrl = settings.lmBaseUrl.replace(/\/+$/, "");
-  const endpoint = `${baseUrl}/api/v1/chat`;
-
-  const payload: Record<string, unknown> = {
+  const response = await requestGenericChatCompletion(settings, "one_to_one_chat", {
     model: settings.model,
     input: formatRecentMessages(context?.recentMessages, userInput),
-    system_prompt: buildSystemPrompt(persona, settings, context),
-    max_output_tokens: settings.maxTokens,
+    systemPrompt: buildSystemPrompt(persona, settings, context),
+    maxOutputTokens: settings.maxTokens,
     temperature: settings.temperature,
     store: true,
-  };
-  if (previousResponseId) {
-    payload.previous_response_id = previousResponseId;
-  }
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
+    previousResponseId,
   });
 
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`LMStudio request failed (${response.status}): ${body}`);
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const messageChunks = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content?.trim() ?? "")
-    .filter(Boolean);
-  const rawContent = messageChunks.join("\n\n");
+  const rawContent = response.content.trim();
   const {
     visibleText,
     comfyPrompt,
@@ -518,7 +649,7 @@ export async function requestChatCompletion(
         ? sanitizedImageDescriptions
         : undefined,
     personaControl,
-    responseId: data.response_id,
+    responseId: response.responseId,
   };
 }
 
@@ -574,13 +705,6 @@ export async function generateThemedComfyPrompt(
   topic: string,
   iteration: number,
 ): Promise<string> {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
   const systemPrompt = [
     "Ты генератор одного ComfyUI prompt для изображения персонажа.",
     "Ответ должен содержать ровно два блока без markdown: сначала <theme_tags>...</theme_tags>, затем <comfyui_prompt>...</comfyui_prompt>.",
@@ -617,32 +741,15 @@ export async function generateThemedComfyPrompt(
     "Generate one unique prompt variation for this iteration.",
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: resolveImagePromptModel(settings),
-      input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
-      temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
-      store: false,
-    }),
+  const response = await requestGenericChatCompletion(settings, "image_prompt", {
+    model: resolveImagePromptModel(settings),
+    input,
+    systemPrompt,
+    maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
+    temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
+    store: false,
   });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка генерации comfy prompt (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+  const text = response.content.trim();
 
   if (!text) {
     throw new Error("Модель вернула пустой comfy prompt.");
@@ -684,13 +791,6 @@ export async function generateComfyPromptFromImageDescription(
       "Пустое описание изображения для генерации ComfyUI prompt.",
     );
   }
-
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
 
   const systemPrompt = [
     "Ты конвертер описания сцены в один ComfyUI prompt.",
@@ -735,32 +835,15 @@ export async function generateComfyPromptFromImageDescription(
     `Iteration: ${iteration}`,
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: resolveImagePromptModel(settings),
-      input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
-      temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
-      store: false,
-    }),
+  const response = await requestGenericChatCompletion(settings, "image_prompt", {
+    model: resolveImagePromptModel(settings),
+    input,
+    systemPrompt,
+    maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
+    temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
+    store: false,
   });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка конвертации описания в comfy prompt (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+  const text = response.content.trim();
   if (!text) {
     throw new Error("Модель вернула пустой comfy prompt из описания.");
   }
@@ -815,6 +898,23 @@ function fallbackThemeTags(topic: string): string[] {
 
 function normalizeBaseUrl(url: string) {
   return url.replace(/\/+$/, "");
+}
+
+export interface ProviderModelCatalogTarget {
+  provider: LlmProvider;
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+}
+
+export function resolveProviderModelCatalogTarget(
+  settings: AppSettings,
+  provider: LlmProvider,
+): ProviderModelCatalogTarget {
+  return {
+    provider,
+    baseUrl: resolveProviderBaseUrl(settings, provider),
+    auth: resolveProviderAuth(settings, provider),
+  };
 }
 
 function toTrimmedString(value: unknown): string {
@@ -922,12 +1022,22 @@ function parseModelKeys(data: unknown): string[] {
 }
 
 export async function listModels(
-  settings: Pick<AppSettings, "lmBaseUrl" | "apiKey" | "lmAuth">,
+  settings: {
+    baseUrl: string;
+    auth: EndpointAuthConfig;
+    apiKey?: string;
+  },
 ) {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const headers = buildAuthHeaders(settings.lmAuth, settings.apiKey);
+  const baseUrl = normalizeBaseUrl(settings.baseUrl);
+  const headers = buildAuthHeaders(settings.auth, settings.apiKey);
 
-  const endpoints = [`${baseUrl}/api/v1/models`, `${baseUrl}/v1/models`];
+  const endpoints = Array.from(
+    new Set([
+      `${baseUrl}/models`,
+      `${baseUrl}/v1/models`,
+      `${baseUrl}/api/v1/models`,
+    ]),
+  );
   let lastError = "Unknown error while loading models.";
 
   for (const endpoint of endpoints) {
@@ -1032,13 +1142,6 @@ export async function generatePersonaDrafts(
   theme: string,
   count: number,
 ): Promise<GeneratedPersonaDraft[]> {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
   const safeCount = Math.max(1, Math.min(6, Math.round(count)));
   const systemPrompt = [
     "Ты генератор карточек персонажей для ролевого AI-чата.",
@@ -1057,32 +1160,19 @@ export async function generatePersonaDrafts(
     "У каждого должен быть уникальный характер, внешность и стиль речи и другие параметры.",
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const response = await requestGenericChatCompletion(
+    settings,
+    "persona_generation",
+    {
       model: resolvePersonaGenerationModel(settings),
       input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(settings.maxTokens, 500),
+      systemPrompt,
+      maxOutputTokens: Math.max(settings.maxTokens, 500),
       temperature: Math.max(0.6, settings.temperature),
       store: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка генерации персонажей (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+    },
+  );
+  const text = response.content.trim();
 
   if (!text) {
     throw new Error("Модель вернула пустой ответ при генерации личности.");
@@ -1220,13 +1310,6 @@ export async function generatePersonaLookPrompts(
   settings: AppSettings,
   payload: PersonaLookPromptRequest,
 ): Promise<PersonaLookPromptResponse> {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
   const systemPrompt = [
     "Ты конвертер описаний внешности в ComfyUI prompts.",
     "Верни ТОЛЬКО JSON объект без markdown и пояснений.",
@@ -1311,32 +1394,15 @@ export async function generatePersonaLookPrompts(
     "Build two prompts for the same character identity.",
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      model: resolveImagePromptModel(settings),
-      input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(220, Math.min(700, settings.maxTokens)),
-      temperature: Math.max(0.25, Math.min(0.55, settings.temperature)),
-      store: false,
-    }),
+  const response = await requestGenericChatCompletion(settings, "image_prompt", {
+    model: resolveImagePromptModel(settings),
+    input,
+    systemPrompt,
+    maxOutputTokens: Math.max(220, Math.min(700, settings.maxTokens)),
+    temperature: Math.max(0.25, Math.min(0.55, settings.temperature)),
+    store: false,
   });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка генерации prompt'ов внешности (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+  const text = response.content.trim();
 
   if (!text) {
     throw new Error("Модель вернула пустой ответ для prompts внешности.");

@@ -79,12 +79,27 @@ interface GroupStoreState {
     settings: AppSettings,
     userName: string,
   ) => Promise<void>;
+  retryGroupMessageImages: (params: {
+    messageId: string;
+    personas: Persona[];
+    settings: AppSettings;
+    blockIndexes?: number[];
+  }) => Promise<void>;
+  regenerateGroupMessageResponse: (params: {
+    messageId: string;
+    personas: Persona[];
+    settings: AppSettings;
+    userName: string;
+  }) => Promise<void>;
   refreshActiveGroupEventLog: () => Promise<void>;
   clearError: () => void;
 }
 
 const nowIso = () => new Date().toISOString();
 const newId = () => crypto.randomUUID();
+const GROUP_STORE_RUNTIME_STARTED_AT_MS = Date.now();
+const ABANDONED_GENERATION_GRACE_MS = 10_000;
+const LIVE_PENDING_TIMEOUT_MS = 8 * 60 * 1000;
 const clamp = (value: number, min = 0, max = 100) =>
   Math.max(min, Math.min(max, value));
 const randomSeed = () => {
@@ -106,6 +121,25 @@ function normalizeToken(value: string) {
     .trim()
     .toLowerCase()
     .replace(/[.,!?;:]+$/g, "");
+}
+
+function getLastPersonaResponseId(
+  events: GroupEvent[],
+  roomId: string,
+  personaId: string,
+) {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.roomId !== roomId || event.type !== "persona_spoke") continue;
+    const payload = event.payload ?? {};
+    const payloadPersonaId =
+      typeof payload.personaId === "string" ? payload.personaId : "";
+    if (payloadPersonaId !== personaId) continue;
+    const responseId =
+      typeof payload.responseId === "string" ? payload.responseId.trim() : "";
+    if (responseId) return responseId;
+  }
+  return "";
 }
 
 function buildRussianNameForms(token: string) {
@@ -554,15 +588,146 @@ async function loadRoomArtifacts(roomId: string | null) {
     dbApi.getGroupSharedMemories(roomId),
     dbApi.getGroupPrivateMemories(roomId),
   ]);
+  const recoveredMessages =
+    await recoverAbandonedGroupImageGenerations(messages);
 
   return {
     participants,
-    messages,
+    messages: recoveredMessages,
     events,
     personaStates,
     relationEdges,
     sharedMemories,
     privateMemories,
+  };
+}
+
+function isAbandonedPendingFromPreviousGroupSession(createdAt: string) {
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs)) return true;
+  return (
+    createdAtMs <
+    GROUP_STORE_RUNTIME_STARTED_AT_MS - ABANDONED_GENERATION_GRACE_MS
+  );
+}
+
+async function recoverAbandonedGroupImageGenerations(
+  messages: GroupMessage[],
+) {
+  const updatedById = new Map<string, GroupMessage>();
+  for (const message of messages) {
+    if (!message.imageGenerationPending) continue;
+    if (!isAbandonedPendingFromPreviousGroupSession(message.createdAt)) {
+      continue;
+    }
+
+    const completed =
+      typeof message.imageGenerationCompleted === "number"
+        ? message.imageGenerationCompleted
+        : message.imageAttachments?.length ?? 0;
+    const expected =
+      typeof message.imageGenerationExpected === "number"
+        ? Math.max(message.imageGenerationExpected, completed)
+        : completed > 0
+          ? completed
+          : undefined;
+
+    const recoveredMessage: GroupMessage = {
+      ...message,
+      imageGenerationPending: false,
+      imageGenerationExpected: expected,
+      imageGenerationCompleted: completed,
+    };
+    await dbApi.saveGroupMessage(recoveredMessage);
+    updatedById.set(recoveredMessage.id, recoveredMessage);
+  }
+
+  if (updatedById.size === 0) return messages;
+  return messages.map((message) => updatedById.get(message.id) ?? message);
+}
+
+function isTimedOutPendingGeneration(createdAt: string, nowMs: number) {
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs)) return true;
+  return nowMs - createdAtMs > LIVE_PENDING_TIMEOUT_MS;
+}
+
+async function recoverTimedOutPendingGroupMessages(
+  roomId: string,
+  messages: GroupMessage[],
+) {
+  const updatedById = new Map<string, GroupMessage>();
+  const timeoutEvents: GroupEvent[] = [];
+  const nowMs = Date.now();
+
+  for (const message of messages) {
+    if (!message.imageGenerationPending) continue;
+    if (!isTimedOutPendingGeneration(message.createdAt, nowMs)) continue;
+
+    const completed =
+      typeof message.imageGenerationCompleted === "number"
+        ? message.imageGenerationCompleted
+        : message.imageAttachments?.length ?? 0;
+    const expected =
+      typeof message.imageGenerationExpected === "number"
+        ? Math.max(message.imageGenerationExpected, completed)
+        : completed > 0
+          ? completed
+          : undefined;
+
+    const recoveredMessage: GroupMessage = {
+      ...message,
+      imageGenerationPending: false,
+      imageGenerationExpected: expected,
+      imageGenerationCompleted: completed,
+    };
+
+    await dbApi.saveGroupMessage(recoveredMessage);
+    updatedById.set(recoveredMessage.id, recoveredMessage);
+
+    timeoutEvents.push({
+      id: newId(),
+      roomId,
+      turnId: message.turnId,
+      type: "message_image_generated",
+      payload: {
+        messageId: message.id,
+        status: "timeout_recovered",
+        expected,
+        completed,
+      },
+      createdAt: nowIso(),
+    });
+  }
+
+  if (timeoutEvents.length > 0) {
+    await dbApi.appendGroupEvents(timeoutEvents);
+  }
+
+  return {
+    updatedById,
+    timeoutEvents,
+    messages:
+      updatedById.size === 0
+        ? messages
+        : messages.map((message) => updatedById.get(message.id) ?? message),
+  };
+}
+
+function extractMessageImageBlocks(message: GroupMessage) {
+  const descriptionBlocks = (message.comfyImageDescriptions ??
+    (message.comfyImageDescription ? [message.comfyImageDescription] : []))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const promptBlocks = (message.comfyPrompts ??
+    (message.comfyPrompt ? [message.comfyPrompt] : []))
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const sourceCount = Math.max(descriptionBlocks.length, promptBlocks.length);
+  return {
+    descriptionBlocks,
+    promptBlocks,
+    sourceCount,
   };
 }
 
@@ -1059,6 +1224,467 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
     return message;
   },
 
+  retryGroupMessageImages: async ({
+    messageId,
+    personas,
+    settings,
+    blockIndexes,
+  }) => {
+    try {
+      const baseMessage = get().groupMessages.find(
+        (message) => message.id === messageId,
+      );
+      if (
+        !baseMessage ||
+        baseMessage.authorType !== "persona" ||
+        !baseMessage.authorPersonaId
+      ) {
+        return;
+      }
+      const roomId = baseMessage.roomId;
+      const speaker = personas.find(
+        (persona) => persona.id === baseMessage.authorPersonaId,
+      );
+      if (!speaker) return;
+
+      const { descriptionBlocks, promptBlocks, sourceCount } =
+        extractMessageImageBlocks(baseMessage);
+      if (sourceCount === 0) {
+        set({
+          error:
+            "Для сообщения нет блоков изображений: нечего перегенерировать.",
+        });
+        return;
+      }
+
+      const normalizedIndexes = Array.from(
+        new Set(
+          (blockIndexes && blockIndexes.length > 0
+            ? blockIndexes
+            : Array.from({ length: sourceCount }, (_, index) => index)
+          )
+            .map((value) => Math.trunc(value))
+            .filter((value) => value >= 0 && value < sourceCount),
+        ),
+      );
+      if (normalizedIndexes.length === 0) return;
+
+      let promptsForGeneration: string[] = [];
+      let expectedGenerationCount = 0;
+      if (descriptionBlocks.length > 0) {
+        const selectedDescriptions = normalizedIndexes
+          .map((index) => descriptionBlocks[index] ?? "")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (selectedDescriptions.length === 0) {
+          set({ error: "Не удалось выбрать блоки описаний для перегенерации." });
+          return;
+        }
+        const generatedPrompts = await Promise.all(
+          selectedDescriptions.map((description, index) =>
+            generateComfyPromptFromImageDescription(
+              settings,
+              speaker,
+              description,
+              index + 1,
+            ),
+          ),
+        );
+        promptsForGeneration = generatedPrompts
+          .map((value) => value.trim())
+          .filter(Boolean);
+        expectedGenerationCount = promptsForGeneration.length;
+      } else {
+        promptsForGeneration = normalizedIndexes
+          .map((index) => promptBlocks[index] ?? "")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        expectedGenerationCount = promptsForGeneration.length;
+      }
+
+      if (expectedGenerationCount === 0) {
+        set({
+          error:
+            "Не удалось подготовить промпты для перегенерации изображений.",
+        });
+        return;
+      }
+
+      let messageRef: GroupMessage = baseMessage;
+      const patchMessage = async (patch: Partial<GroupMessage>) => {
+        messageRef = {
+          ...messageRef,
+          ...patch,
+        };
+        await dbApi.saveGroupMessage(messageRef);
+        set((state) => ({
+          groupMessages: state.groupMessages.map((message) =>
+            message.id === messageRef.id ? messageRef : message,
+          ),
+        }));
+      };
+
+      const appendImageEvent = async (payload: Record<string, unknown>) => {
+        const imageEvent: GroupEvent = {
+          id: newId(),
+          roomId,
+          turnId: messageRef.turnId,
+          type: "message_image_generated",
+          payload,
+          createdAt: nowIso(),
+        };
+        await dbApi.saveGroupEvent(imageEvent);
+        set((state) => ({
+          groupEvents:
+            state.activeGroupRoomId === roomId
+              ? [...state.groupEvents, imageEvent]
+              : state.groupEvents,
+        }));
+      };
+
+      const requestedEvent: GroupEvent = {
+        id: newId(),
+        roomId,
+        turnId: messageRef.turnId,
+        type: "message_image_requested",
+        payload: {
+          messageId: messageRef.id,
+          personaId: speaker.id,
+          expected: expectedGenerationCount,
+          retry: true,
+          selectedBlocks: normalizedIndexes,
+        },
+        createdAt: nowIso(),
+      };
+      await dbApi.saveGroupEvent(requestedEvent);
+      set((state) => ({
+        groupEvents:
+          state.activeGroupRoomId === roomId
+            ? [...state.groupEvents, requestedEvent]
+            : state.groupEvents,
+      }));
+
+      const styleReferenceImage =
+        speaker.avatarUrl.trim() || speaker.fullBodyUrl.trim() || undefined;
+      const chatStyleStrength = settings.chatStyleStrength;
+      const comfyItems = promptsForGeneration.map((prompt) => ({
+        flow: "base" as const,
+        prompt,
+        checkpointName: speaker.imageCheckpoint || undefined,
+        seed: randomSeed(),
+        styleReferenceImage,
+        styleStrength: styleReferenceImage ? chatStyleStrength : undefined,
+        compositionStrength: 0,
+        saveComfyOutputs: settings.saveComfyOutputs,
+      }));
+
+      const existingAttachments = messageRef.imageAttachments ?? [];
+      const existingMetaByUrl = { ...(messageRef.imageMetaByUrl ?? {}) };
+      const aggregatedAttachments: NonNullable<GroupMessage["imageAttachments"]> = [
+        ...existingAttachments,
+      ];
+      const aggregatedMetaByUrl: Record<string, ImageGenerationMeta> = {
+        ...existingMetaByUrl,
+      };
+      let completedCount = 0;
+      const baseCompleted = existingAttachments.length;
+      const expectedTotal = baseCompleted + expectedGenerationCount;
+
+      await patchMessage({
+        imageGenerationPending: true,
+        imageGenerationExpected: expectedTotal,
+        imageGenerationCompleted: baseCompleted,
+      });
+
+      try {
+        await generateComfyImages(
+          comfyItems,
+          settings.comfyBaseUrl,
+          settings.comfyAuth,
+          async (promptImageUrls, index) => {
+            completedCount += 1;
+            const localizedChunk = await localizeImageUrls(promptImageUrls);
+            const item = comfyItems[index];
+            const extractedMeta =
+              promptImageUrls[0]
+                ? await readComfyImageGenerationMeta(
+                    promptImageUrls[0],
+                    settings.comfyBaseUrl,
+                    settings.comfyAuth,
+                  )
+                : null;
+            const meta: ImageGenerationMeta = {
+              seed: extractedMeta?.seed ?? item.seed,
+              prompt: extractedMeta?.prompt ?? item.prompt,
+              model: extractedMeta?.model ?? item.checkpointName,
+              flow: extractedMeta?.flow ?? item.flow,
+            };
+
+            for (const localized of localizedChunk) {
+              if (
+                !aggregatedAttachments.some(
+                  (attachment) => attachment.url === localized,
+                )
+              ) {
+                aggregatedAttachments.push({
+                  url: localized,
+                  meta,
+                });
+              }
+              aggregatedMetaByUrl[localized] = meta;
+            }
+            for (const original of promptImageUrls) {
+              if (original?.trim()) {
+                aggregatedMetaByUrl[original] = meta;
+              }
+            }
+
+            await patchMessage({
+              imageAttachments: [...aggregatedAttachments],
+              imageMetaByUrl: { ...aggregatedMetaByUrl },
+              imageGenerationPending:
+                baseCompleted + completedCount < expectedTotal,
+              imageGenerationExpected: expectedTotal,
+              imageGenerationCompleted: baseCompleted + completedCount,
+            });
+            await appendImageEvent({
+              messageId: messageRef.id,
+              personaId: speaker.id,
+              status:
+                baseCompleted + completedCount >= expectedTotal
+                  ? "completed"
+                  : "progress",
+              expected: expectedTotal,
+              completed: baseCompleted + completedCount,
+              generatedCount: localizedChunk.length,
+              retry: true,
+            });
+          },
+        );
+
+        await patchMessage({
+          imageAttachments: [...aggregatedAttachments],
+          imageMetaByUrl: { ...aggregatedMetaByUrl },
+          imageGenerationPending: false,
+          imageGenerationExpected: expectedTotal,
+          imageGenerationCompleted: expectedTotal,
+        });
+      } catch {
+        await patchMessage({
+          imageGenerationPending: false,
+          imageGenerationExpected: expectedTotal,
+          imageGenerationCompleted: baseCompleted + completedCount,
+        });
+        await appendImageEvent({
+          messageId: messageRef.id,
+          personaId: speaker.id,
+          status: "generation_failed",
+          expected: expectedTotal,
+          completed: baseCompleted + completedCount,
+          retry: true,
+        });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  regenerateGroupMessageResponse: async ({
+    messageId,
+    personas,
+    settings,
+    userName,
+  }) => {
+    try {
+      const targetMessage = get().groupMessages.find(
+        (message) => message.id === messageId,
+      );
+      if (
+        !targetMessage ||
+        targetMessage.authorType !== "persona" ||
+        !targetMessage.authorPersonaId
+      ) {
+        return;
+      }
+      const room = get().groupRooms.find(
+        (candidate) => candidate.id === targetMessage.roomId,
+      );
+      if (!room) return;
+      const speaker = personas.find(
+        (persona) => persona.id === targetMessage.authorPersonaId,
+      );
+      if (!speaker) return;
+
+      const roomMessages = get().groupMessages
+        .filter((message) => message.roomId === room.id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const messageIndex = roomMessages.findIndex(
+        (message) => message.id === targetMessage.id,
+      );
+      if (messageIndex < 0) return;
+      const contextMessages = roomMessages.slice(0, messageIndex);
+
+      const participants = get().groupParticipants.filter(
+        (participant) => participant.roomId === room.id,
+      );
+      const participantNameById = Object.fromEntries(
+        participants.map((participant) => {
+          const persona = personas.find(
+            (item) => item.id === participant.personaId,
+          );
+          return [participant.personaId, persona?.name || participant.personaId];
+        }),
+      );
+      const participantNames = participants.map(
+        (participant) =>
+          participantNameById[participant.personaId] || participant.personaId,
+      );
+      const personaState =
+        get().groupPersonaStates.find(
+          (state) =>
+            state.roomId === room.id && state.personaId === speaker.id,
+        ) || null;
+      const relationEdges = get().groupRelationEdges.filter(
+        (edge) => edge.roomId === room.id,
+      );
+      const sharedMemories = get().groupSharedMemories.filter(
+        (memory) => memory.roomId === room.id,
+      );
+      const privateMemories = get().groupPrivateMemories.filter(
+        (memory) =>
+          memory.roomId === room.id && memory.personaId === speaker.id,
+      );
+      const recentEvents = get().groupEvents
+        .filter((event) => event.roomId === room.id)
+        .slice(-30);
+      const previousResponseIdForSpeaker =
+        getLastPersonaResponseId(
+          get().groupEvents,
+          room.id,
+          speaker.id,
+        ) || undefined;
+
+      const llmSpeech = await requestLlmPersonaMessage({
+        room,
+        speaker,
+        userName,
+        participantNames,
+        messages: contextMessages,
+        personaState,
+        relationEdges,
+        participantNameById,
+        sharedMemories,
+        privateMemories,
+        recentEvents,
+        settings,
+        previousResponseId: previousResponseIdForSpeaker,
+      });
+      if (!llmSpeech.visibleText.trim()) {
+        set({ error: "Модель вернула пустой ответ при перегенерации." });
+        return;
+      }
+
+      const normalizedSpeech = ensureReplyMentionFallback(
+        normalizePersonaSpeechMentions(
+          llmSpeech.visibleText.trim(),
+          speaker.id,
+          personas,
+          userName,
+        ),
+        room.mode,
+        contextMessages,
+        speaker.id,
+        personas,
+        userName,
+      );
+      const mentions = parseMentions(normalizedSpeech, personas, userName);
+      const promptBlocks =
+        llmSpeech.comfyPrompts ??
+        (llmSpeech.comfyPrompt ? [llmSpeech.comfyPrompt] : []);
+      const descriptionBlocks =
+        llmSpeech.comfyImageDescriptions ??
+        (llmSpeech.comfyImageDescription
+          ? [llmSpeech.comfyImageDescription]
+          : []);
+      const requestedImageCount =
+        descriptionBlocks.length > 0
+          ? descriptionBlocks.length
+          : promptBlocks.length;
+
+      const updatedMessage: GroupMessage = {
+        ...targetMessage,
+        content: normalizedSpeech,
+        mentions: mentions.length > 0 ? mentions : undefined,
+        comfyPrompt: llmSpeech.comfyPrompt,
+        comfyPrompts: llmSpeech.comfyPrompts,
+        comfyImageDescription: llmSpeech.comfyImageDescription,
+        comfyImageDescriptions: llmSpeech.comfyImageDescriptions,
+        personaControlRaw: llmSpeech.personaControl
+          ? JSON.stringify(llmSpeech.personaControl)
+          : undefined,
+        imageAttachments: undefined,
+        imageMetaByUrl: undefined,
+        imageGenerationPending: false,
+        imageGenerationExpected:
+          requestedImageCount > 0 ? requestedImageCount : undefined,
+        imageGenerationCompleted: requestedImageCount > 0 ? 0 : undefined,
+      };
+      await dbApi.saveGroupMessage(updatedMessage);
+
+      const regenEvent: GroupEvent = {
+        id: newId(),
+        roomId: room.id,
+        turnId: updatedMessage.turnId,
+        type: "persona_spoke",
+        payload: {
+          personaId: speaker.id,
+          messageId: updatedMessage.id,
+          messagePreview: normalizedSpeech.slice(0, 180),
+          source: "manual_regeneration",
+          previousResponseId: previousResponseIdForSpeaker,
+          responseId: llmSpeech.responseId,
+        },
+        createdAt: nowIso(),
+      };
+      await dbApi.saveGroupEvent(regenEvent);
+
+      const mentionResolvedEvent = buildMentionResolvedEvent(
+        room.id,
+        updatedMessage.turnId,
+        mentions,
+        {
+          authorType: "persona",
+          authorDisplayName: speaker.name,
+        },
+      );
+      if (mentionResolvedEvent) {
+        await dbApi.saveGroupEvent(mentionResolvedEvent);
+      }
+
+      set((state) => ({
+        groupMessages: state.groupMessages.map((message) =>
+          message.id === updatedMessage.id ? updatedMessage : message,
+        ),
+        groupEvents:
+          state.activeGroupRoomId === room.id
+            ? mentionResolvedEvent
+              ? [...state.groupEvents, regenEvent, mentionResolvedEvent]
+              : [...state.groupEvents, regenEvent]
+            : state.groupEvents,
+      }));
+
+      if (requestedImageCount > 0) {
+        await get().retryGroupMessageImages({
+          messageId: updatedMessage.id,
+          personas,
+          settings,
+        });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
   setActiveGroupRoomStatus: async (status) => {
     const roomId = get().activeGroupRoomId;
     if (!roomId) return;
@@ -1130,16 +1756,44 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       const participants = get().groupParticipants.filter(
         (participant) => participant.roomId === roomId,
       );
-      const messages = get().groupMessages.filter(
+      let messages = get().groupMessages.filter(
         (message) => message.roomId === roomId,
       );
+      const pendingRecovery = await recoverTimedOutPendingGroupMessages(
+        roomId,
+        messages,
+      );
+      if (
+        pendingRecovery.updatedById.size > 0 ||
+        pendingRecovery.timeoutEvents.length > 0
+      ) {
+        set((state) => ({
+          groupMessages:
+            pendingRecovery.updatedById.size > 0
+              ? state.groupMessages.map(
+                  (message) =>
+                    pendingRecovery.updatedById.get(message.id) ?? message,
+                )
+              : state.groupMessages,
+          groupEvents:
+            pendingRecovery.timeoutEvents.length > 0 &&
+            state.activeGroupRoomId === roomId
+              ? [...state.groupEvents, ...pendingRecovery.timeoutEvents]
+              : state.groupEvents,
+        }));
+      }
+      messages = pendingRecovery.messages;
       const events = get().groupEvents.filter((event) => event.roomId === roomId);
+      const relationEdges = get().groupRelationEdges.filter(
+        (edge) => edge.roomId === roomId,
+      );
 
       const deterministicDecision = runGroupOrchestratorTick({
         room,
         participants,
         messages,
         events,
+        relationEdges,
         personas,
         settings,
         userName,
@@ -1169,6 +1823,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
             participants,
             messages,
             events,
+            relationEdges,
             personas,
             settings,
             userName,
@@ -1212,6 +1867,59 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
           },
         };
         orchestrationSource = "deterministic";
+      }
+
+      const mentionDrivenPersonaId =
+        typeof deterministicDecision.debug?.mentionDrivenPersonaId === "string"
+          ? deterministicDecision.debug.mentionDrivenPersonaId
+          : "";
+      if (
+        decision.status === "spoke" &&
+        decision.speakerPersonaId &&
+        deterministicDecision.status === "spoke" &&
+        deterministicDecision.speakerPersonaId &&
+        decision.speakerPersonaId !== deterministicDecision.speakerPersonaId &&
+        (!mentionDrivenPersonaId ||
+          mentionDrivenPersonaId !== decision.speakerPersonaId)
+      ) {
+        const recentSpeakerIds = events
+          .filter((event) => event.type === "speaker_selected")
+          .map((event) =>
+            typeof event.payload?.personaId === "string"
+              ? event.payload.personaId
+              : "",
+          )
+          .filter(Boolean)
+          .slice(-Math.max(8, participants.length * 3));
+        const countRecentSpeaks = (personaId: string) =>
+          recentSpeakerIds.filter((id) => id === personaId).length;
+        const llmCount = countRecentSpeaks(decision.speakerPersonaId);
+        const deterministicCount = countRecentSpeaks(
+          deterministicDecision.speakerPersonaId,
+        );
+        const dominantCountThreshold = Math.max(
+          3,
+          Math.ceil(recentSpeakerIds.length * 0.45),
+        );
+        if (
+          recentSpeakerIds.length >= 6 &&
+          llmCount >= dominantCountThreshold &&
+          deterministicCount < llmCount
+        ) {
+          decision = {
+            ...deterministicDecision,
+            debug: {
+              ...deterministicDecision.debug,
+              llmDecisionStatus,
+              llmOverriddenByDiversity: true,
+              llmSpeakerPersonaId: decision.speakerPersonaId,
+              llmRecentCount: llmCount,
+              deterministicRecentCount: deterministicCount,
+              dominantCountThreshold,
+            },
+          };
+          orchestrationSource = "deterministic";
+        }
       }
 
       if (room.mode === "personas_only") {
@@ -1386,7 +2094,8 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       const speechSource: "llm" = "llm";
       const roomForSpeechRequest =
         get().groupRooms.find((item) => item.id === roomId) || room;
-      const previousResponseIdForSpeech = roomForSpeechRequest.lastResponseId;
+      const previousResponseIdForSpeech =
+        getLastPersonaResponseId(events, roomId, speaker.id) || undefined;
       const generatingRoom: GroupRoom = {
         ...roomForSpeechRequest,
         state: {

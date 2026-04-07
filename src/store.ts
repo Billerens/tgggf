@@ -74,6 +74,8 @@ interface AppState {
 
 const nowIso = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
+const STORE_RUNTIME_STARTED_AT_MS = Date.now();
+const ABANDONED_GENERATION_GRACE_MS = 10_000;
 const randomSeed = () => {
   const values = new Uint32Array(2);
   crypto.getRandomValues(values);
@@ -145,11 +147,49 @@ async function loadChatArtifacts(chatId: string | null) {
     dbApi.getPersonaState(chatId),
     dbApi.getMemories(chatId),
   ]);
+  const recoveredMessages = await recoverAbandonedChatImageGenerations(messages);
   return {
-    messages,
+    messages: recoveredMessages,
     state: state ?? null,
     memories,
   };
+}
+
+function isAbandonedPendingFromPreviousSession(createdAt: string) {
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs)) return true;
+  return createdAtMs < STORE_RUNTIME_STARTED_AT_MS - ABANDONED_GENERATION_GRACE_MS;
+}
+
+async function recoverAbandonedChatImageGenerations(messages: ChatMessage[]) {
+  const updatedById = new Map<string, ChatMessage>();
+  for (const message of messages) {
+    if (!message.imageGenerationPending) continue;
+    if (!isAbandonedPendingFromPreviousSession(message.createdAt)) continue;
+
+    const completed =
+      typeof message.imageGenerationCompleted === "number"
+        ? message.imageGenerationCompleted
+        : message.imageUrls?.length ?? 0;
+    const expected =
+      typeof message.imageGenerationExpected === "number"
+        ? Math.max(message.imageGenerationExpected, completed)
+        : completed > 0
+          ? completed
+          : undefined;
+
+    const recoveredMessage: ChatMessage = {
+      ...message,
+      imageGenerationPending: false,
+      imageGenerationExpected: expected,
+      imageGenerationCompleted: completed,
+    };
+    await dbApi.saveMessage(recoveredMessage);
+    updatedById.set(recoveredMessage.id, recoveredMessage);
+  }
+
+  if (updatedById.size === 0) return messages;
+  return messages.map((message) => updatedById.get(message.id) ?? message);
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
