@@ -105,13 +105,15 @@ export function buildGroupOrchestratorSystemPrompt({
     "- выбрать следующего говорящего персонажа или режим ожидания пользователя;",
     "- определить нужен ли wait_for_user;",
     "- указать причину выбора и intent шага;",
+    '- определить действие для пользовательского вброса: userContextAction="keep|clear";',
+    "- если последний пользовательский вброс уже не влияет на текущий шаг, ставь clear;",
     "- не генерировать саму реплику персонажа.",
     "- для выбора очереди учитывай не только инициативность, но и динамику диалога: кто говорил недавно, кто давно молчит, упоминания и межперсональные отношения.",
     "- не допускай доминирования 1-2 персон при наличии активных альтернатив: поддерживай ротацию участников.",
     "- если mode=personas_only, waitForUser всегда должен быть false, статус wait недопустим.",
     "",
     "Формат ответа строго JSON без markdown:",
-    '{"status":"speak|wait|skip","speakerPersonaId":"<id or empty>","waitForUser":true,"waitReason":"...","reason":"...","intent":"..."}',
+    '{"status":"speak|wait|skip","speakerPersonaId":"<id or empty>","waitForUser":true,"waitReason":"...","reason":"...","intent":"...","userContextAction":"keep|clear"}',
   ].join("\n");
 }
 

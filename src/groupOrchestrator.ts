@@ -40,6 +40,7 @@ export interface GroupOrchestratorTickDecision {
   messageText?: string;
   waitForUser: boolean;
   waitReason?: string;
+  userContextAction?: "keep" | "clear";
   debug: Record<string, unknown>;
 }
 
@@ -55,6 +56,7 @@ interface LlmOrchestratorDecision {
   waitReason?: string;
   reason?: string;
   intent?: string;
+  userContextAction?: string;
 }
 
 export interface GroupPersonaSpeechDraft {
@@ -113,6 +115,22 @@ function getLastUserMessage(messages: GroupMessage[], roomId: string) {
     .find(
       (message) => message.roomId === roomId && message.authorType === "user",
     );
+}
+
+function getFocusedUserMessage(messages: GroupMessage[], room: GroupRoom) {
+  const markerRaw = room.orchestratorUserFocusMessageId;
+  if (typeof markerRaw === "string") {
+    const marker = markerRaw.trim();
+    if (!marker) return undefined;
+    const focused = messages.find(
+      (message) =>
+        message.roomId === room.id &&
+        message.authorType === "user" &&
+        message.id === marker,
+    );
+    if (focused) return focused;
+  }
+  return getLastUserMessage(messages, room.id);
 }
 
 function getLastSpeakerPersonaId(events: GroupEvent[]) {
@@ -198,7 +216,7 @@ export function buildFallbackPersonaMessageText(params: {
   messages: GroupMessage[];
   userName: string;
 }) {
-  const lastUserMessage = getLastUserMessage(params.messages, params.room.id);
+  const lastUserMessage = getFocusedUserMessage(params.messages, params.room);
   return buildPersonaMessageText(
     params.room,
     params.speaker,
@@ -296,6 +314,15 @@ function normalizeLlmStatus(
   return "";
 }
 
+function normalizeLlmUserContextAction(
+  value: string | undefined,
+): "keep" | "clear" | "" {
+  const token = normalizeToken(value || "");
+  if (token === "keep") return "keep";
+  if (token === "clear") return "clear";
+  return "";
+}
+
 export function validatePersonaSpeaksOnlyForSelf(
   speaker: Persona,
   messageText: string,
@@ -350,7 +377,7 @@ export async function requestLlmOrchestratorDecision(
   const allowedPersonaIds = new Set(
     participantProfiles.map((item) => item.personaId),
   );
-  const lastUserMessage = getLastUserMessage(input.messages, input.room.id);
+  const lastUserMessage = getFocusedUserMessage(input.messages, input.room);
   const mentionPriorityHints =
     lastUserMessage?.mentions
       ?.map((mention) => {
@@ -430,6 +457,9 @@ export async function requestLlmOrchestratorDecision(
 
   const status = normalizeLlmStatus(parsed.status);
   if (!status) return null;
+  const userContextAction = normalizeLlmUserContextAction(
+    parsed.userContextAction,
+  );
 
   const speakerPersonaId = (parsed.speakerPersonaId || "").trim();
   if (status === "spoke" && !allowedPersonaIds.has(speakerPersonaId)) {
@@ -446,6 +476,7 @@ export async function requestLlmOrchestratorDecision(
     waitReason: (parsed.waitReason || "").trim() || undefined,
     reason: (parsed.reason || "").trim() || "llm_orchestrator_decision",
     intent: (parsed.intent || "").trim() || undefined,
+    userContextAction: userContextAction || undefined,
   };
 }
 
@@ -464,12 +495,7 @@ export async function requestLlmPersonaMessage(params: {
   settings: AppSettings;
   previousResponseId?: string;
 }) {
-  const lastUserMessage = [...params.messages]
-    .reverse()
-    .find(
-      (message) =>
-        message.roomId === params.room.id && message.authorType === "user",
-    );
+  const lastUserMessage = getFocusedUserMessage(params.messages, params.room);
   const mentionContext = {
     addressedToCurrentPersona:
       lastUserMessage?.mentions?.some(
@@ -647,6 +673,7 @@ export function runGroupOrchestratorTick({
 
   const personaById = new Map(personas.map((persona) => [persona.id, persona]));
   const lastUserMessage = getLastUserMessage(messages, room.id);
+  const focusedUserMessage = getFocusedUserMessage(messages, room);
   const mentionDrivenPersonaId =
     lastUserMessage && lastRoomMessage?.id === lastUserMessage.id
       ? getMentionDrivenPersonaId(lastUserMessage, activeParticipants)
@@ -810,7 +837,7 @@ export function runGroupOrchestratorTick({
   const messageText = buildPersonaMessageText(
     room,
     speaker,
-    lastUserMessage,
+    focusedUserMessage,
     userName,
   );
 

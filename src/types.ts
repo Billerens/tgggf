@@ -231,6 +231,7 @@ export interface GroupRoom {
   waitingReason?: string;
   lastTickAt?: string;
   lastResponseId?: string;
+  orchestratorUserFocusMessageId?: string;
   orchestratorVersion: string;
   createdAt: string;
   updatedAt: string;

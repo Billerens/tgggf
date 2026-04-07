@@ -378,9 +378,7 @@ const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
 function normalizeProvider(value: unknown): LlmProvider {
-  return value === "openrouter" || value === "huggingface"
-    ? value
-    : "lmstudio";
+  return value === "openrouter" || value === "huggingface" ? value : "lmstudio";
 }
 
 function resolveProviderForTask(
@@ -421,8 +419,7 @@ function resolveModelForTask(settings: AppSettings, task: ModelRoutingTask) {
 function resolveProviderBaseUrl(settings: AppSettings, provider: LlmProvider) {
   if (provider === "openrouter") {
     return (
-      toTrimmedString(settings.openRouterBaseUrl) ||
-      DEFAULT_OPENROUTER_BASE_URL
+      toTrimmedString(settings.openRouterBaseUrl) || DEFAULT_OPENROUTER_BASE_URL
     );
   }
   if (provider === "huggingface") {
@@ -535,9 +532,7 @@ async function requestProviderChatCompletion(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(
-      `${provider} request failed (${response.status}): ${body}`,
-    );
+    throw new Error(`${provider} request failed (${response.status}): ${body}`);
   }
 
   const data = (await response.json()) as {
@@ -548,7 +543,9 @@ async function requestProviderChatCompletion(
       };
     }>;
   };
-  const content = parseOpenAiMessageContent(data.choices?.[0]?.message?.content);
+  const content = parseOpenAiMessageContent(
+    data.choices?.[0]?.message?.content,
+  );
 
   return {
     content,
@@ -563,7 +560,8 @@ export async function requestGenericChatCompletion(
   request: GenericChatRequest,
 ) {
   const provider = resolveProviderForTask(settings, task);
-  const model = toTrimmedString(request.model) || resolveModelForTask(settings, task);
+  const model =
+    toTrimmedString(request.model) || resolveModelForTask(settings, task);
   return requestProviderChatCompletion(settings, provider, {
     ...request,
     model,
@@ -579,15 +577,19 @@ export async function requestChatCompletion(
   previousResponseId?: string,
   context?: ChatCompletionContext,
 ): Promise<NativeChatResult> {
-  const response = await requestGenericChatCompletion(settings, "one_to_one_chat", {
-    model: settings.model,
-    input: formatRecentMessages(context?.recentMessages, userInput),
-    systemPrompt: buildSystemPrompt(persona, settings, context),
-    maxOutputTokens: settings.maxTokens,
-    temperature: settings.temperature,
-    store: true,
-    previousResponseId,
-  });
+  const response = await requestGenericChatCompletion(
+    settings,
+    "one_to_one_chat",
+    {
+      model: settings.model,
+      input: formatRecentMessages(context?.recentMessages, userInput),
+      systemPrompt: buildSystemPrompt(persona, settings, context),
+      maxOutputTokens: settings.maxTokens,
+      temperature: settings.temperature,
+      store: true,
+      previousResponseId,
+    },
+  );
 
   const rawContent = response.content.trim();
   const {
@@ -741,14 +743,18 @@ export async function generateThemedComfyPrompt(
     "Generate one unique prompt variation for this iteration.",
   ].join("\n");
 
-  const response = await requestGenericChatCompletion(settings, "image_prompt", {
-    model: resolveImagePromptModel(settings),
-    input,
-    systemPrompt,
-    maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
-    temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
-    store: false,
-  });
+  const response = await requestGenericChatCompletion(
+    settings,
+    "image_prompt",
+    {
+      model: resolveImagePromptModel(settings),
+      input,
+      systemPrompt,
+      maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
+      temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
+      store: false,
+    },
+  );
   const text = response.content.trim();
 
   if (!text) {
@@ -772,7 +778,7 @@ export async function generateThemedComfyPrompt(
   return mergeRequiredTags(fallbackPrompt, themeTags);
 }
 
-export async function generateComfyPromptFromImageDescription(
+export async function generateComfyPromptsFromImageDescription(
   settings: AppSettings,
   persona: Pick<
     Persona,
@@ -784,7 +790,7 @@ export async function generateComfyPromptFromImageDescription(
   >,
   imageDescription: string,
   iteration: number,
-): Promise<string> {
+): Promise<string[]> {
   const description = toTrimmedString(imageDescription);
   if (!description) {
     throw new Error(
@@ -793,10 +799,12 @@ export async function generateComfyPromptFromImageDescription(
   }
 
   const systemPrompt = [
-    "Ты конвертер описания сцены в один ComfyUI prompt.",
-    "Верни только один блок <comfyui_prompt>...</comfyui_prompt> без markdown и пояснений.",
+    "Ты конвертер описания сцены в список ComfyUI prompts.",
+    "Верни один или несколько блоков <comfyui_prompt>...</comfyui_prompt> без markdown и пояснений.",
+    "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный <comfyui_prompt> для каждого кадра.",
+    "Если описание одного кадра, верни только один блок.",
     "Внутри блока только comma-separated English tags (никаких предложений).",
-    "Формат внутри блока: строго ОДНА строка, разделитель строго ', ' (запятая + пробел), без переносов и без лишних пробелов.",
+    "Формат внутри блока: строго ОДНА строка, разделитель строго и обязательно должен быть ', ' (запятая + пробел), без переносов и без лишних пробелов.",
     "Длина prompt: 30-46 тегов.",
     "Каждый тег: строго 2-3 слова, в редких случаях допускается 4; тег должен быть визуально наблюдаемым.",
     "Порядок тегов: quality -> subject identity -> emotion/expression -> clothing/materials -> pose/framing -> camera -> lighting -> background -> technical cleanup.",
@@ -835,33 +843,76 @@ export async function generateComfyPromptFromImageDescription(
     `Iteration: ${iteration}`,
   ].join("\n");
 
-  const response = await requestGenericChatCompletion(settings, "image_prompt", {
-    model: resolveImagePromptModel(settings),
-    input,
-    systemPrompt,
-    maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
-    temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
-    store: false,
-  });
+  const response = await requestGenericChatCompletion(
+    settings,
+    "image_prompt",
+    {
+      model: resolveImagePromptModel(settings),
+      input,
+      systemPrompt,
+      maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
+      temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
+      store: false,
+    },
+  );
   const text = response.content.trim();
   if (!text) {
     throw new Error("Модель вернула пустой comfy prompt из описания.");
   }
 
   const parsed = splitAssistantContent(text);
-  const prompt = toTrimmedString(
-    parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt,
-  );
-  if (prompt) return prompt;
+  const parsedPrompts = (
+    parsed.comfyPrompts && parsed.comfyPrompts.length > 0
+      ? parsed.comfyPrompts
+      : parsed.comfyPrompt
+        ? [parsed.comfyPrompt]
+        : []
+  )
+    .map((item) => toTrimmedString(item))
+    .filter(Boolean);
+  if (parsedPrompts.length > 0) return parsedPrompts;
+
+  const tagMatches = Array.from(
+    text.matchAll(/<comfyui_prompt\b[^>]*>([\s\S]*?)<\/comfyui_prompt>/gi),
+  )
+    .map((match) => toTrimmedString(match[1]))
+    .filter(Boolean);
+  if (tagMatches.length > 0) return tagMatches;
 
   const fallbackPrompt = text
     .replace(/<\/?comfyui_prompt>/gi, "")
     .replace(/<\/?comfyui_image_description>/gi, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (fallbackPrompt) return fallbackPrompt;
+  if (fallbackPrompt) return [fallbackPrompt];
 
   throw new Error("Не удалось извлечь ComfyUI prompt из ответа модели.");
+}
+
+export async function generateComfyPromptFromImageDescription(
+  settings: AppSettings,
+  persona: Pick<
+    Persona,
+    | "name"
+    | "appearance"
+    | "stylePrompt"
+    | "personalityPrompt"
+    | "lookPromptCache"
+  >,
+  imageDescription: string,
+  iteration: number,
+): Promise<string> {
+  const prompts = await generateComfyPromptsFromImageDescription(
+    settings,
+    persona,
+    imageDescription,
+    iteration,
+  );
+  const first = prompts[0]?.trim();
+  if (!first) {
+    throw new Error("Не удалось извлечь ComfyUI prompt из ответа модели.");
+  }
+  return first;
 }
 
 function extractThemeTags(text: string, topic: string): string[] {
@@ -1021,13 +1072,11 @@ function parseModelKeys(data: unknown): string[] {
   return [];
 }
 
-export async function listModels(
-  settings: {
-    baseUrl: string;
-    auth: EndpointAuthConfig;
-    apiKey?: string;
-  },
-) {
+export async function listModels(settings: {
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+  apiKey?: string;
+}) {
   const baseUrl = normalizeBaseUrl(settings.baseUrl);
   const headers = buildAuthHeaders(settings.auth, settings.apiKey);
 
@@ -1394,14 +1443,18 @@ export async function generatePersonaLookPrompts(
     "Build two prompts for the same character identity.",
   ].join("\n");
 
-  const response = await requestGenericChatCompletion(settings, "image_prompt", {
-    model: resolveImagePromptModel(settings),
-    input,
-    systemPrompt,
-    maxOutputTokens: Math.max(220, Math.min(700, settings.maxTokens)),
-    temperature: Math.max(0.25, Math.min(0.55, settings.temperature)),
-    store: false,
-  });
+  const response = await requestGenericChatCompletion(
+    settings,
+    "image_prompt",
+    {
+      model: resolveImagePromptModel(settings),
+      input,
+      systemPrompt,
+      maxOutputTokens: Math.max(220, Math.min(700, settings.maxTokens)),
+      temperature: Math.max(0.25, Math.min(0.55, settings.temperature)),
+      store: false,
+    },
+  );
   const text = response.content.trim();
 
   if (!text) {

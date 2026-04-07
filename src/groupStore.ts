@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { dbApi } from "./db";
-import { generateComfyPromptFromImageDescription } from "./lmstudio";
+import { generateComfyPromptsFromImageDescription } from "./lmstudio";
 import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
 import { localizeImageUrls } from "./imageStorage";
 import {
@@ -1130,6 +1130,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
           },
           waitingForUser: false,
           waitingReason: undefined,
+          orchestratorUserFocusMessageId: message.id,
           updatedAt: nowIso(),
         };
         await dbApi.saveGroupRoom(updatedRoom);
@@ -1280,9 +1281,9 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
           set({ error: "Не удалось выбрать блоки описаний для перегенерации." });
           return;
         }
-        const generatedPrompts = await Promise.all(
+        const generatedPromptBatches = await Promise.all(
           selectedDescriptions.map((description, index) =>
-            generateComfyPromptFromImageDescription(
+            generateComfyPromptsFromImageDescription(
               settings,
               speaker,
               description,
@@ -1290,7 +1291,8 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
             ),
           ),
         );
-        promptsForGeneration = generatedPrompts
+        promptsForGeneration = generatedPromptBatches
+          .flat()
           .map((value) => value.trim())
           .filter(Boolean);
         expectedGenerationCount = promptsForGeneration.length;
@@ -1949,6 +1951,8 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         };
       }
 
+      const userContextAction =
+        decision.userContextAction === "clear" ? "clear" : "keep";
       const now = nowIso();
       const turnId = newId();
       const tickStartedEvent: GroupEvent = {
@@ -1962,6 +1966,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
           source: orchestrationSource,
           reason: decision.reason,
           status: decision.status,
+          userContextAction,
           debug: decision.debug,
         },
         createdAt: now,
@@ -1980,6 +1985,10 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       ) {
         const latestRoom = get().groupRooms.find((item) => item.id === roomId) || room;
         const roomIsActive = latestRoom.status === "active";
+        const nextUserFocusMessageId =
+          userContextAction === "clear"
+            ? ""
+            : latestRoom.orchestratorUserFocusMessageId;
         const nextRoom: GroupRoom = {
           ...latestRoom,
           state: {
@@ -1999,6 +2008,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
           waitingReason: roomIsActive
             ? decision.waitReason
             : latestRoom.waitingReason,
+          orchestratorUserFocusMessageId: nextUserFocusMessageId,
           lastTickAt: now,
           updatedAt: now,
         };
@@ -2092,8 +2102,15 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       let speechResponseId: string | undefined;
       let rawSpeechText = "";
       const speechSource: "llm" = "llm";
-      const roomForSpeechRequest =
+      const baseRoomForSpeechRequest =
         get().groupRooms.find((item) => item.id === roomId) || room;
+      const roomForSpeechRequest: GroupRoom = {
+        ...baseRoomForSpeechRequest,
+        orchestratorUserFocusMessageId:
+          userContextAction === "clear"
+            ? ""
+            : baseRoomForSpeechRequest.orchestratorUserFocusMessageId,
+      };
       const previousResponseIdForSpeech =
         getLastPersonaResponseId(events, roomId, speaker.id) || undefined;
       const generatingRoom: GroupRoom = {
@@ -2520,9 +2537,9 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
 
           try {
             if (imageDescriptionBlocks.length > 0) {
-              const generatedPrompts = await Promise.all(
+              const generatedPromptBatches = await Promise.all(
                 imageDescriptionBlocks.map((description, index) =>
-                  generateComfyPromptFromImageDescription(
+                  generateComfyPromptsFromImageDescription(
                     settings,
                     speaker,
                     description,
@@ -2530,7 +2547,8 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
                   ),
                 ),
               );
-              promptsForGeneration = generatedPrompts
+              promptsForGeneration = generatedPromptBatches
+                .flat()
                 .map((value) => value.trim())
                 .filter(Boolean);
               expectedGenerationCount = promptsForGeneration.length;

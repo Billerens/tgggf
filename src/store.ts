@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { DEFAULT_SETTINGS, dbApi } from "./db";
 import {
-  generateComfyPromptFromImageDescription,
+  generateComfyPromptsFromImageDescription,
   requestChatCompletion,
 } from "./lmstudio";
 import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
@@ -611,9 +611,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
           try {
             if (imageDescriptionBlocks.length > 0) {
-              const generatedPrompts = await Promise.all(
+              const generatedPromptBatches = await Promise.all(
                 imageDescriptionBlocks.map((description, index) =>
-                  generateComfyPromptFromImageDescription(
+                  generateComfyPromptsFromImageDescription(
                     get().settings,
                     activePersona,
                     description,
@@ -621,7 +621,8 @@ export const useAppStore = create<AppState>((set, get) => ({
                   ),
                 ),
               );
-              promptsForGeneration = generatedPrompts
+              promptsForGeneration = generatedPromptBatches
+                .flat()
                 .map((value) => value.trim())
                 .filter(Boolean);
               expectedGenerationCount = promptsForGeneration.length;
