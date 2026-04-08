@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { SendHorizontal, Trash2, ChevronDown, HeartHandshake, Brain, Database, Zap, Link2, RotateCw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  SendHorizontal,
+  Trash2,
+  ChevronDown,
+  HeartHandshake,
+  Brain,
+  Database,
+  Zap,
+  Link2,
+  RotateCw,
+} from "lucide-react";
 import { getMoodLabel } from "../personaProfiles";
 import { dbApi } from "../db";
 import type {
@@ -9,7 +19,10 @@ import type {
   Persona,
   PersonaRuntimeState,
 } from "../types";
-import type { LookEnhancePromptOverrides, LookEnhanceTarget } from "../ui/types";
+import type {
+  LookEnhancePromptOverrides,
+  LookEnhanceTarget,
+} from "../ui/types";
 import {
   extractRelationshipProposal,
   type PersonaControlPayload,
@@ -33,11 +46,15 @@ interface ChatPaneProps {
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
   imageActionBusy: boolean;
-  onEnhanceImage: (payload: {
-    messageId: string;
-    sourceUrl: string;
-    meta?: ImageGenerationMeta;
-  }, targetOverride?: LookEnhanceTarget, promptOverride?: string | LookEnhancePromptOverrides) => void;
+  onEnhanceImage: (
+    payload: {
+      messageId: string;
+      sourceUrl: string;
+      meta?: ImageGenerationMeta;
+    },
+    targetOverride?: LookEnhanceTarget,
+    promptOverride?: string | LookEnhancePromptOverrides,
+  ) => void;
   onRegenerateImage: (
     payload: {
       messageId: string;
@@ -105,12 +122,17 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
     if (affection) lines.push(affection);
     if (tension) lines.push(tension);
     if (stateDelta.mood) lines.push(`mood: ${stateDelta.mood}`);
-    if (stateDelta.relationshipType) lines.push(`relationshipType: ${stateDelta.relationshipType}`);
+    if (stateDelta.relationshipType)
+      lines.push(`relationshipType: ${stateDelta.relationshipType}`);
     if (Number.isFinite(stateDelta.relationshipDepth)) {
-      const sign = stateDelta.relationshipDepth && stateDelta.relationshipDepth > 0 ? "+" : "";
+      const sign =
+        stateDelta.relationshipDepth && stateDelta.relationshipDepth > 0
+          ? "+"
+          : "";
       lines.push(`relationshipDepth: ${sign}${stateDelta.relationshipDepth}`);
     }
-    if (stateDelta.relationshipStage) lines.push(`relationshipStage: ${stateDelta.relationshipStage}`);
+    if (stateDelta.relationshipStage)
+      lines.push(`relationshipStage: ${stateDelta.relationshipStage}`);
   }
 
   if (control.memory_add && control.memory_add.length > 0) {
@@ -132,7 +154,9 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
       const byId = memory.id ? `id=${memory.id}` : "";
       const kind = memory.kind ? `kind=${memory.kind}` : "";
       const layer = memory.layer ? `layer=${memory.layer}` : "";
-      const content = memory.content ? `content="${compactText(memory.content, 100)}"` : "";
+      const content = memory.content
+        ? `content="${compactText(memory.content, 100)}"`
+        : "";
       const parts = [byId, kind, layer, content].filter(Boolean);
       lines.push(`- ${parts.join(", ") || "(не указан критерий удаления)"}`);
     }
@@ -168,7 +192,9 @@ export function ChatPane({
   onOpenChatDetails,
 }: ChatPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
-  const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
+  const [previewMeta, setPreviewMeta] = useState<
+    ImageGenerationMeta | undefined
+  >(undefined);
   const [previewTarget, setPreviewTarget] = useState<{
     messageId: string;
     sourceUrl: string;
@@ -176,6 +202,13 @@ export function ChatPane({
   } | null>(null);
   const [activePersonaAvatarSrc, setActivePersonaAvatarSrc] = useState("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const onRegeneratePromptAtIndexRef = useRef(onRegeneratePromptAtIndex);
+  const onResolveRelationshipProposalRef = useRef(
+    onResolveRelationshipProposal,
+  );
+
+  onRegeneratePromptAtIndexRef.current = onRegeneratePromptAtIndex;
+  onResolveRelationshipProposalRef.current = onResolveRelationshipProposal;
 
   useEffect(() => {
     let cancelled = false;
@@ -202,7 +235,11 @@ export function ChatPane({
     return () => {
       cancelled = true;
     };
-  }, [activePersona?.id, activePersona?.avatarImageId, activePersona?.avatarUrl]);
+  }, [
+    activePersona?.id,
+    activePersona?.avatarImageId,
+    activePersona?.avatarUrl,
+  ]);
 
   useEffect(() => {
     const node = messagesEndRef.current;
@@ -212,7 +249,9 @@ export function ChatPane({
 
   useEffect(() => {
     if (!previewTarget || !previewSrc) return;
-    const message = messages.find((candidate) => candidate.id === previewTarget.messageId);
+    const message = messages.find(
+      (candidate) => candidate.id === previewTarget.messageId,
+    );
     if (!message) return;
     const imageUrls = message.imageUrls ?? [];
     if (imageUrls.length === 0) return;
@@ -240,16 +279,15 @@ export function ChatPane({
     );
   }, [messages, imageMetaByUrl, previewTarget, previewSrc]);
 
-  const relationshipBadge =
-    activePersonaState
-      ? {
-          new: "N",
-          acquaintance: "A",
-          friendly: "F",
-          close: "C",
-          bonded: "B",
-        }[activePersonaState.relationshipStage]
-      : "N";
+  const relationshipBadge = activePersonaState
+    ? {
+        new: "N",
+        acquaintance: "A",
+        friendly: "F",
+        close: "C",
+        bonded: "B",
+      }[activePersonaState.relationshipStage]
+    : "N";
 
   const moodBadge = activePersonaState
     ? {
@@ -265,16 +303,273 @@ export function ChatPane({
       }[activePersonaState.mood]
     : "○";
   const previewResolvedMeta = previewTarget
-    ? previewMeta ?? imageMetaByUrl[previewTarget.sourceUrl]
+    ? (previewMeta ?? imageMetaByUrl[previewTarget.sourceUrl])
     : previewMeta;
   const previewEnhancePromptDefaults = previewTarget
     ? resolveSharedEnhancePromptDefaults(activePersona, previewResolvedMeta)
     : undefined;
+  const renderedMessages = useMemo(
+    () =>
+      messages.map((msg) => {
+        const parsedAssistant =
+          msg.role === "assistant"
+            ? splitAssistantContent(msg.content)
+            : undefined;
+        const textToRender = parsedAssistant?.visibleText ?? msg.content;
+        const comfyImageDescriptionsToRender =
+          msg.role === "assistant" && showSystemImageBlock
+            ? (() => {
+                const next = [
+                  ...(msg.comfyImageDescriptions ?? []),
+                  ...(parsedAssistant?.comfyImageDescriptions ?? []),
+                  ...(msg.comfyImageDescription
+                    ? [msg.comfyImageDescription]
+                    : []),
+                  ...(parsedAssistant?.comfyImageDescription
+                    ? [parsedAssistant.comfyImageDescription]
+                    : []),
+                ]
+                  .map((value) => value.trim())
+                  .filter(Boolean);
+                return Array.from(new Set(next));
+              })()
+            : [];
+        const comfyPromptsToRender =
+          msg.role === "assistant" && showSystemImageBlock
+            ? (() => {
+                const next = [
+                  ...(msg.comfyPrompts ?? []),
+                  ...(parsedAssistant?.comfyPrompts ?? []),
+                  ...(msg.comfyPrompt ? [msg.comfyPrompt] : []),
+                  ...(parsedAssistant?.comfyPrompt
+                    ? [parsedAssistant.comfyPrompt]
+                    : []),
+                ]
+                  .map((value) => value.trim())
+                  .filter(Boolean);
+                return Array.from(new Set(next));
+              })()
+            : [];
+        const personaControlParsed =
+          msg.role === "assistant"
+            ? (parsePersonaControlRaw(msg.personaControlRaw) ??
+              parsedAssistant?.personaControl)
+            : undefined;
+        const personaControlToRender =
+          msg.role === "assistant" && showStatusChangeDetails
+            ? personaControlParsed
+            : undefined;
+        const relationshipProposal =
+          msg.role === "assistant"
+            ? extractRelationshipProposal(personaControlParsed)
+            : undefined;
+        const relationshipProposalType =
+          msg.relationshipProposalType ?? relationshipProposal?.type;
+        const relationshipProposalStage =
+          msg.relationshipProposalStage ?? relationshipProposal?.stage;
+        const relationshipProposalStatus =
+          msg.role === "assistant" &&
+          (relationshipProposalType || relationshipProposalStage)
+            ? (msg.relationshipProposalStatus ?? "pending")
+            : undefined;
+        const relationshipProposalSummary = [
+          relationshipProposalType ? `Тип: ${relationshipProposalType}` : "",
+          relationshipProposalStage ? `Этап: ${relationshipProposalStage}` : "",
+        ]
+          .filter(Boolean)
+          .join(" • ");
+        const statusDetails = buildStatusDetails(personaControlToRender);
+        const imageUrlsToRender = msg.imageUrls ?? [];
+        const fallbackExpected = Math.max(
+          1,
+          comfyPromptsToRender.length ||
+            comfyImageDescriptionsToRender.length ||
+            (msg.comfyPrompt ? 1 : 0) ||
+            (msg.comfyImageDescription ? 1 : 0),
+        );
+        const expectedCount = msg.imageGenerationExpected ?? fallbackExpected;
+        const completedCount =
+          msg.imageGenerationCompleted ?? imageUrlsToRender.length;
+        const imageSkeletonCount = Math.max(0, expectedCount - completedCount);
+
+        if (
+          !textToRender &&
+          comfyImageDescriptionsToRender.length === 0 &&
+          comfyPromptsToRender.length === 0 &&
+          imageUrlsToRender.length === 0 &&
+          !msg.imageGenerationPending &&
+          !statusDetails
+        ) {
+          return null;
+        }
+
+        return (
+          <article key={msg.id} className={`bubble ${msg.role}`}>
+            {textToRender ? <p>{textToRender}</p> : null}
+            {comfyImageDescriptionsToRender.map((description, index) => (
+              <section
+                key={`${msg.id}-img-desc-${index}`}
+                className="comfy-prompt-block"
+                aria-label="ComfyUI image description"
+              >
+                <div className="comfy-prompt-head">
+                  {comfyImageDescriptionsToRender.length > 1
+                    ? `Image description #${index + 1}`
+                    : "Image description"}
+                </div>
+                <pre>{description}</pre>
+              </section>
+            ))}
+            {comfyPromptsToRender.map((prompt, index) => (
+              <section
+                key={`${msg.id}-comfy-${index}`}
+                className="comfy-prompt-block"
+                aria-label="ComfyUI prompt"
+              >
+                <div className="comfy-prompt-head comfy-prompt-head-with-actions">
+                  <span>
+                    {comfyPromptsToRender.length > 1
+                      ? `ComfyUI prompt #${index + 1}`
+                      : "ComfyUI prompt"}
+                  </span>
+                  <button
+                    type="button"
+                    className="comfy-prompt-regenerate-btn"
+                    title="Перегенерировать prompt и изображение"
+                    aria-label="Перегенерировать prompt и изображение"
+                    disabled={isLoading || imageActionBusy}
+                    onClick={() =>
+                      onRegeneratePromptAtIndexRef.current(msg.id, index)
+                    }
+                  >
+                    <RotateCw size={14} />
+                  </button>
+                </div>
+                <pre>{prompt}</pre>
+              </section>
+            ))}
+            {imageUrlsToRender.length > 0 ? (
+              <section
+                className="bubble-images"
+                aria-label="Сгенерированные изображения"
+              >
+                {imageUrlsToRender.map((url, index) => (
+                  <button
+                    key={`${msg.id}-img-${index}`}
+                    type="button"
+                    className="bubble-image-btn"
+                    onClick={() => {
+                      setPreviewSrc(url);
+                      const meta = imageMetaByUrl[url];
+                      setPreviewMeta(meta);
+                      setPreviewTarget({
+                        messageId: msg.id,
+                        sourceUrl: url,
+                        sourceIndex: index,
+                      });
+                    }}
+                  >
+                    <img
+                      src={url}
+                      alt={`generated-${index + 1}`}
+                      loading="lazy"
+                    />
+                  </button>
+                ))}
+              </section>
+            ) : null}
+            {msg.imageGenerationPending && imageSkeletonCount > 0 ? (
+              <section
+                className="bubble-images"
+                aria-label="Изображения создаются"
+              >
+                {Array.from({ length: imageSkeletonCount }).map((_, index) => (
+                  <div
+                    key={`${msg.id}-skeleton-${index}`}
+                    className="image-skeleton-card"
+                  />
+                ))}
+              </section>
+            ) : null}
+            {statusDetails ? (
+              <section
+                className="status-change-block"
+                aria-label="Изменения статуса"
+              >
+                <div className="comfy-prompt-head">Изменения статуса</div>
+                <pre>{statusDetails}</pre>
+              </section>
+            ) : null}
+            {relationshipProposalStatus ? (
+              <section
+                className="relationship-proposal-block"
+                aria-label="Предложение изменения отношений"
+              >
+                <div className="comfy-prompt-head">
+                  Предложение изменения отношений
+                </div>
+                <p className="relationship-proposal-summary">
+                  {relationshipProposalSummary ||
+                    "Предложен новый уровень отношений."}
+                </p>
+                {relationshipProposalStatus === "pending" ? (
+                  <div className="relationship-proposal-actions">
+                    <button
+                      type="button"
+                      className="mini primary"
+                      disabled={isLoading}
+                      onClick={() =>
+                        onResolveRelationshipProposalRef.current(
+                          msg.id,
+                          "accepted",
+                        )
+                      }
+                    >
+                      Принять
+                    </button>
+                    <button
+                      type="button"
+                      className="mini"
+                      disabled={isLoading}
+                      onClick={() =>
+                        onResolveRelationshipProposalRef.current(
+                          msg.id,
+                          "rejected",
+                        )
+                      }
+                    >
+                      Отклонить
+                    </button>
+                  </div>
+                ) : (
+                  <p
+                    className={`relationship-proposal-result ${relationshipProposalStatus}`}
+                  >
+                    {relationshipProposalStatus === "accepted"
+                      ? "Предложение принято."
+                      : "Предложение отклонено."}
+                  </p>
+                )}
+              </section>
+            ) : null}
+            <time>{formatShortTime(msg.createdAt)}</time>
+          </article>
+        );
+      }),
+    [
+      imageActionBusy,
+      imageMetaByUrl,
+      isLoading,
+      messages,
+      showStatusChangeDetails,
+      showSystemImageBlock,
+    ],
+  );
 
   return (
     <main className="chat">
       <header className="chat-header">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           <div>
             <h2>
               <button
@@ -296,13 +591,21 @@ export function ChatPane({
                   {activePersonaAvatarSrc ? (
                     <img src={activePersonaAvatarSrc} alt="" loading="lazy" />
                   ) : (
-                    <span>{(activePersona?.name || "?").trim().charAt(0).toUpperCase()}</span>
+                    <span>
+                      {(activePersona?.name || "?")
+                        .trim()
+                        .charAt(0)
+                        .toUpperCase()}
+                    </span>
                   )}
                 </span>
                 {activePersona?.name ?? "Не выбрана"} <ChevronDown size={14} />
               </div>
               {activePersonaState ? (
-                <div className="persona-state-badges" aria-label="Состояние персоны">
+                <div
+                  className="persona-state-badges"
+                  aria-label="Состояние персоны"
+                >
                   <span
                     className="state-pill"
                     title={`Настроение: ${getMoodLabel(activePersonaState.mood)}`}
@@ -350,7 +653,12 @@ export function ChatPane({
         </div>
         <div className="header-actions">
           {activeChatId ? (
-            <button className="icon-btn danger" type="button" onClick={onDeleteChat} title="Удалить чат">
+            <button
+              className="icon-btn danger"
+              type="button"
+              onClick={onDeleteChat}
+              title="Удалить чат"
+            >
               <Trash2 size={16} />
             </button>
           ) : null}
@@ -358,226 +666,11 @@ export function ChatPane({
       </header>
 
       <section className="messages">
-        {messages.map((msg) => {
-          const parsedAssistant =
-            msg.role === "assistant"
-              ? splitAssistantContent(msg.content)
-              : undefined;
-          const textToRender = parsedAssistant?.visibleText ?? msg.content;
-          const comfyImageDescriptionsToRender =
-            msg.role === "assistant" && showSystemImageBlock
-              ? (() => {
-                  const next = [
-                    ...(msg.comfyImageDescriptions ?? []),
-                    ...(parsedAssistant?.comfyImageDescriptions ?? []),
-                    ...(msg.comfyImageDescription ? [msg.comfyImageDescription] : []),
-                    ...(parsedAssistant?.comfyImageDescription
-                      ? [parsedAssistant.comfyImageDescription]
-                      : []),
-                  ]
-                    .map((value) => value.trim())
-                    .filter(Boolean);
-                  return Array.from(new Set(next));
-                })()
-              : [];
-          const comfyPromptsToRender =
-            msg.role === "assistant" && showSystemImageBlock
-              ? (() => {
-                  const next = [
-                    ...(msg.comfyPrompts ?? []),
-                    ...(parsedAssistant?.comfyPrompts ?? []),
-                    ...(msg.comfyPrompt ? [msg.comfyPrompt] : []),
-                    ...(parsedAssistant?.comfyPrompt
-                      ? [parsedAssistant.comfyPrompt]
-                      : []),
-                  ]
-                    .map((value) => value.trim())
-                    .filter(Boolean);
-                  return Array.from(new Set(next));
-                })()
-              : [];
-          const personaControlParsed =
-            msg.role === "assistant"
-              ? parsePersonaControlRaw(msg.personaControlRaw) ??
-                parsedAssistant?.personaControl
-              : undefined;
-          const personaControlToRender =
-            msg.role === "assistant" && showStatusChangeDetails
-              ? personaControlParsed
-              : undefined;
-          const relationshipProposal =
-            msg.role === "assistant"
-              ? extractRelationshipProposal(personaControlParsed)
-              : undefined;
-          const relationshipProposalType =
-            msg.relationshipProposalType ?? relationshipProposal?.type;
-          const relationshipProposalStage =
-            msg.relationshipProposalStage ?? relationshipProposal?.stage;
-          const relationshipProposalStatus =
-            msg.role === "assistant" &&
-            (relationshipProposalType || relationshipProposalStage)
-              ? msg.relationshipProposalStatus ?? "pending"
-              : undefined;
-          const relationshipProposalSummary = [
-            relationshipProposalType
-              ? `Тип: ${relationshipProposalType}`
-              : "",
-            relationshipProposalStage
-              ? `Этап: ${relationshipProposalStage}`
-              : "",
-          ]
-            .filter(Boolean)
-            .join(" • ");
-          const statusDetails = buildStatusDetails(personaControlToRender);
-          const imageUrlsToRender = msg.imageUrls ?? [];
-          const fallbackExpected = Math.max(
-            1,
-            comfyPromptsToRender.length ||
-              comfyImageDescriptionsToRender.length ||
-              (msg.comfyPrompt ? 1 : 0) ||
-              (msg.comfyImageDescription ? 1 : 0),
-          );
-          const expectedCount = msg.imageGenerationExpected ?? fallbackExpected;
-          const completedCount = msg.imageGenerationCompleted ?? imageUrlsToRender.length;
-          const imageSkeletonCount = Math.max(0, expectedCount - completedCount);
-
-          if (
-            !textToRender &&
-            comfyImageDescriptionsToRender.length === 0 &&
-            comfyPromptsToRender.length === 0 &&
-            imageUrlsToRender.length === 0 &&
-            !msg.imageGenerationPending &&
-            !statusDetails
-          ) {
-            return null;
-          }
-
-          return (
-            <article key={msg.id} className={`bubble ${msg.role}`}>
-              {textToRender ? <p>{textToRender}</p> : null}
-              {comfyImageDescriptionsToRender.map((description, index) => (
-                <section
-                  key={`${msg.id}-img-desc-${index}`}
-                  className="comfy-prompt-block"
-                  aria-label="ComfyUI image description"
-                >
-                  <div className="comfy-prompt-head">
-                    {comfyImageDescriptionsToRender.length > 1
-                      ? `Image description #${index + 1}`
-                      : "Image description"}
-                  </div>
-                  <pre>{description}</pre>
-                </section>
-              ))}
-              {comfyPromptsToRender.map((prompt, index) => (
-                <section key={`${msg.id}-comfy-${index}`} className="comfy-prompt-block" aria-label="ComfyUI prompt">
-                  <div className="comfy-prompt-head comfy-prompt-head-with-actions">
-                    <span>
-                      {comfyPromptsToRender.length > 1
-                        ? `ComfyUI prompt #${index + 1}`
-                        : "ComfyUI prompt"}
-                    </span>
-                    <button
-                      type="button"
-                      className="comfy-prompt-regenerate-btn"
-                      title="Перегенерировать prompt и изображение"
-                      aria-label="Перегенерировать prompt и изображение"
-                      disabled={isLoading || imageActionBusy}
-                      onClick={() => onRegeneratePromptAtIndex(msg.id, index)}
-                    >
-                      <RotateCw size={14} />
-                    </button>
-                  </div>
-                  <pre>{prompt}</pre>
-                </section>
-              ))}
-              {imageUrlsToRender.length > 0 ? (
-                <section className="bubble-images" aria-label="Сгенерированные изображения">
-                  {imageUrlsToRender.map((url, index) => (
-                    <button
-                      key={`${msg.id}-img-${index}`}
-                      type="button"
-                      className="bubble-image-btn"
-                      onClick={() => {
-                        setPreviewSrc(url);
-                        const meta = imageMetaByUrl[url];
-                        setPreviewMeta(meta);
-                        setPreviewTarget({
-                          messageId: msg.id,
-                          sourceUrl: url,
-                          sourceIndex: index,
-                        });
-                      }}
-                    >
-                      <img src={url} alt={`generated-${index + 1}`} loading="lazy" />
-                    </button>
-                  ))}
-                </section>
-              ) : null}
-              {msg.imageGenerationPending && imageSkeletonCount > 0 ? (
-                <section className="bubble-images" aria-label="Изображения создаются">
-                  {Array.from({ length: imageSkeletonCount }).map((_, index) => (
-                    <div key={`${msg.id}-skeleton-${index}`} className="image-skeleton-card" />
-                  ))}
-                </section>
-              ) : null}
-              {statusDetails ? (
-                <section className="status-change-block" aria-label="Изменения статуса">
-                  <div className="comfy-prompt-head">Изменения статуса</div>
-                  <pre>{statusDetails}</pre>
-                </section>
-              ) : null}
-              {relationshipProposalStatus ? (
-                <section
-                  className="relationship-proposal-block"
-                  aria-label="Предложение изменения отношений"
-                >
-                  <div className="comfy-prompt-head">
-                    Предложение изменения отношений
-                  </div>
-                  <p className="relationship-proposal-summary">
-                    {relationshipProposalSummary || "Предложен новый уровень отношений."}
-                  </p>
-                  {relationshipProposalStatus === "pending" ? (
-                    <div className="relationship-proposal-actions">
-                      <button
-                        type="button"
-                        className="mini primary"
-                        disabled={isLoading}
-                        onClick={() =>
-                          onResolveRelationshipProposal(msg.id, "accepted")
-                        }
-                      >
-                        Принять
-                      </button>
-                      <button
-                        type="button"
-                        className="mini"
-                        disabled={isLoading}
-                        onClick={() =>
-                          onResolveRelationshipProposal(msg.id, "rejected")
-                        }
-                      >
-                        Отклонить
-                      </button>
-                    </div>
-                  ) : (
-                    <p
-                      className={`relationship-proposal-result ${relationshipProposalStatus}`}
-                    >
-                      {relationshipProposalStatus === "accepted"
-                        ? "Предложение принято."
-                        : "Предложение отклонено."}
-                    </p>
-                  )}
-                </section>
-              ) : null}
-              <time>{formatShortTime(msg.createdAt)}</time>
-            </article>
-          );
-        })}
+        {renderedMessages}
         {messages.length === 0 ? (
-          <p className="empty-state">Начните диалог: отправьте первое сообщение.</p>
+          <p className="empty-state">
+            Начните диалог: отправьте первое сообщение.
+          </p>
         ) : null}
         <div ref={messagesEndRef} aria-hidden="true" />
       </section>
@@ -590,13 +683,16 @@ export function ChatPane({
             onChange={(e) => setMessageInput(e.target.value)}
             rows={1}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 onSubmitMessage(e as unknown as FormEvent);
               }
             }}
           />
-          <button type="submit" disabled={!messageInput.trim() || !activePersona || isLoading}>
+          <button
+            type="submit"
+            disabled={!messageInput.trim() || !activePersona || isLoading}
+          >
             <SendHorizontal size={20} />
           </button>
         </form>

@@ -954,6 +954,136 @@ export function GroupChatPane({
     }
     return issues;
   }, [events]);
+  const messageRenderMetaById = useMemo(() => {
+    const byId = new Map<
+      string,
+      {
+        textToRender: string;
+        imageAttachments: NonNullable<GroupMessage["imageAttachments"]>;
+        comfyImageDescriptionsToRender: string[];
+        comfyPromptsToRender: string[];
+        statusDetails: string;
+        relationDetails: string;
+        showRecoveryActions: boolean;
+        imageSkeletonCount: number;
+        bubbleRole: "user" | "assistant";
+        skip: boolean;
+      }
+    >();
+
+    for (const message of messages) {
+      const parsedAssistant =
+        message.authorType === "persona"
+          ? splitAssistantContent(message.content)
+          : undefined;
+      const textToRender = parsedAssistant?.visibleText ?? message.content;
+      const imageAttachments = message.imageAttachments ?? [];
+      const comfyImageDescriptionsToRender =
+        message.authorType === "persona" && showSystemImageBlock
+          ? (() => {
+              const next = [
+                ...(message.comfyImageDescriptions ?? []),
+                ...(parsedAssistant?.comfyImageDescriptions ?? []),
+                ...(message.comfyImageDescription
+                  ? [message.comfyImageDescription]
+                  : []),
+                ...(parsedAssistant?.comfyImageDescription
+                  ? [parsedAssistant.comfyImageDescription]
+                  : []),
+              ]
+                .map((value) => value.trim())
+                .filter(Boolean);
+              return Array.from(new Set(next));
+            })()
+          : [];
+      const comfyPromptsToRender =
+        message.authorType === "persona" && showSystemImageBlock
+          ? (() => {
+              const next = [
+                ...(message.comfyPrompts ?? []),
+                ...(parsedAssistant?.comfyPrompts ?? []),
+                ...(message.comfyPrompt ? [message.comfyPrompt] : []),
+                ...(parsedAssistant?.comfyPrompt
+                  ? [parsedAssistant.comfyPrompt]
+                  : []),
+              ]
+                .map((value) => value.trim())
+                .filter(Boolean);
+              return Array.from(new Set(next));
+            })()
+          : [];
+      const personaControlToRender =
+        message.authorType === "persona" && showStatusChangeDetails
+          ? (parsePersonaControlRaw(message.personaControlRaw) ??
+            parsedAssistant?.personaControl)
+          : undefined;
+      const statusDetails = buildStatusDetails(personaControlToRender);
+      const relationDetails =
+        showStatusChangeDetails && message.authorType === "persona"
+          ? buildRelationDetails(
+              relationDeltasByTurnId.get(message.turnId) ?? [],
+              personaNameById,
+            )
+          : "";
+      const fallbackExpected = Math.max(
+        1,
+        comfyPromptsToRender.length ||
+          comfyImageDescriptionsToRender.length ||
+          (message.comfyPrompt ? 1 : 0) ||
+          (message.comfyImageDescription ? 1 : 0),
+      );
+      const hasTrackedImageGeneration = Boolean(
+        message.imageGenerationExpected !== undefined ||
+          message.imageGenerationCompleted !== undefined ||
+          message.imageGenerationPending,
+      );
+      const expectedCount =
+        message.imageGenerationExpected ??
+        (hasTrackedImageGeneration ? fallbackExpected : 0);
+      const completedCount =
+        message.imageGenerationCompleted ??
+        (hasTrackedImageGeneration ? imageAttachments.length : 0);
+      const hasCountMismatchIssue =
+        hasTrackedImageGeneration &&
+        !message.imageGenerationPending &&
+        expectedCount > completedCount;
+      const hasImageIssue =
+        imageIssueByMessageId.has(message.id) || hasCountMismatchIssue;
+      const showRecoveryActions =
+        message.authorType === "persona" && hasImageIssue;
+      const imageSkeletonCount = Math.max(0, expectedCount - completedCount);
+      const skip =
+        !textToRender &&
+        comfyImageDescriptionsToRender.length === 0 &&
+        comfyPromptsToRender.length === 0 &&
+        imageAttachments.length === 0 &&
+        !message.imageGenerationPending &&
+        !statusDetails &&
+        !relationDetails;
+
+      byId.set(message.id, {
+        textToRender,
+        imageAttachments,
+        comfyImageDescriptionsToRender,
+        comfyPromptsToRender,
+        statusDetails,
+        relationDetails,
+        showRecoveryActions,
+        imageSkeletonCount,
+        bubbleRole: message.authorType === "user" ? "user" : "assistant",
+        skip,
+      });
+    }
+
+    return byId;
+  }, [
+    imageIssueByMessageId,
+    messages,
+    personaNameById,
+    relationDeltasByTurnId,
+    showStatusChangeDetails,
+    showSystemImageBlock,
+  ]);
 
   const resolveAvatar = (message: GroupMessage) => {
     if (message.authorType === "persona" && message.authorPersonaId) {
@@ -1263,105 +1393,22 @@ export function GroupChatPane({
 
       <section className="messages group-messages">
         {messages.map((message) => {
-          const parsedAssistant =
-            message.authorType === "persona"
-              ? splitAssistantContent(message.content)
-              : undefined;
-          const textToRender = parsedAssistant?.visibleText ?? message.content;
-          const avatarSrc = resolveAvatar(message);
-          const imageAttachments = message.imageAttachments ?? [];
-          const comfyImageDescriptionsToRender =
-            message.authorType === "persona" && showSystemImageBlock
-              ? (() => {
-                  const next = [
-                    ...(message.comfyImageDescriptions ?? []),
-                    ...(parsedAssistant?.comfyImageDescriptions ?? []),
-                    ...(message.comfyImageDescription
-                      ? [message.comfyImageDescription]
-                      : []),
-                    ...(parsedAssistant?.comfyImageDescription
-                      ? [parsedAssistant.comfyImageDescription]
-                      : []),
-                  ]
-                    .map((value) => value.trim())
-                    .filter(Boolean);
-                  return Array.from(new Set(next));
-                })()
-              : [];
-          const comfyPromptsToRender =
-            message.authorType === "persona" && showSystemImageBlock
-              ? (() => {
-                  const next = [
-                    ...(message.comfyPrompts ?? []),
-                    ...(parsedAssistant?.comfyPrompts ?? []),
-                    ...(message.comfyPrompt ? [message.comfyPrompt] : []),
-                    ...(parsedAssistant?.comfyPrompt
-                      ? [parsedAssistant.comfyPrompt]
-                      : []),
-                  ]
-                    .map((value) => value.trim())
-                    .filter(Boolean);
-                  return Array.from(new Set(next));
-                })()
-              : [];
-          const personaControlToRender =
-            message.authorType === "persona" && showStatusChangeDetails
-              ? (parsePersonaControlRaw(message.personaControlRaw) ??
-                parsedAssistant?.personaControl)
-              : undefined;
-          const statusDetails = buildStatusDetails(personaControlToRender);
-          const relationDetails =
-            showStatusChangeDetails && message.authorType === "persona"
-              ? buildRelationDetails(
-                  relationDeltasByTurnId.get(message.turnId) ?? [],
-                  personaNameById,
-                )
-              : "";
-          const fallbackExpected = Math.max(
-            1,
-            comfyPromptsToRender.length ||
-              comfyImageDescriptionsToRender.length ||
-              (message.comfyPrompt ? 1 : 0) ||
-              (message.comfyImageDescription ? 1 : 0),
-          );
-          const hasTrackedImageGeneration =
-            message.imageGenerationExpected !== undefined ||
-            message.imageGenerationCompleted !== undefined ||
-            message.imageGenerationPending;
-          const expectedCount =
-            message.imageGenerationExpected ??
-            (hasTrackedImageGeneration ? fallbackExpected : 0);
-          const completedCount =
-            message.imageGenerationCompleted ??
-            (hasTrackedImageGeneration ? imageAttachments.length : 0);
-          const hasCountMismatchIssue =
-            hasTrackedImageGeneration &&
-            !message.imageGenerationPending &&
-            expectedCount > completedCount;
-          const hasImageIssue =
-            imageIssueByMessageId.has(message.id) ||
-            hasCountMismatchIssue;
-          const showRecoveryActions =
-            message.authorType === "persona" && hasImageIssue;
-          const imageSkeletonCount = Math.max(
-            0,
-            expectedCount - completedCount,
-          );
-
-          if (
-            !textToRender &&
-            comfyImageDescriptionsToRender.length === 0 &&
-            comfyPromptsToRender.length === 0 &&
-            imageAttachments.length === 0 &&
-            !message.imageGenerationPending &&
-            !statusDetails &&
-            !relationDetails
-          ) {
+          const renderMeta = messageRenderMetaById.get(message.id);
+          if (!renderMeta || renderMeta.skip) {
             return null;
           }
-
-          const bubbleRole =
-            message.authorType === "user" ? "user" : "assistant";
+          const {
+            textToRender,
+            imageAttachments,
+            comfyImageDescriptionsToRender,
+            comfyPromptsToRender,
+            statusDetails,
+            relationDetails,
+            showRecoveryActions,
+            imageSkeletonCount,
+            bubbleRole,
+          } = renderMeta;
+          const avatarSrc = resolveAvatar(message);
 
           return (
             <article
