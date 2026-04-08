@@ -33,7 +33,6 @@ export interface PersonaControlPayload {
     relationshipType?: RelationshipType;
     relationshipDepth?: number;
     relationshipStage?: RelationshipStage;
-    activeTopicsAdd?: string[];
   };
   memory_add?: Array<{
     layer?: PersonaMemoryLayer;
@@ -53,26 +52,6 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
-function normalizeTopics(topics: string[]) {
-  const unique = new Set(
-    topics
-      .map((topic) => topic.trim().toLowerCase())
-      .filter((topic) => topic.length >= 3)
-      .slice(0, 12),
-  );
-  return Array.from(unique);
-}
-
-function inferTopicsFromMessage(text: string) {
-  return normalizeTopics(
-    text
-      .split(/[,.!?;:\n]/g)
-      .map((part) => part.trim())
-      .filter((part) => part.length > 4)
-      .map((part) => part.split(" ").slice(0, 4).join(" ")),
-  );
-}
-
 export function relationshipStageFromDepth(depth: number): RelationshipStage {
   if (depth >= 85) return "bonded";
   if (depth >= 65) return "close";
@@ -83,20 +62,6 @@ export function relationshipStageFromDepth(depth: number): RelationshipStage {
 
 function relationshipDepthFromTrust(trust: number) {
   return clamp(Math.round(trust * 0.9), 0, 100);
-}
-
-function relationshipDepthRange(stage: RelationshipStage): { min: number; max: number } {
-  if (stage === "new") return { min: 0, max: 24 };
-  if (stage === "acquaintance") return { min: 25, max: 44 };
-  if (stage === "friendly") return { min: 45, max: 64 };
-  if (stage === "close") return { min: 65, max: 84 };
-  return { min: 85, max: 100 };
-}
-
-function alignDepthToStage(depth: number, stage: RelationshipStage) {
-  const range = relationshipDepthRange(stage);
-  if (depth >= range.min && depth <= range.max) return depth;
-  return clamp(Math.round((range.min + range.max) / 2), 0, 100);
 }
 
 function isValidMood(value: unknown): value is PersonaRuntimeState["mood"] {
@@ -131,6 +96,119 @@ function isValidRelationshipType(value: unknown): value is RelationshipType {
     value === "mentor" ||
     value === "playful"
   );
+}
+
+const EXECUTABLE_PERSONA_INTENTS = new Set([
+  "flirt",
+  "deepen_connection",
+  "sensual_description",
+  "comfort",
+  "reassure",
+  "boundary_set",
+  "deescalate",
+  "ask_clarification",
+  "topic_shift",
+  "reflect_user",
+  "playful_banter",
+  "self_disclosure",
+]);
+
+const RELATIONSHIP_TYPE_INTENT_PREFIX = "propose_relationship_type:";
+const RELATIONSHIP_STAGE_INTENT_PREFIX = "propose_relationship_stage:";
+const MAX_CONTROL_INTENTS = 24;
+
+interface ParsedControlIntents {
+  normalized: string[];
+  executable: string[];
+  unknown: string[];
+  relationshipTypeProposal?: RelationshipType;
+  relationshipStageProposal?: RelationshipStage;
+}
+
+export interface RelationshipProposalIntent {
+  type?: RelationshipType;
+  stage?: RelationshipStage;
+}
+
+function normalizeIntentToken(raw: string) {
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return "";
+  const colonIdx = trimmed.indexOf(":");
+  if (colonIdx < 0) {
+    return trimmed.replace(/[\s-]+/g, "_");
+  }
+  const key = trimmed.slice(0, colonIdx).replace(/[\s-]+/g, "_");
+  const value = trimmed.slice(colonIdx + 1).trim().replace(/[\s-]+/g, "_");
+  return value ? `${key}:${value}` : key;
+}
+
+function parseControlIntents(rawIntents: unknown): ParsedControlIntents {
+  const normalized: string[] = [];
+  const executable: string[] = [];
+  const unknown: string[] = [];
+  let relationshipTypeProposal: RelationshipType | undefined;
+  let relationshipStageProposal: RelationshipStage | undefined;
+
+  if (!Array.isArray(rawIntents)) {
+    return { normalized, executable, unknown, relationshipTypeProposal, relationshipStageProposal };
+  }
+
+  const seen = new Set<string>();
+  for (const rawIntent of rawIntents) {
+    if (typeof rawIntent !== "string") continue;
+    const token = normalizeIntentToken(rawIntent);
+    if (!token || seen.has(token)) continue;
+    seen.add(token);
+
+    normalized.push(token);
+
+    if (token.startsWith(RELATIONSHIP_TYPE_INTENT_PREFIX)) {
+      const candidate = token.slice(RELATIONSHIP_TYPE_INTENT_PREFIX.length);
+      if (isValidRelationshipType(candidate)) {
+        executable.push(token);
+        if (!relationshipTypeProposal) relationshipTypeProposal = candidate;
+      } else {
+        unknown.push(token);
+      }
+      if (normalized.length >= MAX_CONTROL_INTENTS) break;
+      continue;
+    }
+
+    if (token.startsWith(RELATIONSHIP_STAGE_INTENT_PREFIX)) {
+      const candidate = token.slice(RELATIONSHIP_STAGE_INTENT_PREFIX.length);
+      if (isValidRelationshipStage(candidate)) {
+        executable.push(token);
+        if (!relationshipStageProposal) relationshipStageProposal = candidate;
+      } else {
+        unknown.push(token);
+      }
+      if (normalized.length >= MAX_CONTROL_INTENTS) break;
+      continue;
+    }
+
+    if (EXECUTABLE_PERSONA_INTENTS.has(token)) {
+      executable.push(token);
+    } else {
+      unknown.push(token);
+    }
+
+    if (normalized.length >= MAX_CONTROL_INTENTS) break;
+  }
+
+  return { normalized, executable, unknown, relationshipTypeProposal, relationshipStageProposal };
+}
+
+export function extractRelationshipProposal(
+  control: PersonaControlPayload | undefined,
+): RelationshipProposalIntent | undefined {
+  const parsed = parseControlIntents(control?.intents);
+  if (!parsed.relationshipTypeProposal && !parsed.relationshipStageProposal) {
+    return undefined;
+  }
+  return {
+    type: parsed.relationshipTypeProposal,
+    stage: parsed.relationshipStageProposal,
+  };
 }
 
 function isValidMemoryLayer(value: unknown): value is PersonaMemoryLayer {
@@ -186,7 +264,6 @@ function normalizeState(state: PersonaRuntimeState, personaId: string, chatId: s
     ),
     relationshipType,
     relationshipDepth,
-    activeTopics: normalizeTopics(state.activeTopics),
     relationshipStage: relationshipStageFromDepth(relationshipDepth),
   };
 }
@@ -208,7 +285,6 @@ export function createInitialPersonaState(persona: Persona, chatId: string): Per
     relationshipType: "neutral",
     relationshipDepth: 12,
     relationshipStage: "new",
-    activeTopics: [],
     updatedAt: now,
   };
 }
@@ -231,17 +307,10 @@ export function evolvePersonaState(
   assistantMessage: string,
 ): PersonaRuntimeState {
   const evolution = calculateStateEvolution(persona, prev, userMessage, assistantMessage);
-  
-  const topics = normalizeTopics([
-    ...prev.activeTopics,
-    ...inferTopicsFromMessage(userMessage),
-    ...inferTopicsFromMessage(assistantMessage),
-  ]);
 
   return {
     ...prev,
     ...evolution,
-    activeTopics: topics.slice(-8),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -306,11 +375,6 @@ function clampDelta(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, Math.round(value)));
 }
 
-function sanitizeTopicList(topics: unknown) {
-  if (!Array.isArray(topics)) return [];
-  return topics.filter((item): item is string => typeof item === "string").slice(0, 8);
-}
-
 function normalizeMemoryTextForCompare(text: string) {
   return text
     .toLowerCase()
@@ -347,9 +411,8 @@ export function applyPersonaControlProposal({
   userMessage,
 }: ApplyPersonaControlInput): ApplyPersonaControlResult {
   const stateDelta = control.state_delta ?? {};
-  const intents = Array.isArray(control.intents)
-    ? control.intents.filter((intent): intent is string => typeof intent === "string").slice(0, 12)
-    : [];
+  const parsedIntents = parseControlIntents(control.intents);
+  const intents = parsedIntents.normalized.slice(0, 12);
   const trustDelta = clampDelta(stateDelta.trust ?? 0, -8, 6);
   const engagementDelta = clampDelta(stateDelta.engagement ?? 0, -8, 8);
   const energyDelta = clampDelta(stateDelta.energy ?? 0, -10, 10);
@@ -402,19 +465,8 @@ export function applyPersonaControlProposal({
 
   const proposedMood = stateDelta.mood;
   const mood = (isValidMood(proposedMood) ? proposedMood : undefined) ?? baseState.mood;
-  const proposedStage = stateDelta.relationshipStage;
-  if (isValidRelationshipStage(proposedStage)) {
-    nextRelationshipDepth = alignDepthToStage(nextRelationshipDepth, proposedStage);
-  }
-  const relationshipStage = isValidRelationshipStage(proposedStage)
-    ? proposedStage
-    : relationshipStageFromDepth(nextRelationshipDepth);
-  const relationshipType = isValidRelationshipType(stateDelta.relationshipType)
-    ? stateDelta.relationshipType
-    : baseState.relationshipType;
-
-  const addTopics = sanitizeTopicList(stateDelta.activeTopicsAdd);
-  const activeTopics = normalizeTopics([...baseState.activeTopics, ...addTopics]).slice(-8);
+  const relationshipStage = relationshipStageFromDepth(nextRelationshipDepth);
+  const relationshipType = baseState.relationshipType;
 
   const state: PersonaRuntimeState = {
     ...baseState,
@@ -429,7 +481,6 @@ export function applyPersonaControlProposal({
     relationshipDepth: nextRelationshipDepth,
     mood,
     relationshipStage,
-    activeTopics,
     updatedAt: new Date().toISOString(),
   };
 

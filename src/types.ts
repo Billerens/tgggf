@@ -1,4 +1,37 @@
 export type ChatRole = "system" | "user" | "assistant";
+export type GroupRoomMode = "personas_only" | "personas_plus_user";
+export type GroupRoomStatus = "active" | "paused" | "archived";
+export type GroupRoomRuntimePhase =
+  | "idle"
+  | "orchestrating"
+  | "generating"
+  | "committing"
+  | "waiting_user"
+  | "paused"
+  | "error";
+export type GroupMessageAuthorType = "persona" | "user" | "system" | "orchestrator";
+export type GroupParticipantRole = "member" | "moderator" | "observer";
+export type GroupMentionTargetType = "persona" | "user" | "group";
+export type GroupEventType =
+  | "room_created"
+  | "room_mode_changed"
+  | "participant_added"
+  | "participant_removed"
+  | "user_injected"
+  | "orchestrator_tick_started"
+  | "speaker_selected"
+  | "persona_spoke"
+  | "message_image_requested"
+  | "message_image_generated"
+  | "mention_resolved"
+  | "relation_changed"
+  | "memory_shared_written"
+  | "memory_private_written"
+  | "room_waiting_user"
+  | "room_resumed"
+  | "room_paused"
+  | "orchestrator_invariant_blocked"
+  | "snapshot_written";
 export type MoodId =
   | "calm"
   | "warm"
@@ -11,11 +44,21 @@ export type MoodId =
   | "angry";
 export type RelationshipStage = "new" | "acquaintance" | "friendly" | "close" | "bonded";
 export type RelationshipType = "neutral" | "friendship" | "romantic" | "mentor" | "playful";
+export type RelationshipProposalStatus = "pending" | "accepted" | "rejected";
 export type PersonaMemoryKind = "fact" | "preference" | "goal" | "event";
 export type PersonaMemoryLayer = "short_term" | "episodic" | "long_term";
+export type GroupMemoryKind =
+  | "fact"
+  | "preference"
+  | "goal"
+  | "event"
+  | "rule"
+  | "decision";
+export type GroupMemoryLayer = "short_term" | "episodic" | "long_term";
 export type UserGender = "unspecified" | "male" | "female" | "nonbinary";
 export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
 export type AuthMode = "none" | "bearer" | "token" | "basic" | "custom";
+export type LlmProvider = "lmstudio" | "openrouter" | "huggingface";
 export type EnhanceDetailLevel = "soft" | "medium" | "strong";
 
 export interface EnhanceDetailLevelConfig {
@@ -150,6 +193,14 @@ export interface ChatSession {
   title: string;
   lastResponseId?: string;
   chatStyleStrength?: number;
+  conversationSummary?: string;
+  summaryFacts?: string[];
+  summaryGoals?: string[];
+  summaryOpenThreads?: string[];
+  summaryAgreements?: string[];
+  summaryCursorMessageId?: string;
+  summaryUpdatedAt?: string;
+  summaryTokenBudget?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -169,6 +220,160 @@ export interface ChatMessage {
   imageGenerationCompleted?: number;
   imageMetaByUrl?: Record<string, ImageGenerationMeta>;
   personaControlRaw?: string;
+  relationshipProposalType?: RelationshipType;
+  relationshipProposalStage?: RelationshipStage;
+  relationshipProposalStatus?: RelationshipProposalStatus;
+  relationshipProposalHandledAt?: string;
+  createdAt: string;
+}
+
+export interface GroupRoom {
+  id: string;
+  title: string;
+  mode: GroupRoomMode;
+  status: GroupRoomStatus;
+  state: {
+    phase: GroupRoomRuntimePhase;
+    updatedAt: string;
+    turnId?: string;
+    speakerPersonaId?: string;
+    reason?: string;
+    error?: string;
+  };
+  waitingForUser: boolean;
+  waitingReason?: string;
+  lastTickAt?: string;
+  lastResponseId?: string;
+  orchestratorUserFocusMessageId?: string;
+  orchestratorVersion: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GroupParticipant {
+  id: string;
+  roomId: string;
+  personaId: string;
+  role: GroupParticipantRole;
+  initiativeBias: number;
+  talkCooldownMs: number;
+  muteUntil?: string;
+  aliveScore: number;
+  joinedAt: string;
+  updatedAt: string;
+}
+
+export interface GroupMessageMention {
+  targetType: GroupMentionTargetType;
+  targetId: string;
+  label: string;
+  start: number;
+  end: number;
+}
+
+export interface GroupMessageImageAttachment {
+  url: string;
+  imageId?: string;
+  meta?: ImageGenerationMeta;
+}
+
+export interface GroupMessage {
+  id: string;
+  roomId: string;
+  turnId: string;
+  authorType: GroupMessageAuthorType;
+  authorPersonaId?: string;
+  authorDisplayName: string;
+  authorAvatarUrl?: string;
+  content: string;
+  mentions?: GroupMessageMention[];
+  imageAttachments?: GroupMessageImageAttachment[];
+  comfyPrompt?: string;
+  comfyPrompts?: string[];
+  comfyImageDescription?: string;
+  comfyImageDescriptions?: string[];
+  imageGenerationPending?: boolean;
+  imageGenerationExpected?: number;
+  imageGenerationCompleted?: number;
+  imageMetaByUrl?: Record<string, ImageGenerationMeta>;
+  personaControlRaw?: string;
+  createdAt: string;
+}
+
+export interface GroupEvent {
+  id: string;
+  roomId: string;
+  turnId?: string;
+  type: GroupEventType;
+  payload: Record<string, unknown>;
+  causationId?: string;
+  correlationId?: string;
+  createdAt: string;
+}
+
+export interface GroupPersonaState {
+  id: string;
+  roomId: string;
+  personaId: string;
+  mood: MoodId;
+  trustToUser: number;
+  energy: number;
+  engagement: number;
+  initiative: number;
+  affectionToUser: number;
+  tension: number;
+  activeTopics: string[];
+  currentIntent?: string;
+  aliveScore: number;
+  updatedAt: string;
+}
+
+export interface GroupRelationEdge {
+  id: string;
+  roomId: string;
+  fromPersonaId: string;
+  toPersonaId: string;
+  trust: number;
+  respect: number;
+  affinity: number;
+  tension: number;
+  influence: number;
+  attraction: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GroupMemoryShared {
+  id: string;
+  roomId: string;
+  layer: GroupMemoryLayer;
+  kind: GroupMemoryKind;
+  content: string;
+  salience: number;
+  createdAt: string;
+  updatedAt: string;
+  lastReferencedAt?: string;
+}
+
+export interface GroupMemoryPrivate {
+  id: string;
+  roomId: string;
+  personaId: string;
+  layer: GroupMemoryLayer;
+  kind: GroupMemoryKind;
+  content: string;
+  salience: number;
+  createdAt: string;
+  updatedAt: string;
+  lastReferencedAt?: string;
+}
+
+export interface GroupSnapshot {
+  id: string;
+  roomId: string;
+  eventCursor?: string;
+  revision: number;
+  state: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -223,7 +428,6 @@ export interface PersonaRuntimeState {
   relationshipType: RelationshipType;
   relationshipDepth: number;
   relationshipStage: RelationshipStage;
-  activeTopics: string[];
   updatedAt: string;
 }
 
@@ -242,9 +446,18 @@ export interface PersonaMemory {
 
 export interface AppSettings {
   lmBaseUrl: string;
+  openRouterBaseUrl: string;
+  huggingFaceBaseUrl: string;
   comfyBaseUrl: string;
   saveComfyOutputs: boolean;
+  oneToOneProvider: LlmProvider;
+  groupOrchestratorProvider: LlmProvider;
+  groupPersonaProvider: LlmProvider;
+  imagePromptProvider: LlmProvider;
+  personaGenerationProvider: LlmProvider;
   model: string;
+  groupOrchestratorModel: string;
+  groupPersonaModel: string;
   imagePromptModel: string;
   personaGenerationModel: string;
   temperature: number;
@@ -252,7 +465,10 @@ export interface AppSettings {
   chatStyleStrength: number;
   apiKey: string;
   lmAuth: EndpointAuthConfig;
+  openRouterAuth: EndpointAuthConfig;
+  huggingFaceAuth: EndpointAuthConfig;
   comfyAuth: EndpointAuthConfig;
+  userName: string;
   userGender: UserGender;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;

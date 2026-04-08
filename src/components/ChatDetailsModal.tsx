@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
+import type { PersonaControlPayload } from "../personaDynamics";
 import type {
   AppSettings,
   ChatMessage,
@@ -14,6 +15,7 @@ import type {
   LookEnhanceTarget,
 } from "../ui/types";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
+import { splitAssistantContent } from "../messageContent";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface ChatDetailsModalProps {
@@ -141,6 +143,75 @@ function groupMemories(memories: PersonaMemory[]) {
   };
 }
 
+function compactText(value: string | undefined, max = 220) {
+  if (!value) return "";
+  const oneLine = value.replace(/\s+/g, " ").trim();
+  if (!oneLine) return "";
+  if (oneLine.length <= max) return oneLine;
+  return `${oneLine.slice(0, max - 1)}…`;
+}
+
+function parsePersonaControlRaw(raw: string | undefined) {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as PersonaControlPayload;
+  } catch {
+    return undefined;
+  }
+}
+
+function getVisibleMessageText(message: ChatMessage) {
+  if (message.role !== "assistant") return message.content ?? "";
+  return splitAssistantContent(message.content).visibleText || message.content;
+}
+
+function getPersonaControlFromMessage(message: ChatMessage) {
+  const fromRaw = parsePersonaControlRaw(message.personaControlRaw);
+  if (fromRaw) return fromRaw;
+  return splitAssistantContent(message.content).personaControl;
+}
+
+function findLastMessageByRole(messages: ChatMessage[], role: ChatMessage["role"]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === role) return message;
+  }
+  return undefined;
+}
+
+function formatDelta(label: string, value: number | undefined) {
+  if (!Number.isFinite(value)) return null;
+  const sign = value && value > 0 ? "+" : "";
+  return `${label}: ${sign}${value}`;
+}
+
+function formatStateDelta(
+  stateDelta: NonNullable<PersonaControlPayload["state_delta"]> | undefined,
+) {
+  if (!stateDelta) return "—";
+  const parts: string[] = [];
+  const trust = formatDelta("trust", stateDelta.trust);
+  const engagement = formatDelta("engagement", stateDelta.engagement);
+  const energy = formatDelta("energy", stateDelta.energy);
+  const lust = formatDelta("lust", stateDelta.lust);
+  const fear = formatDelta("fear", stateDelta.fear);
+  const affection = formatDelta("affection", stateDelta.affection);
+  const tension = formatDelta("tension", stateDelta.tension);
+  const relationshipDepth = formatDelta("relationshipDepth", stateDelta.relationshipDepth);
+  if (trust) parts.push(trust);
+  if (engagement) parts.push(engagement);
+  if (energy) parts.push(energy);
+  if (lust) parts.push(lust);
+  if (fear) parts.push(fear);
+  if (affection) parts.push(affection);
+  if (tension) parts.push(tension);
+  if (stateDelta.mood) parts.push(`mood: ${stateDelta.mood}`);
+  if (stateDelta.relationshipType) parts.push(`relationshipType: ${stateDelta.relationshipType}`);
+  if (relationshipDepth) parts.push(relationshipDepth);
+  if (stateDelta.relationshipStage) parts.push(`relationshipStage: ${stateDelta.relationshipStage}`);
+  return parts.length > 0 ? parts.join(" | ") : "—";
+}
+
 export function ChatDetailsModal({
   open,
   chat,
@@ -173,6 +244,43 @@ export function ChatDetailsModal({
     [messages, imageMetaByUrl],
   );
   const memoryByLayer = useMemo(() => groupMemories(memories), [memories]);
+  const lastUserMessage = useMemo(() => findLastMessageByRole(messages, "user"), [messages]);
+  const lastAssistantMessage = useMemo(() => findLastMessageByRole(messages, "assistant"), [messages]);
+  const lastControl = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== "assistant") continue;
+      const control = getPersonaControlFromMessage(message);
+      if (!control) continue;
+      return { message, control };
+    }
+    return null;
+  }, [messages]);
+  const lastRelationshipProposalMessage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== "assistant") continue;
+      if (!message.relationshipProposalType && !message.relationshipProposalStage) continue;
+      return message;
+    }
+    return undefined;
+  }, [messages]);
+  const lastUserPreview = useMemo(
+    () => compactText(lastUserMessage ? getVisibleMessageText(lastUserMessage) : "", 260) || "—",
+    [lastUserMessage],
+  );
+  const lastAssistantPreview = useMemo(
+    () => compactText(lastAssistantMessage ? getVisibleMessageText(lastAssistantMessage) : "", 260) || "—",
+    [lastAssistantMessage],
+  );
+  const summaryPreview = useMemo(
+    () => compactText(chat?.conversationSummary?.trim() || "", 260) || "—",
+    [chat?.conversationSummary],
+  );
+  const summaryFactsCount = chat?.summaryFacts?.length ?? 0;
+  const summaryGoalsCount = chat?.summaryGoals?.length ?? 0;
+  const summaryOpenThreadsCount = chat?.summaryOpenThreads?.length ?? 0;
+  const summaryAgreementsCount = chat?.summaryAgreements?.length ?? 0;
   const previewResolvedMeta = previewAttachment
     ? previewMeta ?? imageMetaByUrl[previewAttachment.src]
     : previewMeta;
@@ -305,26 +413,34 @@ export function ChatDetailsModal({
               </div>
 
               <div className="status-card">
-                <h4>Runtime state</h4>
+                <h4>Runtime state (кратко)</h4>
                 {runtimeState ? (
                   <>
                     <p>mood: {runtimeState.mood}</p>
+                    <p>
+                      relationship: {runtimeState.relationshipType} / {runtimeState.relationshipStage}
+                    </p>
                     <p>trust: {runtimeState.trust}</p>
                     <p>engagement: {runtimeState.engagement}</p>
                     <p>energy: {runtimeState.energy}</p>
-                    <p>lust: {runtimeState.lust}</p>
-                    <p>fear: {runtimeState.fear}</p>
-                    <p>affection: {runtimeState.affection}</p>
-                    <p>tension: {runtimeState.tension}</p>
-                    <p>relationshipType: {runtimeState.relationshipType}</p>
                     <p>relationshipDepth: {runtimeState.relationshipDepth}</p>
-                    <p>relationshipStage: {runtimeState.relationshipStage}</p>
-                    <p>topics: {runtimeState.activeTopics.join(", ") || "—"}</p>
                     <p>updatedAt: {formatDateTime(runtimeState.updatedAt)}</p>
                   </>
                 ) : (
                   <p>Состояние пока не инициализировано.</p>
                 )}
+              </div>
+
+              <div className="status-card">
+                <h4>Chat Summary (кратко)</h4>
+                <p className="status-caption">Что персона сейчас держит в голове.</p>
+                <p className="status-block-text">{summaryPreview}</p>
+                <p>updatedAt: {formatDateTime(chat?.summaryUpdatedAt ?? "")}</p>
+                <p>tokenBudget: {Number.isFinite(chat?.summaryTokenBudget) ? chat?.summaryTokenBudget : "—"}</p>
+                <p>
+                  facts/goals/threads/agreements: {summaryFactsCount}/{summaryGoalsCount}/
+                  {summaryOpenThreadsCount}/{summaryAgreementsCount}
+                </p>
               </div>
 
               <div className="status-card">
@@ -382,30 +498,154 @@ export function ChatDetailsModal({
               </div>
             </div>
 
-            <div className="memory-section">
-              <h4>Память</h4>
-              <p className="memory-summary">
-                Всего: {memories.length} | short-term: {memoryByLayer.shortTerm.length} | episodic:{" "}
-                {memoryByLayer.episodic.length} | long-term: {memoryByLayer.longTerm.length}
-              </p>
-              {memories.length === 0 ? (
-                <p className="empty-state">Память по этому чату пока пустая.</p>
-              ) : (
-                <div className="memory-list">
-                  {memories.map((memory) => (
-                    <article key={memory.id} className="memory-item">
-                      <div className="memory-head">
-                        <strong>
-                          {memory.layer} / {memory.kind}
-                        </strong>
-                        <span>salience: {memory.salience.toFixed(2)}</span>
-                      </div>
-                      <p>{memory.content}</p>
-                      <time>{formatDateTime(memory.updatedAt)}</time>
-                    </article>
-                  ))}
+            <div className="status-accordion-list">
+              <details className="status-accordion">
+                <summary>Runtime state (детально)</summary>
+                <div className="status-accordion-body">
+                  {runtimeState ? (
+                    <>
+                      <p>mood: {runtimeState.mood}</p>
+                      <p>trust: {runtimeState.trust}</p>
+                      <p>engagement: {runtimeState.engagement}</p>
+                      <p>energy: {runtimeState.energy}</p>
+                      <p>lust: {runtimeState.lust}</p>
+                      <p>fear: {runtimeState.fear}</p>
+                      <p>affection: {runtimeState.affection}</p>
+                      <p>tension: {runtimeState.tension}</p>
+                      <p>relationshipType: {runtimeState.relationshipType}</p>
+                      <p>relationshipDepth: {runtimeState.relationshipDepth}</p>
+                      <p>relationshipStage: {runtimeState.relationshipStage}</p>
+                      <p>updatedAt: {formatDateTime(runtimeState.updatedAt)}</p>
+                    </>
+                  ) : (
+                    <p>Состояние пока не инициализировано.</p>
+                  )}
                 </div>
-              )}
+              </details>
+
+              <details className="status-accordion">
+                <summary>Chat Summary (что персона видит в голове)</summary>
+                <div className="status-accordion-body">
+                  <p className="status-block-text">{chat?.conversationSummary?.trim() || "—"}</p>
+                  <p>updatedAt: {formatDateTime(chat?.summaryUpdatedAt ?? "")}</p>
+                  <p>tokenBudget: {Number.isFinite(chat?.summaryTokenBudget) ? chat?.summaryTokenBudget : "—"}</p>
+                  <p>cursorMessageId: {chat?.summaryCursorMessageId?.trim() || "—"}</p>
+
+                  <div className="status-subsection">
+                    <p className="status-subtitle">facts</p>
+                    {chat?.summaryFacts && chat.summaryFacts.length > 0 ? (
+                      <ul className="status-list">
+                        {chat.summaryFacts.map((fact, index) => (
+                          <li key={`summary-fact-${index}`}>{fact}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>—</p>
+                    )}
+                  </div>
+
+                  <div className="status-subsection">
+                    <p className="status-subtitle">goals</p>
+                    {chat?.summaryGoals && chat.summaryGoals.length > 0 ? (
+                      <ul className="status-list">
+                        {chat.summaryGoals.map((goal, index) => (
+                          <li key={`summary-goal-${index}`}>{goal}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>—</p>
+                    )}
+                  </div>
+
+                  <div className="status-subsection">
+                    <p className="status-subtitle">openThreads</p>
+                    {chat?.summaryOpenThreads && chat.summaryOpenThreads.length > 0 ? (
+                      <ul className="status-list">
+                        {chat.summaryOpenThreads.map((thread, index) => (
+                          <li key={`summary-thread-${index}`}>{thread}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>—</p>
+                    )}
+                  </div>
+
+                  <div className="status-subsection">
+                    <p className="status-subtitle">agreements</p>
+                    {chat?.summaryAgreements && chat.summaryAgreements.length > 0 ? (
+                      <ul className="status-list">
+                        {chat.summaryAgreements.map((agreement, index) => (
+                          <li key={`summary-agreement-${index}`}>{agreement}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>—</p>
+                    )}
+                  </div>
+                </div>
+              </details>
+
+              <details className="status-accordion">
+                <summary>Последние сигналы и control</summary>
+                <div className="status-accordion-body">
+                  <p>lastUserInputAt: {formatDateTime(lastUserMessage?.createdAt ?? "")}</p>
+                  <p className="status-block-text">{lastUserPreview}</p>
+                  <p>lastPersonaReplyAt: {formatDateTime(lastAssistantMessage?.createdAt ?? "")}</p>
+                  <p className="status-block-text">{lastAssistantPreview}</p>
+                  <p>lastControlAt: {formatDateTime(lastControl?.message.createdAt ?? "")}</p>
+                  <p>intents: {lastControl?.control.intents?.join(", ") || "—"}</p>
+                  <p>state_delta: {formatStateDelta(lastControl?.control.state_delta)}</p>
+                  <p>
+                    memory_add: {lastControl?.control.memory_add?.length ?? 0} | memory_remove:{" "}
+                    {lastControl?.control.memory_remove?.length ?? 0}
+                  </p>
+                  <p>
+                    relationshipProposal:{" "}
+                    {lastRelationshipProposalMessage
+                      ? [
+                          lastRelationshipProposalMessage.relationshipProposalType
+                            ? `type=${lastRelationshipProposalMessage.relationshipProposalType}`
+                            : "",
+                          lastRelationshipProposalMessage.relationshipProposalStage
+                            ? `stage=${lastRelationshipProposalMessage.relationshipProposalStage}`
+                            : "",
+                          lastRelationshipProposalMessage.relationshipProposalStatus
+                            ? `status=${lastRelationshipProposalMessage.relationshipProposalStatus}`
+                            : "",
+                        ]
+                          .filter(Boolean)
+                          .join(", ") || "есть, но без деталей"
+                      : "—"}
+                  </p>
+                </div>
+              </details>
+
+              <details className="status-accordion">
+                <summary>
+                  Память ({memories.length}) • short {memoryByLayer.shortTerm.length} • episodic{" "}
+                  {memoryByLayer.episodic.length} • long {memoryByLayer.longTerm.length}
+                </summary>
+                <div className="status-accordion-body">
+                  {memories.length === 0 ? (
+                    <p className="empty-state">Память по этому чату пока пустая.</p>
+                  ) : (
+                    <div className="memory-list">
+                      {memories.map((memory) => (
+                        <article key={memory.id} className="memory-item">
+                          <div className="memory-head">
+                            <strong>
+                              {memory.layer} / {memory.kind}
+                            </strong>
+                            <span>salience: {memory.salience.toFixed(2)}</span>
+                          </div>
+                          <p>{memory.content}</p>
+                          <time>{formatDateTime(memory.updatedAt)}</time>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </details>
             </div>
           </section>
         )}

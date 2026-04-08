@@ -2,7 +2,7 @@ import { createDefaultAdvancedProfile } from "../personaProfiles";
 import type { Persona } from "../types";
 
 export type PersonaDraft = Omit<Persona, "id" | "createdAt" | "updatedAt">;
-export type SidebarTab = "chats" | "personas" | "generation";
+export type SidebarTab = "chats" | "groups" | "personas" | "generation";
 export type PersonaModalTab = "editor" | "generator";
 export type LookDetailLevel = "off" | "soft" | "medium" | "strong";
 export type LookEnhanceTarget =

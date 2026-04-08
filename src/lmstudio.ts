@@ -1,6 +1,7 @@
 import type {
   AppSettings,
   EndpointAuthConfig,
+  LlmProvider,
   NativeChatResponse,
   Persona,
   PersonaAdvancedProfile,
@@ -31,6 +32,13 @@ export interface ChatCompletionContext {
   runtimeState?: PersonaRuntimeState;
   memoryCard?: LayeredMemoryContextCard;
   recentMessages?: Array<{ role: "user" | "assistant"; content: string }>;
+  conversationSummary?: {
+    summary?: string;
+    facts?: string[];
+    goals?: string[];
+    openThreads?: string[];
+    agreements?: string[];
+  };
 }
 
 function sentenceLengthRule(
@@ -167,6 +175,51 @@ function formatRecentMessages(
   return lines.join("\n");
 }
 
+function summarizeListItems(
+  items: string[] | undefined,
+  label: string,
+  emptyLabel = "none",
+  maxItems = 8,
+  maxLen = 220,
+) {
+  if (!items || items.length === 0) return `${label}: ${emptyLabel}`;
+  const cleaned = items
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, maxItems)
+    .map((item) =>
+      item.length > maxLen
+        ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`
+        : item,
+    );
+  if (cleaned.length === 0) return `${label}: ${emptyLabel}`;
+  return `${label}:\n${cleaned.map((item) => `- ${item}`).join("\n")}`;
+}
+
+function formatConversationSummaryContext(
+  context: ChatCompletionContext["conversationSummary"] | undefined,
+) {
+  if (!context) return "none";
+  const summary = (context.summary || "").trim();
+  const facts = context.facts ?? [];
+  const goals = context.goals ?? [];
+  const openThreads = context.openThreads ?? [];
+  const agreements = context.agreements ?? [];
+  const hasStructured =
+    facts.length > 0 ||
+    goals.length > 0 ||
+    openThreads.length > 0 ||
+    agreements.length > 0;
+  if (!summary && !hasStructured) return "none";
+  return [
+    `Narrative summary: ${summary || "none"}`,
+    summarizeListItems(facts, "Stable facts"),
+    summarizeListItems(goals, "User goals"),
+    summarizeListItems(openThreads, "Open threads"),
+    summarizeListItems(agreements, "Agreements"),
+  ].join("\n");
+}
+
 function formatAppearanceProfile(
   appearance: PersonaAppearanceProfile | undefined,
 ) {
@@ -208,7 +261,7 @@ function formatLookPromptCacheInput(
 
 export function buildSystemPrompt(
   persona: Persona,
-  settings: Pick<AppSettings, "userGender">,
+  settings: Pick<AppSettings, "userGender" | "userName">,
   context?: ChatCompletionContext,
 ) {
   const runtimeState = context?.runtimeState;
@@ -220,6 +273,9 @@ export function buildSystemPrompt(
     ...(context?.memoryCard?.longTerm.map((m) => m.content) || []),
   ];
   const memoryContext = formatMemoryContextWithUsage(memories);
+  const conversationSummaryContext = formatConversationSummaryContext(
+    context?.conversationSummary,
+  );
 
   return [
     "=== HARD CONSTRAINTS ===",
@@ -264,17 +320,20 @@ export function buildSystemPrompt(
     "",
     "После каждого ответа добавляй технический блок:",
     "<persona_control>",
-    '{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipType":"neutral","relationshipDepth":0,"relationshipStage":"new"},"memory_add":[],"memory_remove":[]}',
+    '{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipDepth":0},"memory_add":[],"memory_remove":[]}',
     "</persona_control>",
     "Если изменений нет, оставь нули и пустые массивы. Без пояснений.",
     "Ты сама определяешь intents, state_delta и операции памяти (memory_add/memory_remove).",
+    "Исполняемые intents (whitelist): flirt, deepen_connection, sensual_description, comfort, reassure, boundary_set, deescalate, ask_clarification, topic_shift, reflect_user, playful_banter, self_disclosure.",
     "Разрешённые mood: calm, warm, playful, focused, analytical, inspired, annoyed, upset, angry.",
-    "Разрешённые relationshipType: neutral, friendship, romantic, mentor, playful.",
-    "Разрешённые relationshipStage: new, acquaintance, friendly, close, bonded.",
+    "Не заполняй relationshipType и relationshipStage в state_delta: эти поля рассчитываются системой.",
+    "Если считаешь, что пора сменить тип/стадию отношений, ОБЯЗАТЕЛЬНО добавь intent-предложение: propose_relationship_type:<type> или propose_relationship_stage:<stage>.",
+    "Неизвестные intents допускаются для внутренней семантики, но напрямую не исполняются движком.",
+    "Допустимые type: neutral, friendship, romantic, mentor, playful.",
+    "Допустимые stage: new, acquaintance, friendly, close, bonded.",
     "Для state_delta используй небольшие шаги; избегай резких скачков.",
     "Лимиты дельт state_delta: trust [-8..+6], engagement [-8..+8], energy [-10..+10], lust [-8..+8], fear [-10..+10], affection [-8..+8], tension [-10..+10], relationshipDepth [-6..+6].",
     "Обычно предпочитай мягкие изменения в диапазоне -3..+3, если контекст не требует иного.",
-    "relationshipType и relationshipStage меняй редко и только при явных основаниях в диалоге.",
     "Для фактов/предпочтений/целей пользователя добавляй memory_add с kind=fact|preference|goal.",
     "memory_add для long_term должен быть атомарным (один факт), коротким и без дословных цитат пользователя.",
     "Не сохраняй в long_term разовые запросы, ситуативные команды и мета-реплики (например: просьбы показать фото/картинку/селфи, рассказать что-то, сгенерировать...).",
@@ -327,6 +386,9 @@ export function buildSystemPrompt(
       ? `Текущее состояние: mood=${runtimeState.mood}; trust=${runtimeState.trust}; energy=${runtimeState.energy}; engagement=${runtimeState.engagement}; lust=${runtimeState.lust}; fear=${runtimeState.fear}; affection=${runtimeState.affection}; tension=${runtimeState.tension}; relationshipType=${runtimeState.relationshipType}; relationshipDepth=${runtimeState.relationshipDepth}; stage=${runtimeState.relationshipStage}.`
       : "Текущее состояние: нет данных, начни нейтрально-тепло.",
     "",
+    "=== CONVERSATION SUMMARY ===",
+    conversationSummaryContext,
+    "",
     "=== MEMORY CONTEXT ===",
     memoryContext,
     "",
@@ -338,7 +400,9 @@ export function buildSystemPrompt(
     relationshipExpressionRule(runtimeState),
     "Если вопрос неясен, задай 1 уточняющий вопрос.",
     personaSelfGenderRule(persona),
+    `Имя пользователя: ${settings.userName}.`,
     `Пол пользователя: ${userGenderLabel(settings.userGender)}.`,
+    "Учитывай имя пользователя в обращении и персонализации ответа.",
     "Учитывай пол пользователя в обращении и согласовании форм.",
     "Не показывай persona_control пользователю как часть обычного текста.",
   ].join("\n");
@@ -354,31 +418,171 @@ interface NativeChatResult {
   responseId?: string;
 }
 
-export async function requestChatCompletion(
+export interface GenericChatRequest {
+  model?: string;
+  input: string;
+  systemPrompt: string;
+  maxOutputTokens: number;
+  temperature: number;
+  store?: boolean;
+  previousResponseId?: string;
+}
+
+export type ModelRoutingTask =
+  | "one_to_one_chat"
+  | "group_orchestrator"
+  | "group_persona"
+  | "image_prompt"
+  | "persona_generation";
+
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
+
+function normalizeProvider(value: unknown): LlmProvider {
+  return value === "openrouter" || value === "huggingface" ? value : "lmstudio";
+}
+
+function resolveProviderForTask(
   settings: AppSettings,
-  persona: Persona,
-  userInput: string,
-  previousResponseId?: string,
-  context?: ChatCompletionContext,
-): Promise<NativeChatResult> {
-  const baseUrl = settings.lmBaseUrl.replace(/\/+$/, "");
-  const endpoint = `${baseUrl}/api/v1/chat`;
-
-  const payload: Record<string, unknown> = {
-    model: settings.model,
-    input: formatRecentMessages(context?.recentMessages, userInput),
-    system_prompt: buildSystemPrompt(persona, settings, context),
-    max_output_tokens: settings.maxTokens,
-    temperature: settings.temperature,
-    store: true,
-  };
-  if (previousResponseId) {
-    payload.previous_response_id = previousResponseId;
+  task: ModelRoutingTask,
+): LlmProvider {
+  if (task === "group_orchestrator") {
+    return normalizeProvider(settings.groupOrchestratorProvider);
   }
+  if (task === "group_persona") {
+    return normalizeProvider(settings.groupPersonaProvider);
+  }
+  if (task === "image_prompt") {
+    return normalizeProvider(settings.imagePromptProvider);
+  }
+  if (task === "persona_generation") {
+    return normalizeProvider(settings.personaGenerationProvider);
+  }
+  return normalizeProvider(settings.oneToOneProvider);
+}
 
+function resolveModelForTask(settings: AppSettings, task: ModelRoutingTask) {
+  if (task === "group_orchestrator") {
+    return toTrimmedString(settings.groupOrchestratorModel) || settings.model;
+  }
+  if (task === "group_persona") {
+    return toTrimmedString(settings.groupPersonaModel) || settings.model;
+  }
+  if (task === "image_prompt") {
+    return resolveImagePromptModel(settings);
+  }
+  if (task === "persona_generation") {
+    return resolvePersonaGenerationModel(settings);
+  }
+  return toTrimmedString(settings.model);
+}
+
+function resolveProviderBaseUrl(settings: AppSettings, provider: LlmProvider) {
+  if (provider === "openrouter") {
+    return (
+      toTrimmedString(settings.openRouterBaseUrl) || DEFAULT_OPENROUTER_BASE_URL
+    );
+  }
+  if (provider === "huggingface") {
+    return (
+      toTrimmedString(settings.huggingFaceBaseUrl) ||
+      DEFAULT_HUGGINGFACE_BASE_URL
+    );
+  }
+  return toTrimmedString(settings.lmBaseUrl);
+}
+
+function resolveProviderAuth(settings: AppSettings, provider: LlmProvider) {
+  if (provider === "openrouter") return settings.openRouterAuth;
+  if (provider === "huggingface") return settings.huggingFaceAuth;
+  return settings.lmAuth;
+}
+
+function parseOpenAiMessageContent(content: unknown): string {
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .map((chunk) => {
+      if (typeof chunk === "string") return chunk.trim();
+      if (!chunk || typeof chunk !== "object") return "";
+      const text = (chunk as Record<string, unknown>).text;
+      if (typeof text === "string") return text.trim();
+      const maybeContent = (chunk as Record<string, unknown>).content;
+      return typeof maybeContent === "string" ? maybeContent.trim() : "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+async function requestProviderChatCompletion(
+  settings: AppSettings,
+  provider: LlmProvider,
+  request: Required<GenericChatRequest>,
+) {
+  const baseUrl = normalizeBaseUrl(resolveProviderBaseUrl(settings, provider));
+  const auth = resolveProviderAuth(settings, provider);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
+    ...buildAuthHeaders(auth, settings.apiKey),
+  };
+
+  if (provider === "openrouter" && typeof window !== "undefined") {
+    headers["HTTP-Referer"] = window.location.origin;
+    headers["X-Title"] = "tg-gf";
+  }
+
+  if (provider === "lmstudio") {
+    const endpoint = `${baseUrl}/api/v1/chat`;
+    const payload: Record<string, unknown> = {
+      model: request.model,
+      input: request.input,
+      system_prompt: request.systemPrompt,
+      max_output_tokens: request.maxOutputTokens,
+      temperature: request.temperature,
+      store: request.store,
+    };
+    if (request.previousResponseId) {
+      payload.previous_response_id = request.previousResponseId;
+    }
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(`LMStudio request failed (${response.status}): ${body}`);
+    }
+
+    const data = (await response.json()) as NativeChatResponse;
+    const text = data.output
+      .filter((item) => item.type === "message")
+      .map((item) => item.content?.trim() ?? "")
+      .filter(Boolean)
+      .join("\n\n")
+      .trim();
+
+    return {
+      content: text,
+      responseId: data.response_id,
+      raw: data,
+    };
+  }
+
+  const endpoint = `${baseUrl}/chat/completions`;
+  const payload: Record<string, unknown> = {
+    model: request.model,
+    messages: [
+      { role: "system", content: request.systemPrompt },
+      { role: "user", content: request.input },
+    ],
+    max_tokens: request.maxOutputTokens,
+    temperature: request.temperature,
+    stream: false,
   };
 
   const response = await fetch(endpoint, {
@@ -389,15 +593,66 @@ export async function requestChatCompletion(
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`LMStudio request failed (${response.status}): ${body}`);
+    throw new Error(`${provider} request failed (${response.status}): ${body}`);
   }
 
-  const data = (await response.json()) as NativeChatResponse;
-  const messageChunks = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content?.trim() ?? "")
-    .filter(Boolean);
-  const rawContent = messageChunks.join("\n\n");
+  const data = (await response.json()) as {
+    id?: string;
+    choices?: Array<{
+      message?: {
+        content?: unknown;
+      };
+    }>;
+  };
+  const content = parseOpenAiMessageContent(
+    data.choices?.[0]?.message?.content,
+  );
+
+  return {
+    content,
+    responseId: typeof data.id === "string" ? data.id : undefined,
+    raw: data,
+  };
+}
+
+export async function requestGenericChatCompletion(
+  settings: AppSettings,
+  task: ModelRoutingTask,
+  request: GenericChatRequest,
+) {
+  const provider = resolveProviderForTask(settings, task);
+  const model =
+    toTrimmedString(request.model) || resolveModelForTask(settings, task);
+  return requestProviderChatCompletion(settings, provider, {
+    ...request,
+    model,
+    store: request.store ?? false,
+    previousResponseId: request.previousResponseId ?? "",
+  });
+}
+
+export async function requestChatCompletion(
+  settings: AppSettings,
+  persona: Persona,
+  userInput: string,
+  previousResponseId?: string,
+  context?: ChatCompletionContext,
+): Promise<NativeChatResult> {
+  const response = await requestGenericChatCompletion(
+    settings,
+    "one_to_one_chat",
+    {
+      model: settings.model,
+      input: formatRecentMessages(context?.recentMessages, userInput),
+      systemPrompt: buildSystemPrompt(persona, settings, context),
+      maxOutputTokens: settings.maxTokens,
+      temperature: settings.temperature,
+      store: true,
+      previousResponseId,
+    },
+  );
+
+  const rawContent = response.content.trim();
   const {
     visibleText,
     comfyPrompt,
@@ -457,8 +712,149 @@ export async function requestChatCompletion(
         ? sanitizedImageDescriptions
         : undefined,
     personaControl,
-    responseId: data.response_id,
+    responseId: response.responseId,
   };
+}
+
+export interface ConversationSummaryState {
+  summary: string;
+  facts: string[];
+  goals: string[];
+  openThreads: string[];
+  agreements: string[];
+}
+
+interface ConversationSummaryUpdateRequest {
+  existing: ConversationSummaryState;
+  transcript: Array<{ role: "user" | "assistant"; content: string }>;
+  targetTokens: number;
+}
+
+function parseJsonObjectFromText<T extends object>(value: string): T | null {
+  const text = value.trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(text.slice(start, end + 1)) as T;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeSummaryList(
+  value: unknown,
+  maxItems = 10,
+  maxLen = 220,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .map((item) =>
+      item.length > maxLen
+        ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`
+        : item,
+    )
+    .slice(0, maxItems);
+}
+
+function normalizeSummaryState(
+  parsed: Record<string, unknown>,
+  fallback: ConversationSummaryState,
+  targetTokens: number,
+): ConversationSummaryState {
+  const estimatedMaxSummaryChars = Math.max(
+    800,
+    Math.min(12000, Math.round(targetTokens * 5.5)),
+  );
+  const summaryRaw = toTrimmedString(parsed.summary);
+  const summary = summaryRaw
+    ? summaryRaw.length > estimatedMaxSummaryChars
+      ? `${summaryRaw.slice(0, estimatedMaxSummaryChars - 1).trimEnd()}…`
+      : summaryRaw
+    : fallback.summary;
+  return {
+    summary,
+    facts: normalizeSummaryList(parsed.facts, 12, 180),
+    goals: normalizeSummaryList(parsed.goals, 10, 180),
+    openThreads: normalizeSummaryList(parsed.openThreads, 12, 220),
+    agreements: normalizeSummaryList(parsed.agreements, 10, 220),
+  };
+}
+
+export async function requestConversationSummaryUpdate(
+  settings: AppSettings,
+  persona: Persona,
+  request: ConversationSummaryUpdateRequest,
+): Promise<ConversationSummaryState> {
+  const safeTargetTokens = Math.max(600, Math.min(3000, request.targetTokens));
+  const responseMaxOutputTokens = Math.max(
+    700,
+    Math.min(5000, Math.round(safeTargetTokens * 1.2)),
+  );
+  const transcript = request.transcript
+    .map((message) => ({
+      role: message.role,
+      content: message.content.trim(),
+    }))
+    .filter((message) => message.content.length > 0)
+    .slice(0, 80);
+  if (transcript.length === 0) {
+    return request.existing;
+  }
+  const systemPrompt = [
+    "Ты компонент суммаризации 1:1 чата между пользователем и персоной.",
+    "Верни ТОЛЬКО JSON-объект без markdown и пояснений.",
+    'Формат: {"summary":"...","facts":["..."],"goals":["..."],"openThreads":["..."],"agreements":["..."]}',
+    "Пиши на русском языке, фактически и нейтрально.",
+    "summary — связная выжимка прошлого контекста, без художественных добавлений.",
+    "facts — устойчивые факты о пользователе/контексте (без одноразовых команд).",
+    "goals — цели и намерения пользователя, если они явно есть.",
+    "openThreads — незавершенные темы/вопросы/задачи.",
+    "agreements — явные договоренности и решения.",
+    "Не дублируй один и тот же пункт разными формулировками.",
+    "Если данных для списка нет — верни пустой массив.",
+    `Ограничь общий объем summary примерно до ${safeTargetTokens} токенов или меньше.`,
+  ].join("\n");
+  const input = [
+    `Персона: ${persona.name}`,
+    `Целевой бюджет токенов для summary: ${safeTargetTokens}`,
+    "",
+    "Текущее состояние summary (можно сжать/переписать):",
+    JSON.stringify(request.existing),
+    "",
+    "Новые сообщения для инкрементального учета:",
+    ...transcript.map(
+      (message) =>
+        `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content}`,
+    ),
+  ].join("\n");
+
+  const response = await requestGenericChatCompletion(
+    settings,
+    "one_to_one_chat",
+    {
+      model: settings.model,
+      input,
+      systemPrompt,
+      maxOutputTokens: responseMaxOutputTokens,
+      temperature: Math.max(0.1, Math.min(0.4, settings.temperature)),
+      store: false,
+    },
+  );
+  const parsed = parseJsonObjectFromText<Record<string, unknown>>(
+    response.content,
+  );
+  if (!parsed) {
+    throw new Error("Не удалось распарсить JSON суммаризации.");
+  }
+  return normalizeSummaryState(parsed, request.existing, safeTargetTokens);
 }
 
 export interface GeneratedPersonaDraft {
@@ -513,13 +909,6 @@ export async function generateThemedComfyPrompt(
   topic: string,
   iteration: number,
 ): Promise<string> {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
   const systemPrompt = [
     "Ты генератор одного ComfyUI prompt для изображения персонажа.",
     "Ответ должен содержать ровно два блока без markdown: сначала <theme_tags>...</theme_tags>, затем <comfyui_prompt>...</comfyui_prompt>.",
@@ -556,32 +945,19 @@ export async function generateThemedComfyPrompt(
     "Generate one unique prompt variation for this iteration.",
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const response = await requestGenericChatCompletion(
+    settings,
+    "image_prompt",
+    {
       model: resolveImagePromptModel(settings),
       input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
+      systemPrompt,
+      maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
       temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
       store: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка генерации comfy prompt (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+    },
+  );
+  const text = response.content.trim();
 
   if (!text) {
     throw new Error("Модель вернула пустой comfy prompt.");
@@ -604,7 +980,7 @@ export async function generateThemedComfyPrompt(
   return mergeRequiredTags(fallbackPrompt, themeTags);
 }
 
-export async function generateComfyPromptFromImageDescription(
+export async function generateComfyPromptsFromImageDescription(
   settings: AppSettings,
   persona: Pick<
     Persona,
@@ -616,7 +992,7 @@ export async function generateComfyPromptFromImageDescription(
   >,
   imageDescription: string,
   iteration: number,
-): Promise<string> {
+): Promise<string[]> {
   const description = toTrimmedString(imageDescription);
   if (!description) {
     throw new Error(
@@ -624,18 +1000,13 @@ export async function generateComfyPromptFromImageDescription(
     );
   }
 
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
   const systemPrompt = [
-    "Ты конвертер описания сцены в один ComfyUI prompt.",
-    "Верни только один блок <comfyui_prompt>...</comfyui_prompt> без markdown и пояснений.",
+    "Ты конвертер описания сцены в список ComfyUI prompts.",
+    "Верни один или несколько блоков <comfyui_prompt>...</comfyui_prompt> без markdown и пояснений.",
+    "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный <comfyui_prompt> для каждого кадра.",
+    "Если описание одного кадра, верни только один блок.",
     "Внутри блока только comma-separated English tags (никаких предложений).",
-    "Формат внутри блока: строго ОДНА строка, разделитель строго ', ' (запятая + пробел), без переносов и без лишних пробелов.",
+    "Формат внутри блока: строго ОДНА строка, разделитель строго и обязательно должен быть ', ' (запятая + пробел), без переносов и без лишних пробелов.",
     "Длина prompt: 30-46 тегов.",
     "Каждый тег: строго 2-3 слова, в редких случаях допускается 4; тег должен быть визуально наблюдаемым.",
     "Порядок тегов: quality -> subject identity -> emotion/expression -> clothing/materials -> pose/framing -> camera -> lighting -> background -> technical cleanup.",
@@ -646,6 +1017,7 @@ export async function generateComfyPromptFromImageDescription(
     "Если в input есть LookPrompt cache, используй его как identity prior для стабильных черт (hair/face/eyes/body/outfit), но scene-specific детали бери из Image description.",
     "LookPrompt cache НЕ должен ломать требования Image description по эмоции/сцене/условиям.",
     "Одежда должна соответствовать ситуации!",
+    "ОБЯЗАТЕЛЬНО!: описывай детали сцены досконально - вид, одежда, окружение, действия, фокус на определенных частях тела и тд.",
     "При конфликте: scene-specific детали (эмоция, одежда, окружение, условия) берутся из Image description; стабильная идентичность (волосы/глаза/возрастной тип/телосложение) — из Appearance.",
     "Не добавляй детали, которых нет в исходном описании (например пирсинг/тату/аксессуары/фетиш-атрибуты, если они не указаны).",
     "ВАЖНО: Старайся покрыть тегами переданный Image description по максимуму, но без противоречий, чтобы передать все описанные детали! При этом - не выходи за общие лимиты!",
@@ -673,50 +1045,76 @@ export async function generateComfyPromptFromImageDescription(
     `Iteration: ${iteration}`,
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const response = await requestGenericChatCompletion(
+    settings,
+    "image_prompt",
+    {
       model: resolveImagePromptModel(settings),
       input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(180, Math.min(700, settings.maxTokens)),
+      systemPrompt,
+      maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
       temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
       store: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка конвертации описания в comfy prompt (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+    },
+  );
+  const text = response.content.trim();
   if (!text) {
     throw new Error("Модель вернула пустой comfy prompt из описания.");
   }
 
   const parsed = splitAssistantContent(text);
-  const prompt = toTrimmedString(
-    parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt,
-  );
-  if (prompt) return prompt;
+  const parsedPrompts = (
+    parsed.comfyPrompts && parsed.comfyPrompts.length > 0
+      ? parsed.comfyPrompts
+      : parsed.comfyPrompt
+        ? [parsed.comfyPrompt]
+        : []
+  )
+    .map((item) => toTrimmedString(item))
+    .filter(Boolean);
+  if (parsedPrompts.length > 0) return parsedPrompts;
+
+  const tagMatches = Array.from(
+    text.matchAll(/<comfyui_prompt\b[^>]*>([\s\S]*?)<\/comfyui_prompt>/gi),
+  )
+    .map((match) => toTrimmedString(match[1]))
+    .filter(Boolean);
+  if (tagMatches.length > 0) return tagMatches;
 
   const fallbackPrompt = text
     .replace(/<\/?comfyui_prompt>/gi, "")
     .replace(/<\/?comfyui_image_description>/gi, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (fallbackPrompt) return fallbackPrompt;
+  if (fallbackPrompt) return [fallbackPrompt];
 
   throw new Error("Не удалось извлечь ComfyUI prompt из ответа модели.");
+}
+
+export async function generateComfyPromptFromImageDescription(
+  settings: AppSettings,
+  persona: Pick<
+    Persona,
+    | "name"
+    | "appearance"
+    | "stylePrompt"
+    | "personalityPrompt"
+    | "lookPromptCache"
+  >,
+  imageDescription: string,
+  iteration: number,
+): Promise<string> {
+  const prompts = await generateComfyPromptsFromImageDescription(
+    settings,
+    persona,
+    imageDescription,
+    iteration,
+  );
+  const first = prompts[0]?.trim();
+  if (!first) {
+    throw new Error("Не удалось извлечь ComfyUI prompt из ответа модели.");
+  }
+  return first;
 }
 
 function extractThemeTags(text: string, topic: string): string[] {
@@ -753,6 +1151,23 @@ function fallbackThemeTags(topic: string): string[] {
 
 function normalizeBaseUrl(url: string) {
   return url.replace(/\/+$/, "");
+}
+
+export interface ProviderModelCatalogTarget {
+  provider: LlmProvider;
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+}
+
+export function resolveProviderModelCatalogTarget(
+  settings: AppSettings,
+  provider: LlmProvider,
+): ProviderModelCatalogTarget {
+  return {
+    provider,
+    baseUrl: resolveProviderBaseUrl(settings, provider),
+    auth: resolveProviderAuth(settings, provider),
+  };
 }
 
 function toTrimmedString(value: unknown): string {
@@ -859,13 +1274,21 @@ function parseModelKeys(data: unknown): string[] {
   return [];
 }
 
-export async function listModels(
-  settings: Pick<AppSettings, "lmBaseUrl" | "apiKey" | "lmAuth">,
-) {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const headers = buildAuthHeaders(settings.lmAuth, settings.apiKey);
+export async function listModels(settings: {
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+  apiKey?: string;
+}) {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl);
+  const headers = buildAuthHeaders(settings.auth, settings.apiKey);
 
-  const endpoints = [`${baseUrl}/api/v1/models`, `${baseUrl}/v1/models`];
+  const endpoints = Array.from(
+    new Set([
+      `${baseUrl}/models`,
+      `${baseUrl}/v1/models`,
+      `${baseUrl}/api/v1/models`,
+    ]),
+  );
   let lastError = "Unknown error while loading models.";
 
   for (const endpoint of endpoints) {
@@ -970,13 +1393,6 @@ export async function generatePersonaDrafts(
   theme: string,
   count: number,
 ): Promise<GeneratedPersonaDraft[]> {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
   const safeCount = Math.max(1, Math.min(6, Math.round(count)));
   const systemPrompt = [
     "Ты генератор карточек персонажей для ролевого AI-чата.",
@@ -995,32 +1411,19 @@ export async function generatePersonaDrafts(
     "У каждого должен быть уникальный характер, внешность и стиль речи и другие параметры.",
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const response = await requestGenericChatCompletion(
+    settings,
+    "persona_generation",
+    {
       model: resolvePersonaGenerationModel(settings),
       input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(settings.maxTokens, 500),
+      systemPrompt,
+      maxOutputTokens: Math.max(settings.maxTokens, 500),
       temperature: Math.max(0.6, settings.temperature),
       store: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка генерации персонажей (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+    },
+  );
+  const text = response.content.trim();
 
   if (!text) {
     throw new Error("Модель вернула пустой ответ при генерации личности.");
@@ -1158,13 +1561,6 @@ export async function generatePersonaLookPrompts(
   settings: AppSettings,
   payload: PersonaLookPromptRequest,
 ): Promise<PersonaLookPromptResponse> {
-  const baseUrl = normalizeBaseUrl(settings.lmBaseUrl);
-  const endpoint = `${baseUrl}/api/v1/chat`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...buildAuthHeaders(settings.lmAuth, settings.apiKey),
-  };
-
   const systemPrompt = [
     "Ты конвертер описаний внешности в ComfyUI prompts.",
     "Верни ТОЛЬКО JSON объект без markdown и пояснений.",
@@ -1249,32 +1645,19 @@ export async function generatePersonaLookPrompts(
     "Build two prompts for the same character identity.",
   ].join("\n");
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
+  const response = await requestGenericChatCompletion(
+    settings,
+    "image_prompt",
+    {
       model: resolveImagePromptModel(settings),
       input,
-      system_prompt: systemPrompt,
-      max_output_tokens: Math.max(220, Math.min(700, settings.maxTokens)),
+      systemPrompt,
+      maxOutputTokens: Math.max(220, Math.min(700, settings.maxTokens)),
       temperature: Math.max(0.25, Math.min(0.55, settings.temperature)),
       store: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Ошибка генерации prompt'ов внешности (${response.status}): ${body}`,
-    );
-  }
-
-  const data = (await response.json()) as NativeChatResponse;
-  const text = data.output
-    .filter((item) => item.type === "message")
-    .map((item) => item.content ?? "")
-    .join("\n")
-    .trim();
+    },
+  );
+  const text = response.content.trim();
 
   if (!text) {
     throw new Error("Модель вернула пустой ответ для prompts внешности.");

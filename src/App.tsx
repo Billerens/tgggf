@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import type { GeneratedPersonaDraft } from "./lmstudio";
 import {
   generatePersonaDrafts,
+  resolveProviderModelCatalogTarget,
 } from "./lmstudio";
 import {
   type ComfyImageGenerationMeta,
@@ -14,6 +15,9 @@ import { ChatDetailsModal } from "./components/ChatDetailsModal";
 import { EnhanceCompareModal } from "./components/EnhanceCompareModal";
 import { ErrorToast } from "./components/ErrorToast";
 import { GenerationPane } from "./components/GenerationPane";
+import { GroupChatPane } from "./components/GroupChatPane";
+import { GroupChatDetailsModal } from "./components/GroupChatDetailsModal";
+import { GroupRoomModal } from "./components/GroupRoomModal";
 import { PersonaModal } from "./components/PersonaModal";
 import { SettingsModal } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
@@ -39,9 +43,12 @@ import { usePersonaLookActions } from "./features/look/usePersonaLookActions";
 import { usePersonaDraftActions } from "./features/persona-editor/usePersonaDraftActions";
 import { useAppInstallPrompt } from "./features/settings/useAppInstallPrompt";
 import { useModelCheckpointCatalog } from "./features/settings/useModelCheckpointCatalog";
+import { useGroupStore } from "./groupStore";
 import {
   buildBackupPayload,
   exportBackupFile,
+  exportRawBackupFile,
+  type BackupExportFormat,
   type BackupImportMode,
   importBackupPayload,
   parseBackupFile,
@@ -70,14 +77,39 @@ export default function App() {
     deleteChat,
     setChatStyleStrength,
     sendMessage,
+    regenerateMessageComfyPromptAtIndex,
+    resolveRelationshipProposal,
     saveSettings,
     clearError,
   } = useAppStore();
+  const {
+    groupRooms,
+    groupParticipants,
+    groupMessages,
+    groupEvents,
+    groupPersonaStates,
+    groupRelationEdges,
+    groupSharedMemories,
+    groupPrivateMemories,
+    activeGroupRoomId,
+    isLoading: isGroupLoading,
+    initializeGroup,
+    createGroupRoom,
+    deleteGroupRoom,
+    selectGroupRoom,
+    sendUserGroupMessage,
+    setActiveGroupRoomStatus,
+    runActiveGroupIteration,
+    retryGroupMessageImages,
+    regenerateGroupMessageResponse,
+  } = useGroupStore();
 
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chats");
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showPersonaModal, setShowPersonaModal] = useState(false);
+  const [showGroupRoomModal, setShowGroupRoomModal] = useState(false);
   const [showChatDetailsModal, setShowChatDetailsModal] = useState(false);
+  const [showGroupChatDetailsModal, setShowGroupChatDetailsModal] = useState(false);
   const [personaModalTab, setPersonaModalTab] =
     useState<PersonaModalTab>("editor");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -95,6 +127,7 @@ export default function App() {
   const [personaDraft, setPersonaDraft] = useState(createEmptyPersonaDraft);
   const [editingPersonaId, setEditingPersonaId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState("");
+  const [groupMessageInput, setGroupMessageInput] = useState("");
   const [settingsDraft, setSettingsDraft] = useState(settings);
 
   const [generationTheme, setGenerationTheme] = useState("");
@@ -142,13 +175,19 @@ export default function App() {
   }, [initialize]);
 
   useEffect(() => {
+    if (!initialized) return;
+    void initializeGroup(personas);
+  }, [initialized, initializeGroup, personas]);
+
+  useEffect(() => {
     setSettingsDraft(settings);
   }, [settings]);
 
   const { pwaInstallStatus, onInstallPwa } = useAppInstallPrompt();
   const {
     availableModels,
-    modelsLoading,
+    availableModelsByProvider,
+    modelsLoadingByProvider,
     comfyCheckpoints,
     checkpointsLoading,
     loadModels,
@@ -169,6 +208,34 @@ export default function App() {
     () => chats.find((c) => c.id === activeChatId) ?? null,
     [chats, activeChatId],
   );
+  const activeGroupRoom = useMemo(
+    () => groupRooms.find((room) => room.id === activeGroupRoomId) ?? null,
+    [groupRooms, activeGroupRoomId],
+  );
+
+  useEffect(() => {
+    if (!activeGroupRoom) return;
+    if (activeGroupRoom.status !== "active") return;
+    if (
+      activeGroupRoom.mode === "personas_plus_user" &&
+      activeGroupRoom.waitingForUser
+    ) {
+      return;
+    }
+
+    const timerId = window.setInterval(() => {
+      void runActiveGroupIteration(personas, settings, settings.userName);
+    }, 4200);
+
+    return () => window.clearInterval(timerId);
+  }, [
+    activeGroupRoom?.id,
+    activeGroupRoom?.status,
+    activeGroupRoom?.waitingForUser,
+    personas,
+    runActiveGroupIteration,
+    settings,
+  ]);
 
   const {
     generationPersonaId,
@@ -356,6 +423,14 @@ export default function App() {
     await sendMessage(value);
   };
 
+  const onGroupMessageSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!groupMessageInput.trim()) return;
+    const value = groupMessageInput;
+    setGroupMessageInput("");
+    await sendUserGroupMessage(value, settings.userName, personas);
+  };
+
   const onGenerateSubmit = async (event: FormEvent) => {
     event.preventDefault();
     setGenerationLoading(true);
@@ -430,7 +505,7 @@ export default function App() {
 
   const onExportData = async (params: {
     scope: "all" | "personas" | "all_chats" | "chat" | "generation_sessions";
-    format: "json" | "zip";
+    format: BackupExportFormat;
     chatId?: string;
   }) => {
     setExportBusy(true);
@@ -442,22 +517,39 @@ export default function App() {
       return null;
     });
     try {
-      const payload = await buildBackupPayload({
-        scope: params.scope,
-        chatId: params.chatId,
-      });
-      const preparedFile = await exportBackupFile(payload, params.format);
+      const isRaw = params.format === "raw_json" || params.format === "raw_zip";
+      let preparedFile:
+        | Awaited<ReturnType<typeof exportRawBackupFile>>
+        | Awaited<ReturnType<typeof exportBackupFile>>;
+      let payload: Awaited<ReturnType<typeof buildBackupPayload>> | null = null;
+
+      if (isRaw) {
+        preparedFile = await exportRawBackupFile(
+          params.format as Extract<BackupExportFormat, "raw_json" | "raw_zip">,
+        );
+      } else {
+        payload = await buildBackupPayload({
+          scope: params.scope,
+          chatId: params.chatId,
+        });
+        preparedFile = await exportBackupFile(
+          payload,
+          params.format as Extract<BackupExportFormat, "json" | "zip">,
+        );
+      }
       const downloadUrl = URL.createObjectURL(preparedFile.blob);
       setReadyExportFile({
         fileName: preparedFile.fileName,
         url: downloadUrl,
       });
-      const meta = payload.meta;
+      const meta = payload?.meta;
       setDataTransferMessage(
         [
-          `Экспорт готов: ${payload.exportScope}`,
+          `Экспорт готов: ${isRaw ? "raw_idb_snapshot" : payload?.exportScope || params.scope}`,
           `Файл подготовлен: ${preparedFile.fileName}. Нажми "Скачать экспорт".`,
-          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}`,
+          isRaw
+            ? "RAW snapshot: все stores из IndexedDB сохранены без логической нормализации."
+            : `personas=${meta?.personas ?? 0}, chats=${meta?.chats ?? 0}, messages=${meta?.messages ?? 0}, states=${meta?.personaStates ?? 0}, memories=${meta?.memories ?? 0}, sessions=${meta?.generatorSessions ?? 0}, imageAssets=${meta?.imageAssets ?? 0}, groupRooms=${meta?.groupRooms ?? 0}, groupMessages=${meta?.groupMessages ?? 0}, groupEvents=${meta?.groupEvents ?? 0}`,
         ].join("\n"),
       );
     } catch (error) {
@@ -478,7 +570,7 @@ export default function App() {
         [
           `Импорт завершен из "${file.name}"`,
           `Режим: ${mode === "replace" ? "замена текущих данных" : "добавление/объединение"}`,
-          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}, settings=${meta.includesSettings ? "yes" : "no"}`,
+          `personas=${meta.personas}, chats=${meta.chats}, messages=${meta.messages}, states=${meta.personaStates}, memories=${meta.memories}, sessions=${meta.generatorSessions}, imageAssets=${meta.imageAssets}, groupRooms=${meta.groupRooms}, groupMessages=${meta.groupMessages}, groupEvents=${meta.groupEvents}, settings=${meta.includesSettings ? "yes" : "no"}, raw=${meta.rawSnapshot ? "yes" : "no"}`,
         ].join("\n"),
       );
     } catch (error) {
@@ -496,8 +588,10 @@ export default function App() {
           sidebarTab={sidebarTab}
           setSidebarTab={setSidebarTab}
           chats={chats}
+          groupRooms={groupRooms}
           personas={personas}
           activeChatId={activeChatId}
+          activeGroupRoomId={activeGroupRoomId}
           activePersonaId={activePersonaId}
           generationPersonaId={generationPersonaId}
           generationSessions={generationSessions}
@@ -505,11 +599,14 @@ export default function App() {
           onOpenPersonas={() => setShowPersonaModal(true)}
           onOpenSettings={() => setShowSettingsModal(true)}
           onCreateChat={() => void createChat()}
+          onCreateGroupRoom={() => setShowGroupRoomModal(true)}
           onCreateGenerationSession={() => void createGenerationSession()}
           onDeleteGenerationSession={(sessionId) =>
             void deleteGenerationSession(sessionId)
           }
+          onDeleteGroupRoom={(roomId) => void deleteGroupRoom(roomId)}
           onSelectChat={(chatId) => void selectChat(chatId)}
+          onSelectGroupRoom={(roomId) => void selectGroupRoom(roomId)}
           onSelectGenerationSession={setGenerationSessionId}
           onSelectPersona={(personaId) => void selectPersona(personaId)}
           onSelectGenerationPersona={setGenerationPersonaId}
@@ -548,6 +645,47 @@ export default function App() {
             onStart={() => void startGeneration()}
             onStop={stopGeneration}
           />
+        ) : sidebarTab === "groups" ? (
+          <GroupChatPane
+            activeRoom={activeGroupRoom}
+            participants={groupParticipants}
+            messages={groupMessages}
+            events={groupEvents}
+            personas={personas}
+            inputValue={groupMessageInput}
+            setInputValue={setGroupMessageInput}
+            isLoading={isGroupLoading}
+            controlsDisabled={isGroupLoading}
+            showSystemImageBlock={settings.showSystemImageBlock}
+            showStatusChangeDetails={settings.showStatusChangeDetails}
+            onStartRoom={() => void setActiveGroupRoomStatus("active")}
+            onPauseRoom={() => void setActiveGroupRoomStatus("paused")}
+            onRunIteration={() =>
+              void runActiveGroupIteration(personas, settings, settings.userName)
+            }
+            onDeleteRoom={() => {
+              if (!activeGroupRoomId) return;
+              void deleteGroupRoom(activeGroupRoomId);
+            }}
+            onSubmitMessage={onGroupMessageSubmit}
+            onRetryMessageImages={(messageId, blockIndexes) =>
+              void retryGroupMessageImages({
+                messageId,
+                blockIndexes,
+                personas,
+                settings,
+              })
+            }
+            onRegenerateMessageResponse={(messageId) =>
+              void regenerateGroupMessageResponse({
+                messageId,
+                personas,
+                settings,
+                userName: settings.userName,
+              })
+            }
+            onOpenChatDetails={() => setShowGroupChatDetailsModal(true)}
+          />
         ) : (
           <ChatPane
             activeChat={activeChat}
@@ -570,6 +708,12 @@ export default function App() {
               void deleteChat(activeChatId);
             }}
             onSubmitMessage={onMessageSubmit}
+            onRegeneratePromptAtIndex={(messageId, promptIndex) => {
+              void regenerateMessageComfyPromptAtIndex(messageId, promptIndex);
+            }}
+            onResolveRelationshipProposal={(messageId, decision) => {
+              void resolveRelationshipProposal(messageId, decision);
+            }}
             onOpenSidebar={() => {
               setSidebarTab("personas");
               setMobileSidebarOpen(true);
@@ -596,12 +740,26 @@ export default function App() {
           onClose={() => setShowChatDetailsModal(false)}
         />
 
+        <GroupChatDetailsModal
+          open={showGroupChatDetailsModal}
+          room={activeGroupRoom}
+          participants={groupParticipants}
+          messages={groupMessages}
+          events={groupEvents}
+          personas={personas}
+          personaStates={groupPersonaStates}
+          relationEdges={groupRelationEdges}
+          sharedMemories={groupSharedMemories}
+          privateMemories={groupPrivateMemories}
+          onClose={() => setShowGroupChatDetailsModal(false)}
+        />
+
         <SettingsModal
           open={showSettingsModal}
           settingsDraft={settingsDraft}
           pwaInstallStatus={pwaInstallStatus}
-          availableModels={availableModels}
-          modelsLoading={modelsLoading}
+          availableModelsByProvider={availableModelsByProvider}
+          modelsLoadingByProvider={modelsLoadingByProvider}
           exportableChats={exportableChatOptions}
           exportBusy={exportBusy}
           importBusy={importBusy}
@@ -610,13 +768,13 @@ export default function App() {
           exportDownloadFileName={readyExportFile?.fileName ?? null}
           setSettingsDraft={setSettingsDraft}
           onInstallPwa={() => void onInstallPwa()}
-          onRefreshModels={() =>
-            void loadModels(
-              settingsDraft.lmBaseUrl,
-              settingsDraft.apiKey,
-              settingsDraft.lmAuth,
-            )
-          }
+          onRefreshModels={(provider) => {
+            const target = resolveProviderModelCatalogTarget(
+              settingsDraft,
+              provider,
+            );
+            void loadModels(provider, target.baseUrl, target.auth);
+          }}
           onExportData={onExportData}
           onImportData={onImportData}
           onClose={() => setShowSettingsModal(false)}
@@ -693,6 +851,21 @@ export default function App() {
               personaGenerationModel: nextModel,
             }))
           }
+        />
+
+        <GroupRoomModal
+          open={showGroupRoomModal}
+          personas={personas}
+          onClose={() => setShowGroupRoomModal(false)}
+          onCreate={async ({ title, mode, participantPersonaIds }) => {
+            await createGroupRoom(personas, {
+              title,
+              mode,
+              participantPersonaIds,
+            });
+            setShowGroupRoomModal(false);
+            setSidebarTab("groups");
+          }}
         />
 
         <ErrorToast error={error} onClose={clearError} />

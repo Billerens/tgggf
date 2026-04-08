@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { RefreshCw, X } from "lucide-react";
-import type { AppSettings, AuthMode, EndpointAuthConfig } from "../types";
+import type {
+  AppSettings,
+  AuthMode,
+  EndpointAuthConfig,
+  LlmProvider,
+} from "../types";
 import { Dropdown } from "./Dropdown";
 import type {
   BackupExportFormat,
@@ -15,8 +20,8 @@ interface SettingsModalProps {
   open: boolean;
   settingsDraft: AppSettings;
   pwaInstallStatus: PwaInstallStatus;
-  availableModels: string[];
-  modelsLoading: boolean;
+  availableModelsByProvider: Record<LlmProvider, string[]>;
+  modelsLoadingByProvider: Record<LlmProvider, boolean>;
   exportableChats: Array<{ id: string; title: string; personaName: string }>;
   exportBusy: boolean;
   importBusy: boolean;
@@ -25,7 +30,7 @@ interface SettingsModalProps {
   exportDownloadFileName: string | null;
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
   onInstallPwa: () => void;
-  onRefreshModels: () => void;
+  onRefreshModels: (provider: LlmProvider) => void;
   onExportData: (params: {
     scope: BackupExportScope;
     format: BackupExportFormat;
@@ -36,7 +41,7 @@ interface SettingsModalProps {
   onSubmit: (event: FormEvent) => void;
 }
 
-type SettingsTab = "system" | "personal" | "chat" | "data";
+type SettingsTab = "system" | "models" | "personal" | "chat" | "data";
 
 const AUTH_MODE_LABELS: Array<{ value: AuthMode; label: string }> = [
   { value: "none", label: "Без auth" },
@@ -51,6 +56,11 @@ const USER_GENDER_OPTIONS: Array<{ value: AppSettings["userGender"]; label: stri
   { value: "male", label: "Мужской" },
   { value: "female", label: "Женский" },
   { value: "nonbinary", label: "Небинарный / другой" },
+];
+const LLM_PROVIDER_OPTIONS: Array<{ value: LlmProvider; label: string }> = [
+  { value: "lmstudio", label: "LMStudio" },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "huggingface", label: "HuggingFace Router" },
 ];
 const DETAILING_LEVEL_OPTIONS: Array<{
   value: AppSettings["enhanceDetailLevelAll"];
@@ -90,6 +100,8 @@ const EXPORT_SCOPE_OPTIONS: Array<{
 const EXPORT_FORMAT_OPTIONS: Array<{ value: BackupExportFormat; label: string }> = [
   { value: "json", label: "JSON (.json)" },
   { value: "zip", label: "ZIP (.zip)" },
+  { value: "raw_json", label: "RAW IDB JSON (.json)" },
+  { value: "raw_zip", label: "RAW IDB ZIP (.zip)" },
 ];
 const IMPORT_MODE_OPTIONS: Array<{ value: BackupImportMode; label: string }> = [
   { value: "merge", label: "Добавить / объединить" },
@@ -179,8 +191,8 @@ export function SettingsModal({
   open,
   settingsDraft,
   pwaInstallStatus,
-  availableModels,
-  modelsLoading,
+  availableModelsByProvider,
+  modelsLoadingByProvider,
   exportableChats,
   exportBusy,
   importBusy,
@@ -232,6 +244,86 @@ export function SettingsModal({
     }
   }, [open, exportableChats]);
 
+  const getProviderModelOptions = (
+    provider: LlmProvider,
+    currentModel: string,
+  ) => {
+    const providerModels = availableModelsByProvider[provider] ?? [];
+    if (providerModels.length > 0) {
+      return providerModels.map((modelName) => ({
+        value: modelName,
+        label: modelName,
+      }));
+    }
+    return [
+      {
+        value: currentModel,
+        label: currentModel || "Модель не найдена",
+      },
+    ];
+  };
+
+  const renderRoleMatrixRow = (params: {
+    title: string;
+    providerField:
+      | "oneToOneProvider"
+      | "groupOrchestratorProvider"
+      | "groupPersonaProvider"
+      | "imagePromptProvider"
+      | "personaGenerationProvider";
+    modelField:
+      | "model"
+      | "groupOrchestratorModel"
+      | "groupPersonaModel"
+      | "imagePromptModel"
+      | "personaGenerationModel";
+  }) => {
+    const provider = settingsDraft[params.providerField];
+    const model = settingsDraft[params.modelField];
+    const loading = modelsLoadingByProvider[provider] ?? false;
+
+    return (
+      <div className="persona-section" key={params.title}>
+        <h5>{params.title}</h5>
+        <label>
+          Провайдер
+          <Dropdown
+            value={provider}
+            options={LLM_PROVIDER_OPTIONS}
+            onChange={(nextProvider) =>
+              setSettingsDraft((prev) => ({
+                ...prev,
+                [params.providerField]: nextProvider as LlmProvider,
+              }))
+            }
+          />
+        </label>
+        <label>
+          Модель
+          <div className="inline-row">
+            <Dropdown
+              value={model}
+              options={getProviderModelOptions(provider, model)}
+              onChange={(nextModel) =>
+                setSettingsDraft((prev) => ({
+                  ...prev,
+                  [params.modelField]: nextModel,
+                }))
+              }
+            />
+            <button
+              type="button"
+              onClick={() => onRefreshModels(provider)}
+              disabled={loading}
+            >
+              <RefreshCw size={14} className={loading ? "spin" : ""} /> Обновить
+            </button>
+          </div>
+        </label>
+      </div>
+    );
+  };
+
   if (!open) return null;
 
   return (
@@ -250,6 +342,13 @@ export function SettingsModal({
             onClick={() => setActiveTab("system")}
           >
             Система
+          </button>
+          <button
+            type="button"
+            className={activeTab === "models" ? "active" : ""}
+            onClick={() => setActiveTab("models")}
+          >
+            Модели
           </button>
           <button
             type="button"
@@ -276,13 +375,44 @@ export function SettingsModal({
         <form className="form" onSubmit={onSubmit}>
           {activeTab === "system" ? (
             <>
-              <label>
-                Base URL
-                <input
-                  value={settingsDraft.lmBaseUrl}
-                  onChange={(e) => setSettingsDraft((v) => ({ ...v, lmBaseUrl: e.target.value }))}
-                />
-              </label>
+              <div className="persona-section">
+                <h5>Провайдеры LLM</h5>
+                <label>
+                  LMStudio Base URL
+                  <input
+                    value={settingsDraft.lmBaseUrl}
+                    onChange={(e) =>
+                      setSettingsDraft((v) => ({ ...v, lmBaseUrl: e.target.value }))
+                    }
+                  />
+                </label>
+                <label>
+                  OpenRouter Base URL
+                  <input
+                    value={settingsDraft.openRouterBaseUrl}
+                    onChange={(e) =>
+                      setSettingsDraft((v) => ({
+                        ...v,
+                        openRouterBaseUrl: e.target.value,
+                      }))
+                    }
+                    placeholder="https://openrouter.ai/api/v1"
+                  />
+                </label>
+                <label>
+                  HuggingFace Router Base URL
+                  <input
+                    value={settingsDraft.huggingFaceBaseUrl}
+                    onChange={(e) =>
+                      setSettingsDraft((v) => ({
+                        ...v,
+                        huggingFaceBaseUrl: e.target.value,
+                      }))
+                    }
+                    placeholder="https://router.huggingface.co/v1"
+                  />
+                </label>
+              </div>
               <label>
                 ComfyUI URL
                 <input
@@ -307,46 +437,24 @@ export function SettingsModal({
                 onChange={(next) => setSettingsDraft((v) => ({ ...v, lmAuth: next }))}
               />
               <AuthSettingsSection
+                title="Авторизация OpenRouter endpoint"
+                auth={settingsDraft.openRouterAuth}
+                onChange={(next) =>
+                  setSettingsDraft((v) => ({ ...v, openRouterAuth: next }))
+                }
+              />
+              <AuthSettingsSection
+                title="Авторизация HuggingFace endpoint"
+                auth={settingsDraft.huggingFaceAuth}
+                onChange={(next) =>
+                  setSettingsDraft((v) => ({ ...v, huggingFaceAuth: next }))
+                }
+              />
+              <AuthSettingsSection
                 title="Авторизация Comfy endpoint"
                 auth={settingsDraft.comfyAuth}
                 onChange={(next) => setSettingsDraft((v) => ({ ...v, comfyAuth: next }))}
               />
-              <label>
-                Модель
-                <div className="inline-row">
-                  <Dropdown
-                    value={settingsDraft.model}
-                    onChange={(nextModel) => setSettingsDraft((v) => ({ ...v, model: nextModel }))}
-                    options={
-                      availableModels.length > 0
-                        ? availableModels.map((modelName) => ({ value: modelName, label: modelName }))
-                        : [{ value: settingsDraft.model, label: settingsDraft.model || "Модель не найдена" }]
-                    }
-                  />
-                  <button type="button" onClick={onRefreshModels} disabled={modelsLoading}>
-                    <RefreshCw size={14} className={modelsLoading ? "spin" : ""} /> Обновить
-                  </button>
-                </div>
-              </label>
-              <label>
-                Модель генерации промптов изображений
-                <Dropdown
-                  value={settingsDraft.imagePromptModel}
-                  onChange={(nextModel) =>
-                    setSettingsDraft((v) => ({ ...v, imagePromptModel: nextModel }))
-                  }
-                  options={
-                    availableModels.length > 0
-                      ? availableModels.map((modelName) => ({ value: modelName, label: modelName }))
-                      : [
-                          {
-                            value: settingsDraft.imagePromptModel,
-                            label: settingsDraft.imagePromptModel || "Модель не найдена",
-                          },
-                        ]
-                  }
-                />
-              </label>
               <label>
                 Температура
                 <input
@@ -407,8 +515,60 @@ export function SettingsModal({
             </>
           ) : null}
 
+          {activeTab === "models" ? (
+            <>
+              <div className="persona-section">
+                <h5>Матрица моделей</h5>
+                <small
+                  style={{
+                    color: "var(--text-secondary)",
+                    display: "block",
+                    marginBottom: 8,
+                  }}
+                >
+                  Для каждой роли можно назначить свой провайдер и модель.
+                </small>
+              </div>
+              {renderRoleMatrixRow({
+                title: "1:1 чат",
+                providerField: "oneToOneProvider",
+                modelField: "model",
+              })}
+              {renderRoleMatrixRow({
+                title: "Группы: оркестратор",
+                providerField: "groupOrchestratorProvider",
+                modelField: "groupOrchestratorModel",
+              })}
+              {renderRoleMatrixRow({
+                title: "Группы: персона",
+                providerField: "groupPersonaProvider",
+                modelField: "groupPersonaModel",
+              })}
+              {renderRoleMatrixRow({
+                title: "Генератор prompt изображений",
+                providerField: "imagePromptProvider",
+                modelField: "imagePromptModel",
+              })}
+              {renderRoleMatrixRow({
+                title: "Генератор карточек персон",
+                providerField: "personaGenerationProvider",
+                modelField: "personaGenerationModel",
+              })}
+            </>
+          ) : null}
+
           {activeTab === "personal" ? (
             <>
+              <label>
+                Имя пользователя
+                <input
+                  value={settingsDraft.userName}
+                  onChange={(e) =>
+                    setSettingsDraft((v) => ({ ...v, userName: e.target.value }))
+                  }
+                  placeholder="Как к вам обращаться"
+                />
+              </label>
               <label>
                 Пол пользователя
                 <Dropdown
@@ -587,6 +747,11 @@ export function SettingsModal({
                     }
                   />
                 </label>
+                {exportFormat === "raw_json" || exportFormat === "raw_zip" ? (
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    RAW формат сохраняет полный снимок IndexedDB и игнорирует выбранный scope.
+                  </small>
+                ) : null}
                 <button
                   type="button"
                   onClick={() =>
@@ -599,7 +764,9 @@ export function SettingsModal({
                   disabled={
                     exportBusy ||
                     importBusy ||
-                    (exportScope === "chat" && !exportChatId)
+                    ((exportFormat === "json" || exportFormat === "zip") &&
+                      exportScope === "chat" &&
+                      !exportChatId)
                   }
                 >
                   {exportBusy ? "Экспорт..." : "Экспортировать"}

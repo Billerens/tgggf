@@ -5,6 +5,15 @@ import type {
   ChatMessage,
   ChatSession,
   GeneratorSession,
+  GroupEvent,
+  GroupMemoryPrivate,
+  GroupMemoryShared,
+  GroupMessage,
+  GroupParticipant,
+  GroupPersonaState,
+  GroupRelationEdge,
+  GroupRoom,
+  GroupSnapshot,
   ImageAsset,
   Persona,
   PersonaMemory,
@@ -18,7 +27,7 @@ export type BackupExportScope =
   | "chat"
   | "generation_sessions";
 
-export type BackupExportFormat = "json" | "zip";
+export type BackupExportFormat = "json" | "zip" | "raw_json" | "raw_zip";
 export type BackupImportMode = "merge" | "replace";
 
 interface BackupDataBundle {
@@ -30,10 +39,19 @@ interface BackupDataBundle {
   memories: PersonaMemory[];
   generatorSessions: GeneratorSession[];
   imageAssets: ImageAsset[];
+  groupRooms: GroupRoom[];
+  groupParticipants: GroupParticipant[];
+  groupMessages: GroupMessage[];
+  groupEvents: GroupEvent[];
+  groupPersonaStates: GroupPersonaState[];
+  groupRelationEdges: GroupRelationEdge[];
+  groupSharedMemories: GroupMemoryShared[];
+  groupPrivateMemories: GroupMemoryPrivate[];
+  groupSnapshots: GroupSnapshot[];
 }
 
 export interface AppBackupPayload {
-  schemaVersion: 1;
+  schemaVersion: number;
   exportedAt: string;
   exportScope: BackupExportScope;
   data: BackupDataBundle;
@@ -45,17 +63,48 @@ export interface AppBackupPayload {
     memories: number;
     generatorSessions: number;
     imageAssets: number;
+    groupRooms: number;
+    groupParticipants: number;
+    groupMessages: number;
+    groupEvents: number;
+    groupPersonaStates: number;
+    groupRelationEdges: number;
+    groupSharedMemories: number;
+    groupPrivateMemories: number;
+    groupSnapshots: number;
     includesSettings: boolean;
+    rawSnapshot: boolean;
   };
 }
+
+interface RawSnapshotBackupPayload {
+  kind: "idb_raw_snapshot";
+  schemaVersion: 1;
+  exportedAt: string;
+  stores: Record<string, unknown[]>;
+}
+
+export type ParsedBackupPayload = AppBackupPayload | RawSnapshotBackupPayload;
 
 interface BuildBackupPayloadOptions {
   scope: BackupExportScope;
   chatId?: string;
 }
 
-const BACKUP_SCHEMA_VERSION = 1;
+const BACKUP_SCHEMA_VERSION = 2;
+const RAW_BACKUP_SCHEMA_VERSION = 1;
 const BACKUP_JSON_FILE_NAME = "backup.json";
+
+function isRawSnapshotPayload(
+  payload: ParsedBackupPayload,
+): payload is RawSnapshotBackupPayload {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "kind" in payload &&
+    payload.kind === "idb_raw_snapshot"
+  );
+}
 
 export interface PreparedBackupFile {
   fileName: string;
@@ -156,7 +205,43 @@ function buildPayloadMeta(bundle: BackupDataBundle): AppBackupPayload["meta"] {
     memories: bundle.memories.length,
     generatorSessions: bundle.generatorSessions.length,
     imageAssets: bundle.imageAssets.length,
+    groupRooms: bundle.groupRooms.length,
+    groupParticipants: bundle.groupParticipants.length,
+    groupMessages: bundle.groupMessages.length,
+    groupEvents: bundle.groupEvents.length,
+    groupPersonaStates: bundle.groupPersonaStates.length,
+    groupRelationEdges: bundle.groupRelationEdges.length,
+    groupSharedMemories: bundle.groupSharedMemories.length,
+    groupPrivateMemories: bundle.groupPrivateMemories.length,
+    groupSnapshots: bundle.groupSnapshots.length,
     includesSettings: Boolean(bundle.settings),
+    rawSnapshot: false,
+  };
+}
+
+function buildRawMeta(stores: Record<string, unknown[]>): AppBackupPayload["meta"] {
+  const count = (name: string) =>
+    Array.isArray(stores[name]) ? stores[name].length : 0;
+
+  return {
+    personas: count("personas"),
+    chats: count("chats"),
+    messages: count("messages"),
+    personaStates: count("personaStates"),
+    memories: count("memories"),
+    generatorSessions: count("generatorSessions"),
+    imageAssets: count("imageAssets"),
+    groupRooms: count("groupRooms"),
+    groupParticipants: count("groupParticipants"),
+    groupMessages: count("groupMessages"),
+    groupEvents: count("groupEvents"),
+    groupPersonaStates: count("groupPersonaStates"),
+    groupRelationEdges: count("groupRelationEdges"),
+    groupSharedMemories: count("groupSharedMemories"),
+    groupPrivateMemories: count("groupPrivateMemories"),
+    groupSnapshots: count("groupSnapshots"),
+    includesSettings: count("settings") > 0,
+    rawSnapshot: true,
   };
 }
 
@@ -172,6 +257,7 @@ export async function buildBackupPayload({
     allMemories,
     allGeneratorSessions,
     allImageAssets,
+    allGroupRooms,
     settings,
   ] = await Promise.all([
     dbApi.getPersonas(),
@@ -181,6 +267,7 @@ export async function buildBackupPayload({
     dbApi.getAllMemories(),
     dbApi.getAllGeneratorSessions(),
     dbApi.getAllImageAssets(),
+    dbApi.getGroupRooms(),
     dbApi.getSettings(),
   ]);
 
@@ -191,6 +278,15 @@ export async function buildBackupPayload({
   let memories: PersonaMemory[] = [];
   let generatorSessions: GeneratorSession[] = [];
   let imageAssets: ImageAsset[] = [];
+  let groupRooms: GroupRoom[] = [];
+  let groupParticipants: GroupParticipant[] = [];
+  let groupMessages: GroupMessage[] = [];
+  let groupEvents: GroupEvent[] = [];
+  let groupPersonaStates: GroupPersonaState[] = [];
+  let groupRelationEdges: GroupRelationEdge[] = [];
+  let groupSharedMemories: GroupMemoryShared[] = [];
+  let groupPrivateMemories: GroupMemoryPrivate[] = [];
+  let groupSnapshots: GroupSnapshot[] = [];
   let includeSettings = false;
 
   if (scope === "all") {
@@ -202,6 +298,51 @@ export async function buildBackupPayload({
     memories = allMemories;
     generatorSessions = allGeneratorSessions;
     imageAssets = allImageAssets;
+    groupRooms = allGroupRooms;
+    if (groupRooms.length > 0) {
+      const roomArtifacts = await Promise.all(
+        groupRooms.map(async (room) => {
+          const roomId = room.id;
+          const [
+            participants,
+            roomMessages,
+            events,
+            states,
+            relationEdges,
+            sharedMemories,
+            privateMemories,
+            snapshots,
+          ] = await Promise.all([
+            dbApi.getGroupParticipants(roomId),
+            dbApi.getGroupMessages(roomId),
+            dbApi.getGroupEvents(roomId),
+            dbApi.getGroupPersonaStates(roomId),
+            dbApi.getGroupRelationEdges(roomId),
+            dbApi.getGroupSharedMemories(roomId),
+            dbApi.getGroupPrivateMemories(roomId),
+            dbApi.getGroupSnapshots(roomId),
+          ]);
+          return {
+            participants,
+            roomMessages,
+            events,
+            states,
+            relationEdges,
+            sharedMemories,
+            privateMemories,
+            snapshots,
+          };
+        }),
+      );
+      groupParticipants = roomArtifacts.flatMap((item) => item.participants);
+      groupMessages = roomArtifacts.flatMap((item) => item.roomMessages);
+      groupEvents = roomArtifacts.flatMap((item) => item.events);
+      groupPersonaStates = roomArtifacts.flatMap((item) => item.states);
+      groupRelationEdges = roomArtifacts.flatMap((item) => item.relationEdges);
+      groupSharedMemories = roomArtifacts.flatMap((item) => item.sharedMemories);
+      groupPrivateMemories = roomArtifacts.flatMap((item) => item.privateMemories);
+      groupSnapshots = roomArtifacts.flatMap((item) => item.snapshots);
+    }
   } else if (scope === "personas") {
     personas = allPersonas;
   } else if (scope === "all_chats") {
@@ -255,6 +396,15 @@ export async function buildBackupPayload({
     memories: uniqueByKey(memories, (memory) => memory.id),
     generatorSessions: uniqueByKey(generatorSessions, (session) => session.id),
     imageAssets: uniqueByKey(imageAssets, (asset) => asset.id),
+    groupRooms: uniqueByKey(groupRooms, (room) => room.id),
+    groupParticipants: uniqueByKey(groupParticipants, (participant) => participant.id),
+    groupMessages: uniqueByKey(groupMessages, (message) => message.id),
+    groupEvents: uniqueByKey(groupEvents, (event) => event.id),
+    groupPersonaStates: uniqueByKey(groupPersonaStates, (state) => state.id),
+    groupRelationEdges: uniqueByKey(groupRelationEdges, (edge) => edge.id),
+    groupSharedMemories: uniqueByKey(groupSharedMemories, (memory) => memory.id),
+    groupPrivateMemories: uniqueByKey(groupPrivateMemories, (memory) => memory.id),
+    groupSnapshots: uniqueByKey(groupSnapshots, (snapshot) => snapshot.id),
   };
 
   return {
@@ -268,7 +418,7 @@ export async function buildBackupPayload({
 
 export async function exportBackupFile(
   payload: AppBackupPayload,
-  format: BackupExportFormat,
+  format: Extract<BackupExportFormat, "json" | "zip">,
 ): Promise<PreparedBackupFile> {
   const baseName = `tg-gf-export-${scopeToFilePart(payload.exportScope)}-${fileTimestamp()}`;
   const jsonText = JSON.stringify(payload, null, 2);
@@ -293,7 +443,41 @@ export async function exportBackupFile(
   };
 }
 
-export async function parseBackupFile(file: File): Promise<AppBackupPayload> {
+export async function exportRawBackupFile(
+  format: Extract<BackupExportFormat, "raw_json" | "raw_zip">,
+): Promise<PreparedBackupFile> {
+  const stores = await dbApi.exportRawSnapshot();
+  const payload: RawSnapshotBackupPayload = {
+    kind: "idb_raw_snapshot",
+    schemaVersion: RAW_BACKUP_SCHEMA_VERSION,
+    exportedAt: new Date().toISOString(),
+    stores,
+  };
+  const baseName = `tg-gf-raw-idb-${fileTimestamp()}`;
+  const jsonText = JSON.stringify(payload, null, 2);
+
+  if (format === "raw_json") {
+    return {
+      fileName: `${baseName}.json`,
+      blob: new Blob([jsonText], {
+        type: "application/json;charset=utf-8",
+      }),
+    };
+  }
+
+  const zip = new JSZip();
+  zip.file(BACKUP_JSON_FILE_NAME, jsonText);
+  return {
+    fileName: `${baseName}.zip`,
+    blob: await zip.generateAsync({
+      type: "blob",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 },
+    }),
+  };
+}
+
+export async function parseBackupFile(file: File): Promise<ParsedBackupPayload> {
   const fileName = file.name.toLowerCase();
   let jsonText = "";
   if (fileName.endsWith(".zip")) {
@@ -320,10 +504,27 @@ export async function parseBackupFile(file: File): Promise<AppBackupPayload> {
     rawPayload,
     "Некорректный формат файла бэкапа.",
   );
-  const dataObject = ensureObject(
-    payloadObject.data,
-    "В бэкапе отсутствует секция data.",
-  );
+  if (payloadObject.kind === "idb_raw_snapshot") {
+    const storesRaw =
+      payloadObject.stores && typeof payloadObject.stores === "object"
+        ? (payloadObject.stores as Record<string, unknown>)
+        : {};
+    const stores: Record<string, unknown[]> = {};
+    for (const [storeName, value] of Object.entries(storesRaw)) {
+      stores[storeName] = Array.isArray(value) ? value : [];
+    }
+    return {
+      kind: "idb_raw_snapshot",
+      schemaVersion: RAW_BACKUP_SCHEMA_VERSION,
+      exportedAt:
+        typeof payloadObject.exportedAt === "string"
+          ? payloadObject.exportedAt
+          : new Date().toISOString(),
+      stores,
+    };
+  }
+
+  const dataObject = ensureObject(payloadObject.data, "В бэкапе отсутствует секция data.");
 
   const exportScope = payloadObject.exportScope;
   const normalizedScope: BackupExportScope =
@@ -348,6 +549,15 @@ export async function parseBackupFile(file: File): Promise<AppBackupPayload> {
     memories: readArray<PersonaMemory>(dataObject.memories),
     generatorSessions: readArray<GeneratorSession>(dataObject.generatorSessions),
     imageAssets: readArray<ImageAsset>(dataObject.imageAssets),
+    groupRooms: readArray<GroupRoom>(dataObject.groupRooms),
+    groupParticipants: readArray<GroupParticipant>(dataObject.groupParticipants),
+    groupMessages: readArray<GroupMessage>(dataObject.groupMessages),
+    groupEvents: readArray<GroupEvent>(dataObject.groupEvents),
+    groupPersonaStates: readArray<GroupPersonaState>(dataObject.groupPersonaStates),
+    groupRelationEdges: readArray<GroupRelationEdge>(dataObject.groupRelationEdges),
+    groupSharedMemories: readArray<GroupMemoryShared>(dataObject.groupSharedMemories),
+    groupPrivateMemories: readArray<GroupMemoryPrivate>(dataObject.groupPrivateMemories),
+    groupSnapshots: readArray<GroupSnapshot>(dataObject.groupSnapshots),
   };
 
   return {
@@ -363,9 +573,14 @@ export async function parseBackupFile(file: File): Promise<AppBackupPayload> {
 }
 
 export async function importBackupPayload(
-  payload: AppBackupPayload,
+  payload: ParsedBackupPayload,
   mode: BackupImportMode = "merge",
 ) {
+  if (isRawSnapshotPayload(payload)) {
+    await dbApi.importRawSnapshot(payload.stores, mode);
+    return buildRawMeta(payload.stores);
+  }
+
   const data = payload.data;
   const imageAssets = uniqueByKey(data.imageAssets, (asset) => asset.id);
   const personas = uniqueByKey(data.personas, (persona) => persona.id);
@@ -377,6 +592,30 @@ export async function importBackupPayload(
     data.generatorSessions,
     (session) => session.id,
   );
+  const groupRooms = uniqueByKey(data.groupRooms, (room) => room.id);
+  const groupParticipants = uniqueByKey(
+    data.groupParticipants,
+    (participant) => participant.id,
+  );
+  const groupMessages = uniqueByKey(data.groupMessages, (message) => message.id);
+  const groupEvents = uniqueByKey(data.groupEvents, (event) => event.id);
+  const groupPersonaStates = uniqueByKey(
+    data.groupPersonaStates,
+    (state) => state.id,
+  );
+  const groupRelationEdges = uniqueByKey(
+    data.groupRelationEdges,
+    (edge) => edge.id,
+  );
+  const groupSharedMemories = uniqueByKey(
+    data.groupSharedMemories,
+    (memory) => memory.id,
+  );
+  const groupPrivateMemories = uniqueByKey(
+    data.groupPrivateMemories,
+    (memory) => memory.id,
+  );
+  const groupSnapshots = uniqueByKey(data.groupSnapshots, (snapshot) => snapshot.id);
 
   if (mode === "replace") {
     await dbApi.clearAllData();
@@ -393,6 +632,15 @@ export async function importBackupPayload(
   await Promise.all(
     generatorSessions.map((session) => dbApi.saveGeneratorSession(session)),
   );
+  await Promise.all(groupRooms.map((room) => dbApi.saveGroupRoom(room)));
+  await dbApi.saveGroupParticipants(groupParticipants);
+  await Promise.all(groupMessages.map((message) => dbApi.saveGroupMessage(message)));
+  await dbApi.appendGroupEvents(groupEvents);
+  await dbApi.saveGroupPersonaStates(groupPersonaStates);
+  await dbApi.saveGroupRelationEdges(groupRelationEdges);
+  await dbApi.saveGroupSharedMemories(groupSharedMemories);
+  await dbApi.saveGroupPrivateMemories(groupPrivateMemories);
+  await Promise.all(groupSnapshots.map((snapshot) => dbApi.saveGroupSnapshot(snapshot)));
 
   if (data.settings) {
     await dbApi.saveSettings(data.settings);
@@ -407,5 +655,14 @@ export async function importBackupPayload(
     memories,
     generatorSessions,
     imageAssets,
+    groupRooms,
+    groupParticipants,
+    groupMessages,
+    groupEvents,
+    groupPersonaStates,
+    groupRelationEdges,
+    groupSharedMemories,
+    groupPrivateMemories,
+    groupSnapshots,
   });
 }

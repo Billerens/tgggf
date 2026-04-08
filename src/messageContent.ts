@@ -18,6 +18,46 @@ export interface AssistantContentParts {
   personaControl?: PersonaControlPayload;
 }
 
+const LEAKED_DIAGNOSTIC_KEYS = new Set([
+  "mood",
+  "trusttouser",
+  "energy",
+  "engagement",
+  "initiative",
+  "affectiontouser",
+  "tension",
+  "addressedtocurrentpersona",
+  "mentionedpersonanames",
+  "rawmentions",
+]);
+
+function isDiagnosticAssignment(value: string) {
+  const match = value.match(/^([a-zA-Z][\w]*)\s*=\s*.+$/);
+  if (!match) return false;
+  return LEAKED_DIAGNOSTIC_KEYS.has(match[1].toLowerCase());
+}
+
+function stripLeakedDiagnosticLines(value: string) {
+  const lines = value.split(/\r?\n/);
+  const kept: string[] = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      kept.push("");
+      continue;
+    }
+    if (isDiagnosticAssignment(trimmed)) {
+      continue;
+    }
+    const parts = trimmed.split(/\s*,\s*/g).filter(Boolean);
+    if (parts.length > 1 && parts.every(isDiagnosticAssignment)) {
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function tryParseJsonObject(raw: string) {
   const trimmed = raw.trim();
   if (!trimmed) return undefined;
@@ -202,18 +242,6 @@ function normalizeStateDelta(obj: Record<string, unknown>) {
   if (relationshipType) stateDelta.relationshipType = relationshipType;
   if (typeof relationshipDepth === "number") stateDelta.relationshipDepth = relationshipDepth;
 
-  const topics = asStringArray(
-    (deltaRaw.activeTopicsAdd ??
-      deltaRaw.active_topics_add ??
-      deltaRaw.topicsAdd ??
-      deltaRaw.topics_add ??
-      deltaRaw.topics) as unknown,
-    10,
-  );
-  if (topics.length > 0) {
-    stateDelta.activeTopicsAdd = topics;
-  }
-
   return Object.keys(stateDelta).length > 0 ? stateDelta : undefined;
 }
 
@@ -299,7 +327,8 @@ export function splitAssistantContent(rawContent: string): AssistantContentParts
   const comfyPrompts: string[] = [];
   const comfyImageDescriptions: string[] = [];
   let personaControl: PersonaControlPayload | undefined;
-  const visibleText = rawContent
+  const visibleText = stripLeakedDiagnosticLines(
+    rawContent
     .replace(COMFY_UI_PROMPT_BLOCK_REGEX, (_, inner: string) => {
       const candidate = inner.trim();
       if (candidate) {
@@ -322,7 +351,8 @@ export function splitAssistantContent(rawContent: string): AssistantContentParts
       return "";
     })
     .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .trim(),
+  );
 
   return {
     visibleText,

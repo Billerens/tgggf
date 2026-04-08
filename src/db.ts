@@ -9,8 +9,18 @@ import type {
   EndpointAuthConfig,
   EnhanceDetailLevel,
   EnhanceDetailStrengthTable,
+  GroupEvent,
+  GroupMemoryPrivate,
+  GroupMemoryShared,
+  GroupMessage,
+  GroupParticipant,
+  GroupPersonaState,
+  GroupRelationEdge,
+  GroupRoom,
+  GroupSnapshot,
   GeneratorSession,
   ImageAsset,
+  LlmProvider,
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
@@ -56,16 +66,64 @@ interface TgGfDb extends DBSchema {
     value: ImageAsset;
     indexes: { "by-createdAt": string };
   };
+  groupRooms: {
+    key: string;
+    value: GroupRoom;
+    indexes: { "by-updatedAt": string; "by-mode": string };
+  };
+  groupParticipants: {
+    key: string;
+    value: GroupParticipant;
+    indexes: { "by-room": string; "by-persona": string; "by-updatedAt": string };
+  };
+  groupMessages: {
+    key: string;
+    value: GroupMessage;
+    indexes: { "by-room": string; "by-createdAt": string; "by-authorPersona": string };
+  };
+  groupEvents: {
+    key: string;
+    value: GroupEvent;
+    indexes: { "by-room": string; "by-createdAt": string; "by-type": string };
+  };
+  groupPersonaStates: {
+    key: string;
+    value: GroupPersonaState;
+    indexes: { "by-room": string; "by-persona": string; "by-updatedAt": string };
+  };
+  groupRelationEdges: {
+    key: string;
+    value: GroupRelationEdge;
+    indexes: { "by-room": string; "by-source": string; "by-target": string; "by-updatedAt": string };
+  };
+  groupSharedMemories: {
+    key: string;
+    value: GroupMemoryShared;
+    indexes: { "by-room": string; "by-updatedAt": string };
+  };
+  groupPrivateMemories: {
+    key: string;
+    value: GroupMemoryPrivate;
+    indexes: { "by-room": string; "by-persona": string; "by-updatedAt": string };
+  };
+  groupSnapshots: {
+    key: string;
+    value: GroupSnapshot;
+    indexes: { "by-room": string; "by-createdAt": string };
+  };
 }
 
 const DB_NAME = "tg-gf-db";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
+const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
+const LLM_PROVIDERS: LlmProvider[] = ["lmstudio", "openrouter", "huggingface"];
 const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = ["soft", "medium", "strong"];
 const DEFAULT_ENHANCE_DETAIL_STRENGTH_TABLE: EnhanceDetailStrengthTable = {
   soft: {
@@ -182,7 +240,32 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
     merged.lmBaseUrl = trimmedBaseUrl;
   }
 
+  merged.openRouterBaseUrl =
+    toTrimmedString(merged.openRouterBaseUrl) || DEFAULT_SETTINGS.openRouterBaseUrl;
+  merged.huggingFaceBaseUrl =
+    toTrimmedString(merged.huggingFaceBaseUrl) || DEFAULT_SETTINGS.huggingFaceBaseUrl;
+
+  merged.oneToOneProvider = LLM_PROVIDERS.includes(merged.oneToOneProvider)
+    ? merged.oneToOneProvider
+    : DEFAULT_SETTINGS.oneToOneProvider;
+  merged.groupOrchestratorProvider = LLM_PROVIDERS.includes(merged.groupOrchestratorProvider)
+    ? merged.groupOrchestratorProvider
+    : DEFAULT_SETTINGS.groupOrchestratorProvider;
+  merged.groupPersonaProvider = LLM_PROVIDERS.includes(merged.groupPersonaProvider)
+    ? merged.groupPersonaProvider
+    : DEFAULT_SETTINGS.groupPersonaProvider;
+  merged.imagePromptProvider = LLM_PROVIDERS.includes(merged.imagePromptProvider)
+    ? merged.imagePromptProvider
+    : DEFAULT_SETTINGS.imagePromptProvider;
+  merged.personaGenerationProvider = LLM_PROVIDERS.includes(merged.personaGenerationProvider)
+    ? merged.personaGenerationProvider
+    : DEFAULT_SETTINGS.personaGenerationProvider;
+
   merged.model = toTrimmedString(merged.model) || DEFAULT_SETTINGS.model;
+  merged.groupOrchestratorModel =
+    toTrimmedString(merged.groupOrchestratorModel) || merged.model || DEFAULT_SETTINGS.model;
+  merged.groupPersonaModel =
+    toTrimmedString(merged.groupPersonaModel) || merged.model || DEFAULT_SETTINGS.model;
   merged.imagePromptModel =
     toTrimmedString(merged.imagePromptModel) || merged.model || DEFAULT_SETTINGS.model;
   merged.personaGenerationModel =
@@ -195,15 +278,38 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   merged.chatStyleStrength = Math.max(0, Math.min(1, Number(merged.chatStyleStrength)));
   merged.apiKey = toTrimmedString(merged.apiKey);
   merged.lmAuth = normalizeAuthConfig(merged.lmAuth, DEFAULT_SETTINGS.lmAuth);
+  merged.openRouterAuth = normalizeAuthConfig(
+    merged.openRouterAuth,
+    DEFAULT_SETTINGS.openRouterAuth,
+  );
+  merged.huggingFaceAuth = normalizeAuthConfig(
+    merged.huggingFaceAuth,
+    DEFAULT_SETTINGS.huggingFaceAuth,
+  );
   merged.comfyAuth = normalizeAuthConfig(
     merged.comfyAuth,
     DEFAULT_SETTINGS.comfyAuth,
   );
+  merged.userName = toTrimmedString(merged.userName) || DEFAULT_SETTINGS.userName;
 
   // Backward compatibility for old single API key setting.
   if (!merged.lmAuth.token && merged.apiKey) {
     merged.lmAuth = {
       ...merged.lmAuth,
+      mode: "bearer",
+      token: merged.apiKey,
+    };
+  }
+  if (!merged.openRouterAuth.token && merged.apiKey) {
+    merged.openRouterAuth = {
+      ...merged.openRouterAuth,
+      mode: "bearer",
+      token: merged.apiKey,
+    };
+  }
+  if (!merged.huggingFaceAuth.token && merged.apiKey) {
+    merged.huggingFaceAuth = {
+      ...merged.huggingFaceAuth,
       mode: "bearer",
       token: merged.apiKey,
     };
@@ -232,6 +338,56 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
     next.chatStyleStrength = Math.max(0, Math.min(1, Number(next.chatStyleStrength)));
   } else {
     delete next.chatStyleStrength;
+  }
+  const normalizeSummaryList = (input: unknown, maxItems = 10, maxLen = 220) => {
+    if (!Array.isArray(input)) return [] as string[];
+    return input
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean)
+      .map((item) => (item.length > maxLen ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…` : item))
+      .slice(0, maxItems);
+  };
+  const summaryText = toTrimmedString(next.conversationSummary);
+  if (summaryText) {
+    next.conversationSummary =
+      summaryText.length > 6000
+        ? `${summaryText.slice(0, 5999).trimEnd()}…`
+        : summaryText;
+  } else {
+    delete next.conversationSummary;
+  }
+  next.summaryFacts = normalizeSummaryList(next.summaryFacts, 10, 180);
+  next.summaryGoals = normalizeSummaryList(next.summaryGoals, 8, 180);
+  next.summaryOpenThreads = normalizeSummaryList(next.summaryOpenThreads, 10, 200);
+  next.summaryAgreements = normalizeSummaryList(next.summaryAgreements, 8, 200);
+  if (!next.summaryFacts.length) delete next.summaryFacts;
+  if (!next.summaryGoals.length) delete next.summaryGoals;
+  if (!next.summaryOpenThreads.length) delete next.summaryOpenThreads;
+  if (!next.summaryAgreements.length) delete next.summaryAgreements;
+  const cursor = toTrimmedString(next.summaryCursorMessageId);
+  if (cursor) {
+    next.summaryCursorMessageId = cursor;
+  } else {
+    delete next.summaryCursorMessageId;
+  }
+  const summaryUpdatedAt = toTrimmedString(next.summaryUpdatedAt);
+  if (summaryUpdatedAt) {
+    next.summaryUpdatedAt = summaryUpdatedAt;
+  } else {
+    delete next.summaryUpdatedAt;
+  }
+  if (
+    typeof next.summaryTokenBudget === "number" &&
+    Number.isFinite(next.summaryTokenBudget)
+  ) {
+    const normalizedBudget = Math.max(
+      600,
+      Math.min(3000, Math.round(next.summaryTokenBudget)),
+    );
+    // Migrate legacy low values to the current default budget.
+    next.summaryTokenBudget = Math.max(3000, normalizedBudget);
+  } else {
+    delete next.summaryTokenBudget;
   }
   return next;
 }
@@ -283,9 +439,18 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
 
 const DEFAULT_SETTINGS: AppSettings = {
   lmBaseUrl: resolveDefaultBaseUrl(),
+  openRouterBaseUrl: DEFAULT_OPENROUTER_BASE_URL,
+  huggingFaceBaseUrl: DEFAULT_HUGGINGFACE_BASE_URL,
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
   saveComfyOutputs: false,
+  oneToOneProvider: "lmstudio",
+  groupOrchestratorProvider: "lmstudio",
+  groupPersonaProvider: "lmstudio",
+  imagePromptProvider: "lmstudio",
+  personaGenerationProvider: "lmstudio",
   model: "local-model",
+  groupOrchestratorModel: "local-model",
+  groupPersonaModel: "local-model",
   imagePromptModel: "local-model",
   personaGenerationModel: "local-model",
   temperature: 0.7,
@@ -293,6 +458,22 @@ const DEFAULT_SETTINGS: AppSettings = {
   chatStyleStrength: 0.9,
   apiKey: "",
   lmAuth: {
+    mode: "none",
+    token: "",
+    username: "",
+    password: "",
+    headerName: "Authorization",
+    headerPrefix: "Bearer",
+  },
+  openRouterAuth: {
+    mode: "none",
+    token: "",
+    username: "",
+    password: "",
+    headerName: "Authorization",
+    headerPrefix: "Bearer",
+  },
+  huggingFaceAuth: {
     mode: "none",
     token: "",
     username: "",
@@ -308,6 +489,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     headerName: "Authorization",
     headerPrefix: "Bearer",
   },
+  userName: "Пользователь",
   userGender: "unspecified",
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
@@ -375,6 +557,67 @@ function getDb() {
           const imageAssets = db.createObjectStore("imageAssets", { keyPath: "id" });
           imageAssets.createIndex("by-createdAt", "createdAt");
         }
+
+        if (!db.objectStoreNames.contains("groupRooms")) {
+          const groupRooms = db.createObjectStore("groupRooms", { keyPath: "id" });
+          groupRooms.createIndex("by-updatedAt", "updatedAt");
+          groupRooms.createIndex("by-mode", "mode");
+        }
+
+        if (!db.objectStoreNames.contains("groupParticipants")) {
+          const groupParticipants = db.createObjectStore("groupParticipants", { keyPath: "id" });
+          groupParticipants.createIndex("by-room", "roomId");
+          groupParticipants.createIndex("by-persona", "personaId");
+          groupParticipants.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("groupMessages")) {
+          const groupMessages = db.createObjectStore("groupMessages", { keyPath: "id" });
+          groupMessages.createIndex("by-room", "roomId");
+          groupMessages.createIndex("by-createdAt", "createdAt");
+          groupMessages.createIndex("by-authorPersona", "authorPersonaId");
+        }
+
+        if (!db.objectStoreNames.contains("groupEvents")) {
+          const groupEvents = db.createObjectStore("groupEvents", { keyPath: "id" });
+          groupEvents.createIndex("by-room", "roomId");
+          groupEvents.createIndex("by-createdAt", "createdAt");
+          groupEvents.createIndex("by-type", "type");
+        }
+
+        if (!db.objectStoreNames.contains("groupPersonaStates")) {
+          const groupPersonaStates = db.createObjectStore("groupPersonaStates", { keyPath: "id" });
+          groupPersonaStates.createIndex("by-room", "roomId");
+          groupPersonaStates.createIndex("by-persona", "personaId");
+          groupPersonaStates.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("groupRelationEdges")) {
+          const groupRelationEdges = db.createObjectStore("groupRelationEdges", { keyPath: "id" });
+          groupRelationEdges.createIndex("by-room", "roomId");
+          groupRelationEdges.createIndex("by-source", "fromPersonaId");
+          groupRelationEdges.createIndex("by-target", "toPersonaId");
+          groupRelationEdges.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("groupSharedMemories")) {
+          const groupSharedMemories = db.createObjectStore("groupSharedMemories", { keyPath: "id" });
+          groupSharedMemories.createIndex("by-room", "roomId");
+          groupSharedMemories.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("groupPrivateMemories")) {
+          const groupPrivateMemories = db.createObjectStore("groupPrivateMemories", { keyPath: "id" });
+          groupPrivateMemories.createIndex("by-room", "roomId");
+          groupPrivateMemories.createIndex("by-persona", "personaId");
+          groupPrivateMemories.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("groupSnapshots")) {
+          const groupSnapshots = db.createObjectStore("groupSnapshots", { keyPath: "id" });
+          groupSnapshots.createIndex("by-room", "roomId");
+          groupSnapshots.createIndex("by-createdAt", "createdAt");
+        }
       },
     }).catch((error) => {
       if (!isVersionDowngradeError(error)) {
@@ -401,6 +644,15 @@ export const dbApi = {
         "settings",
         "generatorSessions",
         "imageAssets",
+        "groupRooms",
+        "groupParticipants",
+        "groupMessages",
+        "groupEvents",
+        "groupPersonaStates",
+        "groupRelationEdges",
+        "groupSharedMemories",
+        "groupPrivateMemories",
+        "groupSnapshots",
       ],
       "readwrite",
     );
@@ -412,6 +664,15 @@ export const dbApi = {
     await tx.objectStore("settings").clear();
     await tx.objectStore("generatorSessions").clear();
     await tx.objectStore("imageAssets").clear();
+    await tx.objectStore("groupRooms").clear();
+    await tx.objectStore("groupParticipants").clear();
+    await tx.objectStore("groupMessages").clear();
+    await tx.objectStore("groupEvents").clear();
+    await tx.objectStore("groupPersonaStates").clear();
+    await tx.objectStore("groupRelationEdges").clear();
+    await tx.objectStore("groupSharedMemories").clear();
+    await tx.objectStore("groupPrivateMemories").clear();
+    await tx.objectStore("groupSnapshots").clear();
     await tx.done;
   },
 
@@ -431,7 +692,18 @@ export const dbApi = {
   async deletePersona(personaId: string) {
     const db = await getDb();
     const tx = db.transaction(
-      ["personas", "chats", "messages", "personaStates", "memories", "generatorSessions"],
+      [
+        "personas",
+        "chats",
+        "messages",
+        "personaStates",
+        "memories",
+        "generatorSessions",
+        "groupParticipants",
+        "groupPersonaStates",
+        "groupRelationEdges",
+        "groupPrivateMemories",
+      ],
       "readwrite",
     );
     await tx.objectStore("personas").delete(personaId);
@@ -464,6 +736,45 @@ export const dbApi = {
       .getAllKeys(personaId);
     for (const key of generatorSessionKeys) {
       await tx.objectStore("generatorSessions").delete(key);
+    }
+
+    const groupParticipantKeys = await tx
+      .objectStore("groupParticipants")
+      .index("by-persona")
+      .getAllKeys(personaId);
+    for (const key of groupParticipantKeys) {
+      await tx.objectStore("groupParticipants").delete(key);
+    }
+
+    const groupPersonaStateKeys = await tx
+      .objectStore("groupPersonaStates")
+      .index("by-persona")
+      .getAllKeys(personaId);
+    for (const key of groupPersonaStateKeys) {
+      await tx.objectStore("groupPersonaStates").delete(key);
+    }
+
+    const groupPrivateMemoryKeys = await tx
+      .objectStore("groupPrivateMemories")
+      .index("by-persona")
+      .getAllKeys(personaId);
+    for (const key of groupPrivateMemoryKeys) {
+      await tx.objectStore("groupPrivateMemories").delete(key);
+    }
+
+    const relationBySource = await tx
+      .objectStore("groupRelationEdges")
+      .index("by-source")
+      .getAllKeys(personaId);
+    for (const key of relationBySource) {
+      await tx.objectStore("groupRelationEdges").delete(key);
+    }
+    const relationByTarget = await tx
+      .objectStore("groupRelationEdges")
+      .index("by-target")
+      .getAllKeys(personaId);
+    for (const key of relationByTarget) {
+      await tx.objectStore("groupRelationEdges").delete(key);
     }
 
     await tx.done;
@@ -666,6 +977,300 @@ export const dbApi = {
       await tx.store.delete(imageId);
     }
     await tx.done;
+  },
+
+  async getGroupRooms() {
+    const db = await getDb();
+    const rows = await db.getAll("groupRooms");
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async getGroupRoom(roomId: string) {
+    const db = await getDb();
+    return db.get("groupRooms", roomId);
+  },
+
+  async saveGroupRoom(room: GroupRoom) {
+    const db = await getDb();
+    await db.put("groupRooms", room);
+  },
+
+  async deleteGroupRoom(roomId: string) {
+    const db = await getDb();
+    const tx = db.transaction(
+      [
+        "groupRooms",
+        "groupParticipants",
+        "groupMessages",
+        "groupEvents",
+        "groupPersonaStates",
+        "groupRelationEdges",
+        "groupSharedMemories",
+        "groupPrivateMemories",
+        "groupSnapshots",
+      ],
+      "readwrite",
+    );
+
+    await tx.objectStore("groupRooms").delete(roomId);
+
+    const byRoomStores: Array<
+      | "groupParticipants"
+      | "groupMessages"
+      | "groupEvents"
+      | "groupPersonaStates"
+      | "groupRelationEdges"
+      | "groupSharedMemories"
+      | "groupPrivateMemories"
+      | "groupSnapshots"
+    > = [
+      "groupParticipants",
+      "groupMessages",
+      "groupEvents",
+      "groupPersonaStates",
+      "groupRelationEdges",
+      "groupSharedMemories",
+      "groupPrivateMemories",
+      "groupSnapshots",
+    ];
+
+    for (const storeName of byRoomStores) {
+      const keys = await tx.objectStore(storeName).index("by-room").getAllKeys(roomId);
+      for (const key of keys) {
+        await tx.objectStore(storeName).delete(key);
+      }
+    }
+
+    await tx.done;
+  },
+
+  async getGroupParticipants(roomId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("groupParticipants", "by-room", roomId);
+    return rows.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
+  },
+
+  async saveGroupParticipant(participant: GroupParticipant) {
+    const db = await getDb();
+    await db.put("groupParticipants", participant);
+  },
+
+  async saveGroupParticipants(participants: GroupParticipant[]) {
+    if (participants.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupParticipants", "readwrite");
+    for (const participant of participants) {
+      await tx.store.put(participant);
+    }
+    await tx.done;
+  },
+
+  async deleteGroupParticipant(participantId: string) {
+    const db = await getDb();
+    await db.delete("groupParticipants", participantId);
+  },
+
+  async getGroupMessages(roomId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("groupMessages", "by-room", roomId);
+    return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  },
+
+  async saveGroupMessage(message: GroupMessage) {
+    const db = await getDb();
+    await db.put("groupMessages", message);
+  },
+
+  async getGroupEvents(roomId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("groupEvents", "by-room", roomId);
+    return rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  },
+
+  async saveGroupEvent(event: GroupEvent) {
+    const db = await getDb();
+    await db.put("groupEvents", event);
+  },
+
+  async appendGroupEvents(events: GroupEvent[]) {
+    if (events.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupEvents", "readwrite");
+    for (const event of events) {
+      await tx.store.put(event);
+    }
+    await tx.done;
+  },
+
+  async getGroupPersonaStates(roomId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("groupPersonaStates", "by-room", roomId);
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async saveGroupPersonaState(state: GroupPersonaState) {
+    const db = await getDb();
+    await db.put("groupPersonaStates", state);
+  },
+
+  async saveGroupPersonaStates(states: GroupPersonaState[]) {
+    if (states.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupPersonaStates", "readwrite");
+    for (const state of states) {
+      await tx.store.put(state);
+    }
+    await tx.done;
+  },
+
+  async getGroupRelationEdges(roomId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("groupRelationEdges", "by-room", roomId);
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async saveGroupRelationEdges(edges: GroupRelationEdge[]) {
+    if (edges.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupRelationEdges", "readwrite");
+    for (const edge of edges) {
+      await tx.store.put(edge);
+    }
+    await tx.done;
+  },
+
+  async getGroupSharedMemories(roomId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("groupSharedMemories", "by-room", roomId);
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async saveGroupSharedMemories(memories: GroupMemoryShared[]) {
+    if (memories.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupSharedMemories", "readwrite");
+    for (const memory of memories) {
+      await tx.store.put(memory);
+    }
+    await tx.done;
+  },
+
+  async deleteGroupSharedMemories(memoryIds: string[]) {
+    const uniqueIds = Array.from(new Set(memoryIds.map((value) => value.trim()).filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupSharedMemories", "readwrite");
+    for (const memoryId of uniqueIds) {
+      await tx.store.delete(memoryId);
+    }
+    await tx.done;
+  },
+
+  async getGroupPrivateMemories(roomId: string, personaId?: string) {
+    const db = await getDb();
+    if (personaId?.trim()) {
+      const rows = await db.getAllFromIndex("groupPrivateMemories", "by-persona", personaId.trim());
+      return rows
+        .filter((row) => row.roomId === roomId)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    }
+    const rows = await db.getAllFromIndex("groupPrivateMemories", "by-room", roomId);
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async saveGroupPrivateMemories(memories: GroupMemoryPrivate[]) {
+    if (memories.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupPrivateMemories", "readwrite");
+    for (const memory of memories) {
+      await tx.store.put(memory);
+    }
+    await tx.done;
+  },
+
+  async deleteGroupPrivateMemories(memoryIds: string[]) {
+    const uniqueIds = Array.from(new Set(memoryIds.map((value) => value.trim()).filter(Boolean)));
+    if (uniqueIds.length === 0) return;
+    const db = await getDb();
+    const tx = db.transaction("groupPrivateMemories", "readwrite");
+    for (const memoryId of uniqueIds) {
+      await tx.store.delete(memoryId);
+    }
+    await tx.done;
+  },
+
+  async getGroupSnapshots(roomId: string) {
+    const db = await getDb();
+    const rows = await db.getAllFromIndex("groupSnapshots", "by-room", roomId);
+    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  },
+
+  async saveGroupSnapshot(snapshot: GroupSnapshot) {
+    const db = await getDb();
+    await db.put("groupSnapshots", snapshot);
+  },
+
+  async exportRawSnapshot() {
+    const db = await getDb();
+    const snapshot: Record<string, Array<{ key: unknown; value: unknown }>> = {};
+    const storeNames = Array.from(db.objectStoreNames);
+    for (const storeName of storeNames) {
+      const tx = db.transaction(storeName as never, "readonly");
+      const store = tx.store;
+      const [keys, values] = await Promise.all([store.getAllKeys(), store.getAll()]);
+      snapshot[storeName] = values.map((value, index) => ({
+        key: keys[index],
+        value,
+      }));
+      await tx.done;
+    }
+    return snapshot;
+  },
+
+  async importRawSnapshot(
+    snapshot: Record<string, unknown[]>,
+    mode: "merge" | "replace" = "merge",
+  ) {
+    if (mode === "replace") {
+      await this.clearAllData();
+    }
+
+    const db = await getDb();
+    const storeNames = Array.from(db.objectStoreNames);
+
+    for (const storeName of storeNames) {
+      const rows = Array.isArray(snapshot[storeName])
+        ? snapshot[storeName]
+        : [];
+      if (rows.length === 0) continue;
+      const tx = db.transaction(storeName as never, "readwrite");
+      const hasInlineKey = tx.store.keyPath !== null;
+      for (const row of rows) {
+        const isEntryShape =
+          row && typeof row === "object" && "value" in (row as Record<string, unknown>);
+        if (isEntryShape) {
+          const entry = row as { key?: unknown; value: unknown };
+          if (!hasInlineKey && entry.key !== undefined) {
+            await tx.store.put(entry.value as never, entry.key as never);
+          } else if (!hasInlineKey && storeName === "settings") {
+            await tx.store.put(entry.value as never, SETTINGS_KEY as never);
+          } else {
+            await tx.store.put(entry.value as never);
+          }
+          continue;
+        }
+
+        if (!hasInlineKey && storeName === "settings") {
+          await tx.store.put(row as never, SETTINGS_KEY as never);
+          continue;
+        }
+
+        if (hasInlineKey) {
+          await tx.store.put(row as never);
+        }
+      }
+      await tx.done;
+    }
   },
 };
 
