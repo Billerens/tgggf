@@ -397,10 +397,9 @@ function cleanMemoryContent(raw: string) {
     .trim();
 }
 
-function isOversizedLongTermMemory(content: string) {
-  const words = content.split(/\s+/).filter(Boolean).length;
-  const multiSentence = /[.!?…].+[.!?…]/.test(content);
-  return content.length > 170 || words > 28 || multiSentence;
+function truncateMemoryContent(content: string, maxLength: number) {
+  if (content.length <= maxLength) return content;
+  return `${content.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
 export function applyPersonaControlProposal({
@@ -506,15 +505,13 @@ export function applyPersonaControlProposal({
 
     if (layer === "long_term") {
       const verbatim = looksLikeVerbatimUserMessage(content, userMessage);
-      const oversized = isOversizedLongTermMemory(content);
-      if (verbatim || oversized) {
-        // Long-term should keep only compact semantic facts, not full user replicas.
+      if (verbatim) {
+        // Long-term should not store verbatim replicas of user messages.
         continue;
       }
+      content = truncateMemoryContent(content, 420);
     } else {
-      if (content.length > 240) {
-        content = `${content.slice(0, 239)}…`;
-      }
+      content = truncateMemoryContent(content, 420);
       if (kind !== "event" && kind !== "fact" && kind !== "preference" && kind !== "goal") {
         kind = "event";
       }
@@ -774,8 +771,8 @@ export function reconcilePersistentMemories(
   );
 
   const safeMax = Math.max(6, maxMemories);
-  const longTermBudget = Math.max(4, Math.round(safeMax * 0.68));
-  const episodicBudget = Math.max(2, safeMax - longTermBudget);
+  const longTermBudget = Math.max(6, Math.round(safeMax * 0.9));
+  const episodicBudget = Math.max(1, safeMax - longTermBudget);
   const kept = [...longTermPool.slice(0, longTermBudget), ...episodicPool.slice(0, episodicBudget)];
   const keepIds = new Set(kept.map((memory) => memory.id));
   const removedIds = merged.filter((memory) => !keepIds.has(memory.id)).map((memory) => memory.id);

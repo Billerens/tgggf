@@ -75,7 +75,12 @@ export default function App() {
     deletePersona,
     createChat,
     deleteChat,
+    renameChat,
     setChatStyleStrength,
+    updateActivePersonaState,
+    addManualMemory,
+    updateActiveMemory,
+    deleteActiveMemory,
     sendMessage,
     regenerateMessageComfyPromptAtIndex,
     resolveRelationshipProposal,
@@ -96,6 +101,7 @@ export default function App() {
     initializeGroup,
     createGroupRoom,
     deleteGroupRoom,
+    renameGroupRoom,
     selectGroupRoom,
     sendUserGroupMessage,
     setActiveGroupRoomStatus,
@@ -249,6 +255,7 @@ export default function App() {
     generationSession,
     createGenerationSession,
     deleteGenerationSession,
+    renameGenerationSession,
   } = useGenerationSessionManager({
     personas,
     activePersonaId,
@@ -574,7 +581,14 @@ export default function App() {
         ].join("\n"),
       );
     } catch (error) {
-      useAppStore.setState({ error: (error as Error).message });
+      console.error("[backup/import] ui handler failed", {
+        fileName: file.name,
+        mode,
+        error,
+      });
+      useAppStore.setState({
+        error: `Импорт "${file.name}" не выполнен (${mode}). ${(error as Error).message}`,
+      });
     } finally {
       setImportBusy(false);
     }
@@ -603,6 +617,13 @@ export default function App() {
           onCreateGenerationSession={() => void createGenerationSession()}
           onDeleteGenerationSession={(sessionId) =>
             void deleteGenerationSession(sessionId)
+          }
+          onRenameChat={(chatId, title) => void renameChat(chatId, title)}
+          onRenameGroupRoom={(roomId, title) =>
+            void renameGroupRoom(roomId, title)
+          }
+          onRenameGenerationSession={(sessionId, title) =>
+            void renameGenerationSession(sessionId, title)
           }
           onDeleteGroupRoom={(roomId) => void deleteGroupRoom(roomId)}
           onSelectChat={(chatId) => void selectChat(chatId)}
@@ -736,6 +757,22 @@ export default function App() {
           onRegenerateImage={regenerateSharedImage}
           onUpdateChatStyleStrength={(chatId, value) => {
             void setChatStyleStrength(chatId, value);
+          }}
+          onUpdateRuntimeState={(chatId, patch) => {
+            if (chatId !== activeChatId) return;
+            void updateActivePersonaState(patch);
+          }}
+          onAddMemory={(chatId, payload) => {
+            if (chatId !== activeChatId) return;
+            void addManualMemory(payload);
+          }}
+          onUpdateMemory={(chatId, memoryId, patch) => {
+            if (chatId !== activeChatId) return;
+            void updateActiveMemory(memoryId, patch);
+          }}
+          onDeleteMemory={(chatId, memoryId) => {
+            if (chatId !== activeChatId) return;
+            void deleteActiveMemory(memoryId);
           }}
           onClose={() => setShowChatDetailsModal(false)}
         />

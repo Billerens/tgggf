@@ -51,6 +51,7 @@ interface GroupStoreState {
     options?: { title?: string; mode?: GroupRoomMode; participantPersonaIds?: string[] },
   ) => Promise<void>;
   deleteGroupRoom: (roomId: string) => Promise<void>;
+  renameGroupRoom: (roomId: string, title: string) => Promise<void>;
   selectGroupRoom: (roomId: string) => Promise<void>;
   sendUserGroupMessage: (content: string, userName: string, personas: Persona[]) => Promise<void>;
   savePersonaGroupMessage: (
@@ -975,6 +976,46 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         groupRelationEdges: artifacts.relationEdges,
         groupSharedMemories: artifacts.sharedMemories,
         groupPrivateMemories: artifacts.privateMemories,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  renameGroupRoom: async (roomId, title) => {
+    set({ isLoading: true, error: null });
+    try {
+      const room = get().groupRooms.find((item) => item.id === roomId);
+      if (!room) {
+        set({ isLoading: false });
+        return;
+      }
+
+      const normalizedTitle = title.trim();
+      if (!normalizedTitle) {
+        set({
+          isLoading: false,
+          error: "Название группового чата не может быть пустым.",
+        });
+        return;
+      }
+
+      if (normalizedTitle === room.title) {
+        set({ isLoading: false });
+        return;
+      }
+
+      const updatedRoom: GroupRoom = {
+        ...room,
+        title: normalizedTitle,
+        updatedAt: nowIso(),
+      };
+
+      await dbApi.saveGroupRoom(updatedRoom);
+      const rooms = ensureRoomsState(await dbApi.getGroupRooms());
+      set({
+        groupRooms: rooms,
         isLoading: false,
       });
     } catch (error) {

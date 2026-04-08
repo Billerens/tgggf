@@ -5,6 +5,7 @@ import {
   ImagePlus,
   MessagesSquare,
   MessageCircle,
+  Pencil,
   Plus,
   Settings,
   Trash2,
@@ -12,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { Logo } from "./Logo";
+import { RenameModal } from "./RenameModal";
 import { dbApi } from "../db";
 import type { ChatSession, GeneratorSession, GroupRoom, Persona } from "../types";
 import type { SidebarTab } from "../ui/types";
@@ -36,6 +38,9 @@ interface SidebarProps {
   onCreateGenerationSession: () => void;
   onDeleteGroupRoom: (roomId: string) => void;
   onDeleteGenerationSession: (sessionId: string) => void;
+  onRenameChat: (chatId: string, title: string) => void;
+  onRenameGroupRoom: (roomId: string, title: string) => void;
+  onRenameGenerationSession: (sessionId: string, title: string) => void;
   onSelectChat: (chatId: string) => void;
   onSelectGroupRoom: (roomId: string) => void;
   onSelectGenerationSession: (sessionId: string) => void;
@@ -53,6 +58,23 @@ interface PersonaPickerProps {
   selectedPersonaId: string | null;
   onSelect: (personaId: string) => void;
 }
+
+type RenameTarget =
+  | {
+      kind: "chat";
+      id: string;
+      currentTitle: string;
+    }
+  | {
+      kind: "group";
+      id: string;
+      currentTitle: string;
+    }
+  | {
+      kind: "generation";
+      id: string;
+      currentTitle: string;
+    };
 
 function PersonaPicker({ label, personas, selectedPersonaId, onSelect }: PersonaPickerProps) {
   const [open, setOpen] = useState(false);
@@ -184,6 +206,9 @@ export function Sidebar({
   onCreateGenerationSession,
   onDeleteGroupRoom,
   onDeleteGenerationSession,
+  onRenameChat,
+  onRenameGroupRoom,
+  onRenameGenerationSession,
   onSelectChat,
   onSelectGroupRoom,
   onSelectGenerationSession,
@@ -195,6 +220,7 @@ export function Sidebar({
   onToggleMobileTab,
 }: SidebarProps) {
   const [avatarSrcByPersonaId, setAvatarSrcByPersonaId] = useState<Record<string, string>>({});
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -228,6 +254,31 @@ export function Sidebar({
     const raw = persona.avatarUrl.trim();
     if (!raw || raw.startsWith("idb://")) return "";
     return raw;
+  };
+
+  const renameEntityLabel =
+    renameTarget?.kind === "chat"
+      ? "чат"
+      : renameTarget?.kind === "group"
+        ? "групповой чат"
+        : renameTarget?.kind === "generation"
+          ? "сессия генерации"
+          : "";
+
+  const submitRename = (nextTitle: string) => {
+    if (!renameTarget) return;
+    if (nextTitle === renameTarget.currentTitle.trim()) {
+      setRenameTarget(null);
+      return;
+    }
+    if (renameTarget.kind === "chat") {
+      onRenameChat(renameTarget.id, nextTitle);
+    } else if (renameTarget.kind === "group") {
+      onRenameGroupRoom(renameTarget.id, nextTitle);
+    } else {
+      onRenameGenerationSession(renameTarget.id, nextTitle);
+    }
+    setRenameTarget(null);
   };
 
   return (
@@ -317,33 +368,61 @@ export function Sidebar({
                 <Plus size={16} /> Новый чат
               </button>
             </div>
-            {chats.map((chat) => (
+            {chats.map((chat) =>
               (() => {
-                const chatPersona = personas.find((persona) => persona.id === chat.personaId) ?? null;
-                const avatarLetter = (chatPersona?.name || "?").trim().charAt(0).toUpperCase();
+                const chatPersona =
+                  personas.find((persona) => persona.id === chat.personaId) ?? null;
+                const avatarLetter = (chatPersona?.name || "?")
+                  .trim()
+                  .charAt(0)
+                  .toUpperCase();
                 return (
-                  <button
+                  <div
                     key={chat.id}
-                    type="button"
-                    className={`chat-item ${chat.id === activeChatId ? "active" : ""}`}
-                    onClick={() => {
-                      onSelectChat(chat.id);
-                      onCloseMobile();
-                    }}
+                    className={`chat-item chat-item-with-action ${
+                      chat.id === activeChatId ? "active" : ""
+                    }`}
                   >
-                    <div className="sidebar-item-main">
-                      <div className="sidebar-avatar" aria-hidden="true">
-                        {resolveAvatarSrc(chatPersona) ? <img src={resolveAvatarSrc(chatPersona)} alt="" loading="lazy" /> : <span>{avatarLetter}</span>}
+                    <button
+                      type="button"
+                      className="grow"
+                      onClick={() => {
+                        onSelectChat(chat.id);
+                        onCloseMobile();
+                      }}
+                    >
+                      <div className="sidebar-item-main">
+                        <div className="sidebar-avatar" aria-hidden="true">
+                          {resolveAvatarSrc(chatPersona) ? (
+                            <img src={resolveAvatarSrc(chatPersona)} alt="" loading="lazy" />
+                          ) : (
+                            <span>{avatarLetter}</span>
+                          )}
+                        </div>
+                        <div className="sidebar-item-text">
+                          <strong>{chat.title}</strong>
+                          <span>{formatDate(chat.updatedAt)}</span>
+                        </div>
                       </div>
-                      <div className="sidebar-item-text">
-                        <strong>{chat.title}</strong>
-                        <span>{formatDate(chat.updatedAt)}</span>
-                      </div>
-                    </div>
-                  </button>
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn mini"
+                      onClick={() => {
+                        setRenameTarget({
+                          kind: "chat",
+                          id: chat.id,
+                          currentTitle: chat.title,
+                        });
+                      }}
+                      title="Переименовать чат"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  </div>
                 );
-              })()
-            ))}
+              })(),
+            )}
             {chats.length === 0 ? <p className="empty-state">Чатов пока нет</p> : null}
           </div>
         ) : sidebarTab === "groups" ? (
@@ -380,6 +459,20 @@ export function Sidebar({
                       </span>
                     </div>
                   </div>
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn mini"
+                  onClick={() => {
+                    setRenameTarget({
+                      kind: "group",
+                      id: room.id,
+                      currentTitle: room.title,
+                    });
+                  }}
+                  title="Переименовать группу"
+                >
+                  <Pencil size={14} />
                 </button>
                 <button
                   type="button"
@@ -448,12 +541,14 @@ export function Sidebar({
             {generationSessions.map((session) => {
               const sessionPersona =
                 personas.find((persona) => persona.id === session.personaId) ?? null;
-              const title = session.topic.trim() || "Без темы";
+              const title = session.name.trim() || "Новая сессия";
               const avatarLetter = (sessionPersona?.name || "?").trim().charAt(0).toUpperCase();
               return (
                 <div
                   key={session.id}
-                  className={`chat-item ${session.id === activeGenerationSessionId ? "active" : ""}`}
+                  className={`chat-item chat-item-with-action ${
+                    session.id === activeGenerationSessionId ? "active" : ""
+                  }`}
                 >
                   <button
                     type="button"
@@ -482,6 +577,20 @@ export function Sidebar({
                   </button>
                   <button
                     type="button"
+                    className="icon-btn mini"
+                    onClick={() => {
+                      setRenameTarget({
+                        kind: "generation",
+                        id: session.id,
+                        currentTitle: title,
+                      });
+                    }}
+                    title="Переименовать сессию"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                  <button
+                    type="button"
                     className="icon-btn danger mini"
                     onClick={() => onDeleteGenerationSession(session.id)}
                     title="Удалить сессию"
@@ -500,6 +609,14 @@ export function Sidebar({
       
       {/* Mobile Drawer Backdrop */}
       <div className="sidebar-backdrop" onClick={onCloseMobile} />
+
+      <RenameModal
+        open={Boolean(renameTarget)}
+        entityLabel={renameEntityLabel}
+        initialValue={renameTarget?.currentTitle ?? ""}
+        onClose={() => setRenameTarget(null)}
+        onSubmit={submitRename}
+      />
 
       {/* Mobile Bottom Navigation */}
       <nav className="mobile-bottom-nav">

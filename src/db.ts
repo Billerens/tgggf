@@ -125,6 +125,25 @@ const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
 const LLM_PROVIDERS: LlmProvider[] = ["lmstudio", "openrouter", "huggingface"];
 const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = ["soft", "medium", "strong"];
+const ALL_KNOWN_STORE_NAMES = [
+  "personas",
+  "chats",
+  "messages",
+  "personaStates",
+  "memories",
+  "settings",
+  "generatorSessions",
+  "imageAssets",
+  "groupRooms",
+  "groupParticipants",
+  "groupMessages",
+  "groupEvents",
+  "groupPersonaStates",
+  "groupRelationEdges",
+  "groupSharedMemories",
+  "groupPrivateMemories",
+  "groupSnapshots",
+] as const;
 const DEFAULT_ENHANCE_DETAIL_STRENGTH_TABLE: EnhanceDetailStrengthTable = {
   soft: {
     i2iBase: 0.62,
@@ -393,8 +412,10 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
 }
 
 function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession {
+  const normalizedName = toTrimmedString((session as { name?: string }).name);
   const next: GeneratorSession = {
     ...session,
+    name: normalizedName || "Новая сессия",
     topic: session.topic.trim(),
     status:
       session.status === "running" ||
@@ -634,46 +655,38 @@ function getDb() {
 export const dbApi = {
   async clearAllData() {
     const db = await getDb();
-    const tx = db.transaction(
-      [
-        "personas",
-        "chats",
-        "messages",
-        "personaStates",
-        "memories",
-        "settings",
-        "generatorSessions",
-        "imageAssets",
-        "groupRooms",
-        "groupParticipants",
-        "groupMessages",
-        "groupEvents",
-        "groupPersonaStates",
-        "groupRelationEdges",
-        "groupSharedMemories",
-        "groupPrivateMemories",
-        "groupSnapshots",
-      ],
-      "readwrite",
+    const existingStoreNames = Array.from(db.objectStoreNames).map((name) =>
+      String(name),
     );
-    await tx.objectStore("personas").clear();
-    await tx.objectStore("chats").clear();
-    await tx.objectStore("messages").clear();
-    await tx.objectStore("personaStates").clear();
-    await tx.objectStore("memories").clear();
-    await tx.objectStore("settings").clear();
-    await tx.objectStore("generatorSessions").clear();
-    await tx.objectStore("imageAssets").clear();
-    await tx.objectStore("groupRooms").clear();
-    await tx.objectStore("groupParticipants").clear();
-    await tx.objectStore("groupMessages").clear();
-    await tx.objectStore("groupEvents").clear();
-    await tx.objectStore("groupPersonaStates").clear();
-    await tx.objectStore("groupRelationEdges").clear();
-    await tx.objectStore("groupSharedMemories").clear();
-    await tx.objectStore("groupPrivateMemories").clear();
-    await tx.objectStore("groupSnapshots").clear();
-    await tx.done;
+    const existingStoreSet = new Set(existingStoreNames);
+    const targetStores = ALL_KNOWN_STORE_NAMES.filter((storeName) =>
+      existingStoreSet.has(storeName),
+    );
+    const missingStores = ALL_KNOWN_STORE_NAMES.filter(
+      (storeName) => !existingStoreSet.has(storeName),
+    );
+
+    if (targetStores.length === 0) return;
+
+    try {
+      const tx = db.transaction(targetStores as never, "readwrite");
+      for (const storeName of targetStores) {
+        await tx.objectStore(storeName as never).clear();
+      }
+      await tx.done;
+    } catch (error) {
+      const baseMessage =
+        error instanceof Error ? error.message : String(error);
+      throw new Error(
+        [
+          "IndexedDB clearAllData failed.",
+          `existingStores=${existingStoreNames.join(",") || "(none)"}`,
+          `targetStores=${targetStores.join(",") || "(none)"}`,
+          `missingKnownStores=${missingStores.join(",") || "(none)"}`,
+          `cause=${baseMessage}`,
+        ].join(" "),
+      );
+    }
   },
 
   async getPersonas() {
@@ -1271,6 +1284,13 @@ export const dbApi = {
       }
       await tx.done;
     }
+  },
+
+  async getStoreNames() {
+    const db = await getDb();
+    return Array.from(db.objectStoreNames)
+      .map((name) => String(name))
+      .sort((a, b) => a.localeCompare(b));
   },
 };
 

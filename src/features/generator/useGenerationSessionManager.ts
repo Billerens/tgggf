@@ -126,11 +126,26 @@ export function useGenerationSessionManager({
       setGenerationPersonaId(fallbackPersonaId);
     }
 
+    const usedNames = new Set(
+      generationSessions
+        .map((session) => session.name.trim())
+        .filter(Boolean),
+    );
+    let nextName = "Новая сессия";
+    if (usedNames.has(nextName)) {
+      let index = 2;
+      while (usedNames.has(`Новая сессия ${index}`)) {
+        index += 1;
+      }
+      nextName = `Новая сессия ${index}`;
+    }
+
     const now = new Date().toISOString();
     const nextSession: GeneratorSession = {
       id: crypto.randomUUID(),
       personaId: fallbackPersonaId,
-      topic: generationTopic.trim() || "Новая сессия",
+      name: nextName,
+      topic: generationTopic.trim(),
       isInfinite: generationInfinite,
       requestedCount: generationInfinite
         ? null
@@ -160,6 +175,39 @@ export function useGenerationSessionManager({
     setGenerationSessionId((prev) => (prev === sessionId ? nextSessionId : prev));
   };
 
+  const renameGenerationSession = async (
+    sessionId: string,
+    title: string,
+  ) => {
+    const currentSession = generationSessions.find(
+      (session) => session.id === sessionId,
+    );
+    if (!currentSession) return;
+
+    const normalizedTitle = title.trim();
+    if (!normalizedTitle) {
+      useAppStore.setState({
+        error: "Название сессии генерации не может быть пустым.",
+      });
+      return;
+    }
+
+    if (normalizedTitle === currentSession.topic) return;
+
+    const updatedSession: GeneratorSession = {
+      ...currentSession,
+      name: normalizedTitle,
+      updatedAt: new Date().toISOString(),
+    };
+    await dbApi.saveGeneratorSession(updatedSession);
+    setGenerationSessions((prev) => {
+      const next = prev.map((session) =>
+        session.id === updatedSession.id ? updatedSession : session,
+      );
+      return [...next].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    });
+  };
+
   return {
     generationPersonaId,
     setGenerationPersonaId,
@@ -172,5 +220,6 @@ export function useGenerationSessionManager({
     generationSession,
     createGenerationSession,
     deleteGenerationSession,
+    renameGenerationSession,
   };
 }

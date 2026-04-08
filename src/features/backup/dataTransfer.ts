@@ -576,93 +576,182 @@ export async function importBackupPayload(
   payload: ParsedBackupPayload,
   mode: BackupImportMode = "merge",
 ) {
-  if (isRawSnapshotPayload(payload)) {
-    await dbApi.importRawSnapshot(payload.stores, mode);
-    return buildRawMeta(payload.stores);
+  let stage = "start";
+  const payloadType = isRawSnapshotPayload(payload)
+    ? "idb_raw_snapshot"
+    : "app_backup";
+  let rawSnapshotStoreNames: string[] = [];
+  let payloadStats: Record<string, number> | null = null;
+
+  try {
+    if (isRawSnapshotPayload(payload)) {
+      rawSnapshotStoreNames = Object.keys(payload.stores).sort((a, b) =>
+        a.localeCompare(b),
+      );
+      stage = "import_raw_snapshot";
+      await dbApi.importRawSnapshot(payload.stores, mode);
+      return buildRawMeta(payload.stores);
+    }
+
+    stage = "normalize_payload";
+    const data = payload.data;
+    const imageAssets = uniqueByKey(data.imageAssets, (asset) => asset.id);
+    const personas = uniqueByKey(data.personas, (persona) => persona.id);
+    const chats = uniqueByKey(data.chats, (chat) => chat.id);
+    const messages = uniqueByKey(data.messages, (message) => message.id);
+    const personaStates = uniqueByKey(data.personaStates, (state) => state.chatId);
+    const memories = uniqueByKey(data.memories, (memory) => memory.id);
+    const generatorSessions = uniqueByKey(
+      data.generatorSessions,
+      (session) => session.id,
+    );
+    const groupRooms = uniqueByKey(data.groupRooms, (room) => room.id);
+    const groupParticipants = uniqueByKey(
+      data.groupParticipants,
+      (participant) => participant.id,
+    );
+    const groupMessages = uniqueByKey(data.groupMessages, (message) => message.id);
+    const groupEvents = uniqueByKey(data.groupEvents, (event) => event.id);
+    const groupPersonaStates = uniqueByKey(
+      data.groupPersonaStates,
+      (state) => state.id,
+    );
+    const groupRelationEdges = uniqueByKey(
+      data.groupRelationEdges,
+      (edge) => edge.id,
+    );
+    const groupSharedMemories = uniqueByKey(
+      data.groupSharedMemories,
+      (memory) => memory.id,
+    );
+    const groupPrivateMemories = uniqueByKey(
+      data.groupPrivateMemories,
+      (memory) => memory.id,
+    );
+    const groupSnapshots = uniqueByKey(
+      data.groupSnapshots,
+      (snapshot) => snapshot.id,
+    );
+
+    payloadStats = {
+      personas: personas.length,
+      chats: chats.length,
+      messages: messages.length,
+      personaStates: personaStates.length,
+      memories: memories.length,
+      generatorSessions: generatorSessions.length,
+      imageAssets: imageAssets.length,
+      groupRooms: groupRooms.length,
+      groupParticipants: groupParticipants.length,
+      groupMessages: groupMessages.length,
+      groupEvents: groupEvents.length,
+      groupPersonaStates: groupPersonaStates.length,
+      groupRelationEdges: groupRelationEdges.length,
+      groupSharedMemories: groupSharedMemories.length,
+      groupPrivateMemories: groupPrivateMemories.length,
+      groupSnapshots: groupSnapshots.length,
+      settings: data.settings ? 1 : 0,
+    };
+
+    if (mode === "replace") {
+      stage = "clear_all_data";
+      await dbApi.clearAllData();
+    }
+
+    stage = "save_image_assets";
+    await Promise.all(imageAssets.map((asset) => dbApi.saveImageAsset(asset)));
+    stage = "save_personas";
+    await Promise.all(personas.map((persona) => dbApi.savePersona(persona)));
+    stage = "save_chats";
+    await Promise.all(chats.map((chat) => dbApi.saveChat(chat)));
+    stage = "save_messages";
+    await Promise.all(messages.map((message) => dbApi.saveMessage(message)));
+    stage = "save_persona_states";
+    await Promise.all(
+      personaStates.map((state) => dbApi.savePersonaState(state)),
+    );
+    stage = "save_memories";
+    await dbApi.saveMemories(memories);
+    stage = "save_generator_sessions";
+    await Promise.all(
+      generatorSessions.map((session) => dbApi.saveGeneratorSession(session)),
+    );
+    stage = "save_group_rooms";
+    await Promise.all(groupRooms.map((room) => dbApi.saveGroupRoom(room)));
+    stage = "save_group_participants";
+    await dbApi.saveGroupParticipants(groupParticipants);
+    stage = "save_group_messages";
+    await Promise.all(groupMessages.map((message) => dbApi.saveGroupMessage(message)));
+    stage = "save_group_events";
+    await dbApi.appendGroupEvents(groupEvents);
+    stage = "save_group_persona_states";
+    await dbApi.saveGroupPersonaStates(groupPersonaStates);
+    stage = "save_group_relation_edges";
+    await dbApi.saveGroupRelationEdges(groupRelationEdges);
+    stage = "save_group_shared_memories";
+    await dbApi.saveGroupSharedMemories(groupSharedMemories);
+    stage = "save_group_private_memories";
+    await dbApi.saveGroupPrivateMemories(groupPrivateMemories);
+    stage = "save_group_snapshots";
+    await Promise.all(
+      groupSnapshots.map((snapshot) => dbApi.saveGroupSnapshot(snapshot)),
+    );
+
+    if (data.settings) {
+      stage = "save_settings";
+      await dbApi.saveSettings(data.settings);
+    }
+
+    return buildPayloadMeta({
+      settings: data.settings,
+      personas,
+      chats,
+      messages,
+      personaStates,
+      memories,
+      generatorSessions,
+      imageAssets,
+      groupRooms,
+      groupParticipants,
+      groupMessages,
+      groupEvents,
+      groupPersonaStates,
+      groupRelationEdges,
+      groupSharedMemories,
+      groupPrivateMemories,
+      groupSnapshots,
+    });
+  } catch (error) {
+    const causeMessage =
+      error instanceof Error ? error.message : String(error);
+    const dbStoreNames = await dbApi.getStoreNames().catch(() => []);
+    const payloadSummary = rawSnapshotStoreNames.length
+      ? `rawStores=${rawSnapshotStoreNames.join(",")}`
+      : payloadStats
+        ? Object.entries(payloadStats)
+            .map(([key, value]) => `${key}=${value}`)
+            .join(",")
+        : "payloadStats=unavailable";
+
+    console.error("[backup/import] failed", {
+      mode,
+      payloadType,
+      stage,
+      payloadSummary,
+      dbStoreNames,
+      error,
+    });
+
+    throw new Error(
+      [
+        "Импорт бэкапа завершился ошибкой.",
+        `mode=${mode}`,
+        `payloadType=${payloadType}`,
+        `stage=${stage}`,
+        payloadSummary,
+        `dbStores=${dbStoreNames.join(",") || "(unavailable)"}`,
+        `cause=${causeMessage}`,
+      ].join(" "),
+    );
   }
-
-  const data = payload.data;
-  const imageAssets = uniqueByKey(data.imageAssets, (asset) => asset.id);
-  const personas = uniqueByKey(data.personas, (persona) => persona.id);
-  const chats = uniqueByKey(data.chats, (chat) => chat.id);
-  const messages = uniqueByKey(data.messages, (message) => message.id);
-  const personaStates = uniqueByKey(data.personaStates, (state) => state.chatId);
-  const memories = uniqueByKey(data.memories, (memory) => memory.id);
-  const generatorSessions = uniqueByKey(
-    data.generatorSessions,
-    (session) => session.id,
-  );
-  const groupRooms = uniqueByKey(data.groupRooms, (room) => room.id);
-  const groupParticipants = uniqueByKey(
-    data.groupParticipants,
-    (participant) => participant.id,
-  );
-  const groupMessages = uniqueByKey(data.groupMessages, (message) => message.id);
-  const groupEvents = uniqueByKey(data.groupEvents, (event) => event.id);
-  const groupPersonaStates = uniqueByKey(
-    data.groupPersonaStates,
-    (state) => state.id,
-  );
-  const groupRelationEdges = uniqueByKey(
-    data.groupRelationEdges,
-    (edge) => edge.id,
-  );
-  const groupSharedMemories = uniqueByKey(
-    data.groupSharedMemories,
-    (memory) => memory.id,
-  );
-  const groupPrivateMemories = uniqueByKey(
-    data.groupPrivateMemories,
-    (memory) => memory.id,
-  );
-  const groupSnapshots = uniqueByKey(data.groupSnapshots, (snapshot) => snapshot.id);
-
-  if (mode === "replace") {
-    await dbApi.clearAllData();
-  }
-
-  await Promise.all(imageAssets.map((asset) => dbApi.saveImageAsset(asset)));
-  await Promise.all(personas.map((persona) => dbApi.savePersona(persona)));
-  await Promise.all(chats.map((chat) => dbApi.saveChat(chat)));
-  await Promise.all(messages.map((message) => dbApi.saveMessage(message)));
-  await Promise.all(
-    personaStates.map((state) => dbApi.savePersonaState(state)),
-  );
-  await dbApi.saveMemories(memories);
-  await Promise.all(
-    generatorSessions.map((session) => dbApi.saveGeneratorSession(session)),
-  );
-  await Promise.all(groupRooms.map((room) => dbApi.saveGroupRoom(room)));
-  await dbApi.saveGroupParticipants(groupParticipants);
-  await Promise.all(groupMessages.map((message) => dbApi.saveGroupMessage(message)));
-  await dbApi.appendGroupEvents(groupEvents);
-  await dbApi.saveGroupPersonaStates(groupPersonaStates);
-  await dbApi.saveGroupRelationEdges(groupRelationEdges);
-  await dbApi.saveGroupSharedMemories(groupSharedMemories);
-  await dbApi.saveGroupPrivateMemories(groupPrivateMemories);
-  await Promise.all(groupSnapshots.map((snapshot) => dbApi.saveGroupSnapshot(snapshot)));
-
-  if (data.settings) {
-    await dbApi.saveSettings(data.settings);
-  }
-
-  return buildPayloadMeta({
-    settings: data.settings,
-    personas,
-    chats,
-    messages,
-    personaStates,
-    memories,
-    generatorSessions,
-    imageAssets,
-    groupRooms,
-    groupParticipants,
-    groupMessages,
-    groupEvents,
-    groupPersonaStates,
-    groupRelationEdges,
-    groupSharedMemories,
-    groupPrivateMemories,
-    groupSnapshots,
-  });
 }

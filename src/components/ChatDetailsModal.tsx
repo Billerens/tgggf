@@ -17,6 +17,7 @@ import type {
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { splitAssistantContent } from "../messageContent";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { Dropdown, type DropdownOption } from "./Dropdown";
 
 interface ChatDetailsModalProps {
   open: boolean;
@@ -42,6 +43,41 @@ interface ChatDetailsModalProps {
     promptOverride?: string,
   ) => void;
   onUpdateChatStyleStrength: (chatId: string, value: number | null) => void;
+  onUpdateRuntimeState: (
+    chatId: string,
+    patch: Partial<
+      Pick<
+        PersonaRuntimeState,
+        | "mood"
+        | "trust"
+        | "engagement"
+        | "energy"
+        | "lust"
+        | "fear"
+        | "affection"
+        | "tension"
+        | "relationshipType"
+        | "relationshipDepth"
+      >
+    >,
+  ) => void;
+  onAddMemory: (
+    chatId: string,
+    payload: {
+      layer: PersonaMemory["layer"];
+      kind: PersonaMemory["kind"];
+      content: string;
+      salience: number;
+    },
+  ) => void;
+  onUpdateMemory: (
+    chatId: string,
+    memoryId: string,
+    patch: Partial<
+      Pick<PersonaMemory, "layer" | "kind" | "content" | "salience">
+    >,
+  ) => void;
+  onDeleteMemory: (chatId: string, memoryId: string) => void;
   onClose: () => void;
 }
 
@@ -212,6 +248,105 @@ function formatStateDelta(
   return parts.length > 0 ? parts.join(" | ") : "—";
 }
 
+type EditableRuntimeState = Pick<
+  PersonaRuntimeState,
+  | "mood"
+  | "trust"
+  | "engagement"
+  | "energy"
+  | "lust"
+  | "fear"
+  | "affection"
+  | "tension"
+  | "relationshipType"
+  | "relationshipDepth"
+>;
+
+interface EditableMemoryDraft {
+  layer: PersonaMemory["layer"];
+  kind: PersonaMemory["kind"];
+  content: string;
+  salience: number;
+}
+
+const RUNTIME_MOOD_OPTIONS: PersonaRuntimeState["mood"][] = [
+  "calm",
+  "warm",
+  "playful",
+  "focused",
+  "analytical",
+  "inspired",
+  "annoyed",
+  "upset",
+  "angry",
+];
+
+const RUNTIME_RELATIONSHIP_TYPE_OPTIONS: PersonaRuntimeState["relationshipType"][] = [
+  "neutral",
+  "friendship",
+  "romantic",
+  "mentor",
+  "playful",
+];
+
+const MANUAL_MEMORY_LAYER_OPTIONS: Array<PersonaMemory["layer"]> = [
+  "long_term",
+  "episodic",
+];
+
+const MANUAL_MEMORY_KIND_OPTIONS: Array<PersonaMemory["kind"]> = [
+  "fact",
+  "preference",
+  "goal",
+  "event",
+];
+
+const runtimeMoodDropdownOptions: DropdownOption[] = RUNTIME_MOOD_OPTIONS.map(
+  (option) => ({
+    value: option,
+    label: option,
+  }),
+);
+
+const runtimeRelationshipTypeDropdownOptions: DropdownOption[] =
+  RUNTIME_RELATIONSHIP_TYPE_OPTIONS.map((option) => ({
+    value: option,
+    label: option,
+  }));
+
+const memoryLayerDropdownOptions: DropdownOption[] = MANUAL_MEMORY_LAYER_OPTIONS.map(
+  (option) => ({
+    value: option,
+    label: option,
+  }),
+);
+
+const memoryKindDropdownOptions: DropdownOption[] = MANUAL_MEMORY_KIND_OPTIONS.map(
+  (option) => ({
+    value: option,
+    label: option,
+  }),
+);
+
+function toEditableRuntimeState(value: PersonaRuntimeState): EditableRuntimeState {
+  return {
+    mood: value.mood,
+    trust: value.trust,
+    engagement: value.engagement,
+    energy: value.energy,
+    lust: value.lust,
+    fear: value.fear,
+    affection: value.affection,
+    tension: value.tension,
+    relationshipType: value.relationshipType,
+    relationshipDepth: value.relationshipDepth,
+  };
+}
+
+function clampMetric(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
 export function ChatDetailsModal({
   open,
   chat,
@@ -225,12 +360,30 @@ export function ChatDetailsModal({
   onEnhanceImage,
   onRegenerateImage,
   onUpdateChatStyleStrength,
+  onUpdateRuntimeState,
+  onAddMemory,
+  onUpdateMemory,
+  onDeleteMemory,
   onClose,
 }: ChatDetailsModalProps) {
   const [tab, setTab] = useState<DetailsTab>("attachments");
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
+  const [stateLocked, setStateLocked] = useState(true);
+  const [runtimeDraft, setRuntimeDraft] = useState<EditableRuntimeState | null>(
+    runtimeState ? toEditableRuntimeState(runtimeState) : null,
+  );
+  const [manualMemoryLayer, setManualMemoryLayer] = useState<PersonaMemory["layer"]>(
+    "long_term",
+  );
+  const [manualMemoryKind, setManualMemoryKind] = useState<PersonaMemory["kind"]>("fact");
+  const [manualMemorySalience, setManualMemorySalience] = useState(0.82);
+  const [manualMemoryContent, setManualMemoryContent] = useState("");
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
+  const [memoryEditDraft, setMemoryEditDraft] = useState<EditableMemoryDraft | null>(
+    null,
+  );
   const [useGlobalStyleStrength, setUseGlobalStyleStrength] = useState(
     typeof chat?.chatStyleStrength !== "number",
   );
@@ -281,6 +434,22 @@ export function ChatDetailsModal({
   const summaryGoalsCount = chat?.summaryGoals?.length ?? 0;
   const summaryOpenThreadsCount = chat?.summaryOpenThreads?.length ?? 0;
   const summaryAgreementsCount = chat?.summaryAgreements?.length ?? 0;
+  const runtimeComparable = runtimeState ? toEditableRuntimeState(runtimeState) : null;
+  const canSaveRuntimeDraft =
+    Boolean(chat?.id) &&
+    !stateLocked &&
+    Boolean(runtimeComparable) &&
+    Boolean(runtimeDraft) &&
+    runtimeDraft !== null &&
+    runtimeComparable !== null &&
+    JSON.stringify(runtimeDraft) !== JSON.stringify(runtimeComparable);
+  const canAddManualMemory =
+    Boolean(chat?.id) && !stateLocked && manualMemoryContent.trim().length > 0;
+  const canSaveMemoryEdit =
+    Boolean(chat?.id) &&
+    !stateLocked &&
+    Boolean(editingMemoryId) &&
+    Boolean(memoryEditDraft?.content.trim().length);
   const previewResolvedMeta = previewAttachment
     ? previewMeta ?? imageMetaByUrl[previewAttachment.src]
     : previewMeta;
@@ -296,6 +465,13 @@ export function ChatDetailsModal({
         : settings.chatStyleStrength,
     );
   }, [chat?.id, chat?.chatStyleStrength, settings.chatStyleStrength]);
+
+  useEffect(() => {
+    setStateLocked(true);
+    setRuntimeDraft(runtimeState ? toEditableRuntimeState(runtimeState) : null);
+    setEditingMemoryId(null);
+    setMemoryEditDraft(null);
+  }, [chat?.id, runtimeState]);
 
   useEffect(() => {
     if (!previewAttachment || !previewSrc) return;
@@ -331,6 +507,85 @@ export function ChatDetailsModal({
         : prev,
     );
   }, [messages, imageMetaByUrl, previewAttachment, previewSrc]);
+
+  function updateRuntimeMetric(
+    key:
+      | "trust"
+      | "engagement"
+      | "energy"
+      | "lust"
+      | "fear"
+      | "affection"
+      | "tension"
+      | "relationshipDepth",
+    raw: string,
+  ) {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return;
+    setRuntimeDraft((current) =>
+      current
+        ? {
+            ...current,
+            [key]: clampMetric(parsed),
+          }
+        : current,
+    );
+  }
+
+  function handleSaveRuntimeState() {
+    if (!chat?.id || !runtimeDraft) return;
+    onUpdateRuntimeState(chat.id, runtimeDraft);
+  }
+
+  function handleAddManualMemory() {
+    if (!chat?.id || stateLocked) return;
+    const content = manualMemoryContent.trim();
+    if (!content) return;
+    onAddMemory(chat.id, {
+      layer: manualMemoryLayer,
+      kind: manualMemoryKind,
+      content,
+      salience: manualMemorySalience,
+    });
+    setManualMemoryContent("");
+  }
+
+  function startMemoryEdit(memory: PersonaMemory) {
+    if (stateLocked) return;
+    setEditingMemoryId(memory.id);
+    setMemoryEditDraft({
+      layer: memory.layer,
+      kind: memory.kind,
+      content: memory.content,
+      salience: memory.salience,
+    });
+  }
+
+  function handleCancelMemoryEdit() {
+    setEditingMemoryId(null);
+    setMemoryEditDraft(null);
+  }
+
+  function handleSaveMemoryEdit() {
+    if (!chat?.id || stateLocked || !editingMemoryId || !memoryEditDraft) return;
+    onUpdateMemory(chat.id, editingMemoryId, {
+      layer: memoryEditDraft.layer,
+      kind: memoryEditDraft.kind,
+      content: memoryEditDraft.content,
+      salience: memoryEditDraft.salience,
+    });
+    setEditingMemoryId(null);
+    setMemoryEditDraft(null);
+  }
+
+  function handleDeleteMemory(memoryId: string) {
+    if (!chat?.id || stateLocked) return;
+    onDeleteMemory(chat.id, memoryId);
+    if (editingMemoryId === memoryId) {
+      setEditingMemoryId(null);
+      setMemoryEditDraft(null);
+    }
+  }
 
   if (!open) return null;
 
@@ -402,6 +657,30 @@ export function ChatDetailsModal({
           </section>
         ) : (
           <section className="chat-details-body status-tab">
+            <div className="status-lock-toggle">
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={stateLocked}
+                  onChange={(event) => {
+                    const nextLocked = event.target.checked;
+                    setStateLocked(nextLocked);
+                    if (nextLocked && runtimeState) {
+                      setRuntimeDraft(toEditableRuntimeState(runtimeState));
+                    }
+                    if (nextLocked) {
+                      setEditingMemoryId(null);
+                      setMemoryEditDraft(null);
+                    }
+                  }}
+                />
+                Блокировать состояние
+              </label>
+              <p className="status-lock-hint">
+                Когда блокировка отключена, можно вручную менять runtime state и память.
+              </p>
+            </div>
+
             <div className="status-grid">
               <div className="status-card">
                 <h4>Общее</h4>
@@ -414,7 +693,9 @@ export function ChatDetailsModal({
 
               <div className="status-card">
                 <h4>Runtime state (кратко)</h4>
-                {runtimeState ? (
+                {!runtimeState ? (
+                  <p>Состояние пока не инициализировано.</p>
+                ) : stateLocked || !runtimeDraft ? (
                   <>
                     <p>mood: {runtimeState.mood}</p>
                     <p>
@@ -427,7 +708,146 @@ export function ChatDetailsModal({
                     <p>updatedAt: {formatDateTime(runtimeState.updatedAt)}</p>
                   </>
                 ) : (
-                  <p>Состояние пока не инициализировано.</p>
+                  <div className="runtime-edit-grid">
+                    <label>
+                      mood
+                      <Dropdown
+                        value={runtimeDraft.mood}
+                        options={runtimeMoodDropdownOptions}
+                        onChange={(value) => {
+                          const nextMood = value as PersonaRuntimeState["mood"];
+                          setRuntimeDraft((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  mood: nextMood,
+                                }
+                              : current,
+                          );
+                        }}
+                        searchable={false}
+                      />
+                    </label>
+                    <label>
+                      relationshipType
+                      <Dropdown
+                        value={runtimeDraft.relationshipType}
+                        options={runtimeRelationshipTypeDropdownOptions}
+                        onChange={(value) => {
+                          const nextType = value as PersonaRuntimeState["relationshipType"];
+                          setRuntimeDraft((current) =>
+                            current
+                              ? {
+                                  ...current,
+                                  relationshipType: nextType,
+                                }
+                              : current,
+                          );
+                        }}
+                        searchable={false}
+                      />
+                    </label>
+                    <label>
+                      trust
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.trust}
+                        onChange={(event) => updateRuntimeMetric("trust", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      engagement
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.engagement}
+                        onChange={(event) => updateRuntimeMetric("engagement", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      energy
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.energy}
+                        onChange={(event) => updateRuntimeMetric("energy", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      lust
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.lust}
+                        onChange={(event) => updateRuntimeMetric("lust", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      fear
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.fear}
+                        onChange={(event) => updateRuntimeMetric("fear", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      affection
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.affection}
+                        onChange={(event) => updateRuntimeMetric("affection", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      tension
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.tension}
+                        onChange={(event) => updateRuntimeMetric("tension", event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      relationshipDepth
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={runtimeDraft.relationshipDepth}
+                        onChange={(event) =>
+                          updateRuntimeMetric("relationshipDepth", event.target.value)
+                        }
+                      />
+                    </label>
+                    <div className="runtime-edit-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={!canSaveRuntimeDraft}
+                        onClick={handleSaveRuntimeState}
+                      >
+                        Сохранить состояние
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
 
@@ -626,20 +1046,213 @@ export function ChatDetailsModal({
                   {memoryByLayer.episodic.length} • long {memoryByLayer.longTerm.length}
                 </summary>
                 <div className="status-accordion-body">
+                  <div className="manual-memory-form">
+                    <h5>Добавить запись в память вручную</h5>
+                    {stateLocked ? (
+                      <p className="status-lock-hint">
+                        Разблокируйте состояние, чтобы добавлять, редактировать или удалять память.
+                      </p>
+                    ) : null}
+                    <div className="manual-memory-grid">
+                      <label>
+                        layer
+                        <Dropdown
+                          value={manualMemoryLayer}
+                          options={memoryLayerDropdownOptions}
+                          onChange={(value) => setManualMemoryLayer(value as PersonaMemory["layer"])}
+                          disabled={stateLocked}
+                          searchable={false}
+                        />
+                      </label>
+                      <label>
+                        kind
+                        <Dropdown
+                          value={manualMemoryKind}
+                          options={memoryKindDropdownOptions}
+                          onChange={(value) => setManualMemoryKind(value as PersonaMemory["kind"])}
+                          disabled={stateLocked}
+                          searchable={false}
+                        />
+                      </label>
+                      <label>
+                        salience
+                        <input
+                          type="number"
+                          min={0.1}
+                          max={1}
+                          step={0.01}
+                          value={manualMemorySalience}
+                          disabled={stateLocked}
+                          onChange={(event) => {
+                            const parsed = Number(event.target.value);
+                            if (!Number.isFinite(parsed)) return;
+                            setManualMemorySalience(Math.max(0.1, Math.min(1, parsed)));
+                          }}
+                        />
+                      </label>
+                    </div>
+                    <label>
+                      content
+                      <textarea
+                        className="memory-textarea"
+                        rows={3}
+                        value={manualMemoryContent}
+                        placeholder="Например: [fact] Пользователь любит длинные прогулки вечером."
+                        disabled={stateLocked}
+                        onChange={(event) => setManualMemoryContent(event.target.value)}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={!canAddManualMemory}
+                      onClick={handleAddManualMemory}
+                    >
+                      Добавить в память
+                    </button>
+                  </div>
+
                   {memories.length === 0 ? (
                     <p className="empty-state">Память по этому чату пока пустая.</p>
                   ) : (
                     <div className="memory-list">
                       {memories.map((memory) => (
                         <article key={memory.id} className="memory-item">
-                          <div className="memory-head">
-                            <strong>
-                              {memory.layer} / {memory.kind}
-                            </strong>
-                            <span>salience: {memory.salience.toFixed(2)}</span>
-                          </div>
-                          <p>{memory.content}</p>
-                          <time>{formatDateTime(memory.updatedAt)}</time>
+                          {editingMemoryId === memory.id && memoryEditDraft && !stateLocked ? (
+                            <>
+                              <div className="memory-edit-grid">
+                                <label>
+                                  layer
+                                  <Dropdown
+                                    value={memoryEditDraft.layer}
+                                    options={memoryLayerDropdownOptions}
+                                    disabled={stateLocked}
+                                    onChange={(value) =>
+                                      setMemoryEditDraft((current) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              layer: value as PersonaMemory["layer"],
+                                            }
+                                          : current,
+                                      )
+                                    }
+                                    searchable={false}
+                                  />
+                                </label>
+                                <label>
+                                  kind
+                                  <Dropdown
+                                    value={memoryEditDraft.kind}
+                                    options={memoryKindDropdownOptions}
+                                    disabled={stateLocked}
+                                    onChange={(value) =>
+                                      setMemoryEditDraft((current) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              kind: value as PersonaMemory["kind"],
+                                            }
+                                          : current,
+                                      )
+                                    }
+                                    searchable={false}
+                                  />
+                                </label>
+                                <label>
+                                  salience
+                                  <input
+                                    type="number"
+                                    min={0.1}
+                                    max={1}
+                                    step={0.01}
+                                    value={memoryEditDraft.salience}
+                                    disabled={stateLocked}
+                                    onChange={(event) => {
+                                      const parsed = Number(event.target.value);
+                                      if (!Number.isFinite(parsed)) return;
+                                      setMemoryEditDraft((current) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              salience: Math.max(0.1, Math.min(1, parsed)),
+                                            }
+                                          : current,
+                                      );
+                                    }}
+                                  />
+                                </label>
+                                <label className="memory-edit-content">
+                                  content
+                                  <textarea
+                                    className="memory-textarea"
+                                    rows={3}
+                                    value={memoryEditDraft.content}
+                                    disabled={stateLocked}
+                                    onChange={(event) =>
+                                      setMemoryEditDraft((current) =>
+                                        current
+                                          ? {
+                                              ...current,
+                                              content: event.target.value,
+                                            }
+                                          : current,
+                                      )
+                                    }
+                                  />
+                                </label>
+                              </div>
+                              <div className="memory-actions">
+                                <button
+                                  type="button"
+                                  className="primary"
+                                  disabled={!canSaveMemoryEdit}
+                                  onClick={handleSaveMemoryEdit}
+                                >
+                                  Сохранить
+                                </button>
+                                <button type="button" onClick={handleCancelMemoryEdit}>
+                                  Отмена
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger"
+                                  disabled={stateLocked}
+                                  onClick={() => handleDeleteMemory(memory.id)}
+                                >
+                                  Удалить
+                                </button>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="memory-head">
+                                <strong>
+                                  {memory.layer} / {memory.kind}
+                                </strong>
+                                <span>salience: {memory.salience.toFixed(2)}</span>
+                              </div>
+                              <p>{memory.content}</p>
+                              <time>{formatDateTime(memory.updatedAt)}</time>
+                              <div className="memory-actions">
+                                <button
+                                  type="button"
+                                  disabled={stateLocked}
+                                  onClick={() => startMemoryEdit(memory)}
+                                >
+                                  Редактировать
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger"
+                                  disabled={stateLocked}
+                                  onClick={() => handleDeleteMemory(memory.id)}
+                                >
+                                  Удалить
+                                </button>
+                              </div>
+                            </>
+                          )}
                         </article>
                       ))}
                     </div>

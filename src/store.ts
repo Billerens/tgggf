@@ -76,7 +76,38 @@ interface AppState {
   deletePersona: (personaId: string) => Promise<void>;
   createChat: () => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
+  renameChat: (chatId: string, title: string) => Promise<void>;
   setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
+  updateActivePersonaState: (
+    patch: Partial<
+      Pick<
+        PersonaRuntimeState,
+        | "mood"
+        | "trust"
+        | "engagement"
+        | "energy"
+        | "lust"
+        | "fear"
+        | "affection"
+        | "tension"
+        | "relationshipType"
+        | "relationshipDepth"
+      >
+    >,
+  ) => Promise<void>;
+  addManualMemory: (input: {
+    layer: PersonaMemory["layer"];
+    kind: PersonaMemory["kind"];
+    content: string;
+    salience?: number;
+  }) => Promise<void>;
+  updateActiveMemory: (
+    memoryId: string,
+    patch: Partial<
+      Pick<PersonaMemory, "layer" | "kind" | "content" | "salience">
+    >,
+  ) => Promise<void>;
+  deleteActiveMemory: (memoryId: string) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
   regenerateMessageComfyPromptAtIndex: (
     messageId: string,
@@ -682,6 +713,43 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  renameChat: async (chatId, title) => {
+    set({ isLoading: true, error: null });
+    try {
+      const currentChat = get().chats.find((chat) => chat.id === chatId);
+      if (!currentChat) {
+        set({ isLoading: false });
+        return;
+      }
+
+      const normalizedTitle = title.trim();
+      if (!normalizedTitle) {
+        set({ isLoading: false, error: "Название чата не может быть пустым." });
+        return;
+      }
+
+      if (normalizedTitle === currentChat.title) {
+        set({ isLoading: false });
+        return;
+      }
+
+      const updatedChat: ChatSession = {
+        ...currentChat,
+        title: normalizedTitle,
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveChat(updatedChat);
+      const chats = await dbApi.getChats(updatedChat.personaId);
+      set({
+        chats,
+        activeChatId: chatId,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
   setChatStyleStrength: async (chatId, value) => {
     set({ isLoading: true, error: null });
     try {
@@ -708,6 +776,186 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (error) {
       set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  updateActivePersonaState: async (patch) => {
+    const state = get();
+    const activeChatId = state.activeChatId;
+    const activePersona = state.personas.find(
+      (persona) => persona.id === state.activePersonaId,
+    );
+    if (!activeChatId || !activePersona) return;
+
+    try {
+      const loadedState =
+        state.activePersonaState ?? (await dbApi.getPersonaState(activeChatId));
+      const currentState = ensurePersonaState(
+        loadedState ?? undefined,
+        activePersona,
+        activeChatId,
+      );
+      const updatedAt = nowIso();
+      const nextState = ensurePersonaState(
+        {
+          ...currentState,
+          ...patch,
+          updatedAt,
+        },
+        activePersona,
+        activeChatId,
+      );
+      nextState.updatedAt = updatedAt;
+      await dbApi.savePersonaState(nextState);
+      set({ activePersonaState: nextState, error: null });
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  addManualMemory: async (input) => {
+    const state = get();
+    const activeChatId = state.activeChatId;
+    const activePersona = state.personas.find(
+      (persona) => persona.id === state.activePersonaId,
+    );
+    if (!activeChatId || !activePersona) return;
+
+    const content = input.content.trim();
+    if (!content) {
+      set({ error: "Текст памяти не может быть пустым." });
+      return;
+    }
+
+    const layer =
+      input.layer === "episodic" || input.layer === "long_term"
+        ? input.layer
+        : "long_term";
+    const kind =
+      layer === "episodic"
+        ? input.kind === "event" ||
+          input.kind === "fact" ||
+          input.kind === "preference" ||
+          input.kind === "goal"
+          ? input.kind
+          : "event"
+        : input.kind === "fact" ||
+            input.kind === "preference" ||
+            input.kind === "goal" ||
+            input.kind === "event"
+          ? input.kind
+          : "fact";
+    const salience =
+      typeof input.salience === "number" && Number.isFinite(input.salience)
+        ? Math.max(0.1, Math.min(1, input.salience))
+        : 0.82;
+    const ts = nowIso();
+    const manualMemory: PersonaMemory = {
+      id: id(),
+      chatId: activeChatId,
+      personaId: activePersona.id,
+      layer,
+      kind,
+      content,
+      salience,
+      createdAt: ts,
+      updatedAt: ts,
+      lastReferencedAt: ts,
+    };
+
+    try {
+      const existing =
+        state.activeMemories.length > 0
+          ? state.activeMemories
+          : await dbApi.getMemories(activeChatId);
+      const reconciled = reconcilePersistentMemories(
+        existing,
+        [manualMemory],
+        activePersona.advanced.memory.maxMemories,
+        activePersona.advanced.memory.decayDays,
+      );
+      await dbApi.saveMemories(reconciled.kept);
+      await dbApi.deleteMemories(reconciled.removedIds);
+      set({ activeMemories: reconciled.kept, error: null });
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  updateActiveMemory: async (memoryId, patch) => {
+    const state = get();
+    const activeChatId = state.activeChatId;
+    if (!activeChatId) return;
+
+    try {
+      const memoryPool =
+        state.activeMemories.length > 0
+          ? state.activeMemories
+          : await dbApi.getMemories(activeChatId);
+      const existing = memoryPool.find(
+        (memory) => memory.id === memoryId && memory.chatId === activeChatId,
+      );
+      if (!existing) {
+        set({ error: "Запись памяти не найдена." });
+        return;
+      }
+
+      const nextLayer =
+        patch.layer === "episodic" || patch.layer === "long_term"
+          ? patch.layer
+          : existing.layer;
+      const nextKind =
+        patch.kind === "fact" ||
+        patch.kind === "preference" ||
+        patch.kind === "goal" ||
+        patch.kind === "event"
+          ? patch.kind
+          : existing.kind;
+      const nextContent =
+        typeof patch.content === "string" ? patch.content.trim() : existing.content;
+      if (!nextContent) {
+        set({ error: "Текст памяти не может быть пустым." });
+        return;
+      }
+      const nextSalience =
+        typeof patch.salience === "number" && Number.isFinite(patch.salience)
+          ? Math.max(0.1, Math.min(1, patch.salience))
+          : existing.salience;
+      const ts = nowIso();
+      const updated: PersonaMemory = {
+        ...existing,
+        layer: nextLayer,
+        kind: nextKind,
+        content: nextContent,
+        salience: nextSalience,
+        updatedAt: ts,
+        lastReferencedAt: ts,
+      };
+      await dbApi.saveMemories([updated]);
+      const nextMemories = memoryPool
+        .map((memory) => (memory.id === updated.id ? updated : memory))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      set({ activeMemories: nextMemories, error: null });
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  deleteActiveMemory: async (memoryId) => {
+    const state = get();
+    const activeChatId = state.activeChatId;
+    if (!activeChatId) return;
+
+    try {
+      await dbApi.deleteMemories([memoryId]);
+      const memoryPool =
+        state.activeMemories.length > 0
+          ? state.activeMemories
+          : await dbApi.getMemories(activeChatId);
+      const nextMemories = memoryPool.filter((memory) => memory.id !== memoryId);
+      set({ activeMemories: nextMemories, error: null });
+    } catch (error) {
+      set({ error: (error as Error).message });
     }
   },
 

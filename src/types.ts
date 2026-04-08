@@ -403,6 +403,7 @@ export interface GeneratorImageEntry {
 export interface GeneratorSession {
   id: string;
   personaId: string;
+  name: string;
   topic: string;
   isInfinite: boolean;
   requestedCount: number | null;
