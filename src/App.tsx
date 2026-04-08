@@ -16,6 +16,7 @@ import { EnhanceCompareModal } from "./components/EnhanceCompareModal";
 import { ErrorToast } from "./components/ErrorToast";
 import { GenerationPane } from "./components/GenerationPane";
 import { GroupChatPane } from "./components/GroupChatPane";
+import { GroupChatDetailsModal } from "./components/GroupChatDetailsModal";
 import { GroupRoomModal } from "./components/GroupRoomModal";
 import { PersonaModal } from "./components/PersonaModal";
 import { SettingsModal } from "./components/SettingsModal";
@@ -76,6 +77,8 @@ export default function App() {
     deleteChat,
     setChatStyleStrength,
     sendMessage,
+    regenerateMessageComfyPromptAtIndex,
+    resolveRelationshipProposal,
     saveSettings,
     clearError,
   } = useAppStore();
@@ -84,6 +87,10 @@ export default function App() {
     groupParticipants,
     groupMessages,
     groupEvents,
+    groupPersonaStates,
+    groupRelationEdges,
+    groupSharedMemories,
+    groupPrivateMemories,
     activeGroupRoomId,
     isLoading: isGroupLoading,
     initializeGroup,
@@ -102,6 +109,7 @@ export default function App() {
   const [showPersonaModal, setShowPersonaModal] = useState(false);
   const [showGroupRoomModal, setShowGroupRoomModal] = useState(false);
   const [showChatDetailsModal, setShowChatDetailsModal] = useState(false);
+  const [showGroupChatDetailsModal, setShowGroupChatDetailsModal] = useState(false);
   const [personaModalTab, setPersonaModalTab] =
     useState<PersonaModalTab>("editor");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -676,6 +684,7 @@ export default function App() {
                 userName: settings.userName,
               })
             }
+            onOpenChatDetails={() => setShowGroupChatDetailsModal(true)}
           />
         ) : (
           <ChatPane
@@ -699,6 +708,12 @@ export default function App() {
               void deleteChat(activeChatId);
             }}
             onSubmitMessage={onMessageSubmit}
+            onRegeneratePromptAtIndex={(messageId, promptIndex) => {
+              void regenerateMessageComfyPromptAtIndex(messageId, promptIndex);
+            }}
+            onResolveRelationshipProposal={(messageId, decision) => {
+              void resolveRelationshipProposal(messageId, decision);
+            }}
             onOpenSidebar={() => {
               setSidebarTab("personas");
               setMobileSidebarOpen(true);
@@ -723,6 +738,20 @@ export default function App() {
             void setChatStyleStrength(chatId, value);
           }}
           onClose={() => setShowChatDetailsModal(false)}
+        />
+
+        <GroupChatDetailsModal
+          open={showGroupChatDetailsModal}
+          room={activeGroupRoom}
+          participants={groupParticipants}
+          messages={groupMessages}
+          events={groupEvents}
+          personas={personas}
+          personaStates={groupPersonaStates}
+          relationEdges={groupRelationEdges}
+          sharedMemories={groupSharedMemories}
+          privateMemories={groupPrivateMemories}
+          onClose={() => setShowGroupChatDetailsModal(false)}
         />
 
         <SettingsModal

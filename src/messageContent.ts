@@ -242,18 +242,6 @@ function normalizeStateDelta(obj: Record<string, unknown>) {
   if (relationshipType) stateDelta.relationshipType = relationshipType;
   if (typeof relationshipDepth === "number") stateDelta.relationshipDepth = relationshipDepth;
 
-  const topics = asStringArray(
-    (deltaRaw.activeTopicsAdd ??
-      deltaRaw.active_topics_add ??
-      deltaRaw.topicsAdd ??
-      deltaRaw.topics_add ??
-      deltaRaw.topics) as unknown,
-    10,
-  );
-  if (topics.length > 0) {
-    stateDelta.activeTopicsAdd = topics;
-  }
-
   return Object.keys(stateDelta).length > 0 ? stateDelta : undefined;
 }
 

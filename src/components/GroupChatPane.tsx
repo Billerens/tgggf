@@ -59,6 +59,7 @@ interface GroupChatPaneProps {
     blockIndexes?: number[],
   ) => Promise<void> | void;
   onRegenerateMessageResponse: (messageId: string) => Promise<void> | void;
+  onOpenChatDetails: () => void;
 }
 
 function renderMessageWithMentions(
@@ -247,9 +248,6 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
     }
     if (stateDelta.relationshipStage)
       lines.push(`relationshipStage: ${stateDelta.relationshipStage}`);
-    if (stateDelta.activeTopicsAdd && stateDelta.activeTopicsAdd.length > 0) {
-      lines.push(`activeTopicsAdd: ${stateDelta.activeTopicsAdd.join(", ")}`);
-    }
   }
 
   if (control.memory_add && control.memory_add.length > 0) {
@@ -716,6 +714,7 @@ export function GroupChatPane({
   onSubmitMessage,
   onRetryMessageImages,
   onRegenerateMessageResponse,
+  onOpenChatDetails,
 }: GroupChatPaneProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const [eventLogModalOpen, setEventLogModalOpen] = useState(false);
@@ -1003,7 +1002,16 @@ export function GroupChatPane({
     <main className="chat group-chat">
       <header className="chat-header">
         <div>
-          <h2>{activeRoom?.title ?? "Группы"}</h2>
+          <h2>
+            <button
+              type="button"
+              className="chat-title-btn"
+              onClick={onOpenChatDetails}
+              title="Открыть детали группового чата"
+            >
+              {activeRoom?.title ?? "Группы"}
+            </button>
+          </h2>
           <div className="group-room-meta">
             <span>{modeLabel}</span>
             <span className="dot" />

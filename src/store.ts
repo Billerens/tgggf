@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import { DEFAULT_SETTINGS, dbApi } from "./db";
 import {
+  generateComfyPromptFromImageDescription,
   generateComfyPromptsFromImageDescription,
   requestChatCompletion,
+  requestConversationSummaryUpdate,
 } from "./lmstudio";
 import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
 import { localizeImageUrls } from "./imageStorage";
@@ -13,10 +15,17 @@ import {
   createInitialPersonaState,
   derivePersistentMemoriesFromUserMessage,
   ensurePersonaState,
+  extractRelationshipProposal,
   evolvePersonaState,
   reconcilePersistentMemories,
+  relationshipStageFromDepth,
 } from "./personaDynamics";
-import { createDefaultAdvancedProfile, normalizeAdvancedProfile } from "./personaProfiles";
+import type { PersonaControlPayload } from "./personaDynamics";
+import { splitAssistantContent } from "./messageContent";
+import {
+  createDefaultAdvancedProfile,
+  normalizeAdvancedProfile,
+} from "./personaProfiles";
 import type {
   AppSettings,
   ChatMessage,
@@ -26,6 +35,7 @@ import type {
   PersonaAdvancedProfile,
   PersonaMemory,
   PersonaRuntimeState,
+  RelationshipStage,
 } from "./types";
 
 type PersonaInput = Omit<
@@ -68,6 +78,14 @@ interface AppState {
   deleteChat: (chatId: string) => Promise<void>;
   setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
   sendMessage: (content: string) => Promise<void>;
+  regenerateMessageComfyPromptAtIndex: (
+    messageId: string,
+    promptIndex: number,
+  ) => Promise<void>;
+  resolveRelationshipProposal: (
+    messageId: string,
+    decision: "accepted" | "rejected",
+  ) => Promise<void>;
   saveSettings: (settings: AppSettings) => Promise<void>;
   clearError: () => void;
 }
@@ -76,6 +94,12 @@ const nowIso = () => new Date().toISOString();
 const id = () => crypto.randomUUID();
 const STORE_RUNTIME_STARTED_AT_MS = Date.now();
 const ABANDONED_GENERATION_GRACE_MS = 10_000;
+const RECENT_CONTEXT_MESSAGE_LIMIT = 6;
+const SUMMARY_DEFAULT_TOKEN_BUDGET = 3000;
+const SUMMARY_MIN_TOKEN_BUDGET = 600;
+const SUMMARY_MAX_TOKEN_BUDGET = 3000;
+const SUMMARY_MIN_NEW_MESSAGES = 4;
+const SUMMARY_MIN_NEW_CHARS = 1200;
 const randomSeed = () => {
   const values = new Uint32Array(2);
   crypto.getRandomValues(values);
@@ -87,11 +111,57 @@ function titleFromText(text: string) {
   return first || "Новый чат";
 }
 
+function dedupeTrimmedStrings(values: string[]) {
+  const deduped = values
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return Array.from(new Set(deduped));
+}
+
+function collectMessageComfyPrompts(message: ChatMessage) {
+  if (message.role !== "assistant") return [];
+  const parsed = splitAssistantContent(message.content);
+  return dedupeTrimmedStrings([
+    ...(message.comfyPrompts ?? []),
+    ...(parsed.comfyPrompts ?? []),
+    ...(message.comfyPrompt ? [message.comfyPrompt] : []),
+    ...(parsed.comfyPrompt ? [parsed.comfyPrompt] : []),
+  ]);
+}
+
+function collectMessageComfyImageDescriptions(message: ChatMessage) {
+  if (message.role !== "assistant") return [];
+  const parsed = splitAssistantContent(message.content);
+  return dedupeTrimmedStrings([
+    ...(message.comfyImageDescriptions ?? []),
+    ...(parsed.comfyImageDescriptions ?? []),
+    ...(message.comfyImageDescription ? [message.comfyImageDescription] : []),
+    ...(parsed.comfyImageDescription ? [parsed.comfyImageDescription] : []),
+  ]);
+}
+
 interface MemoryRemovalDirective {
   id?: string;
   layer?: PersonaMemory["layer"];
   kind?: PersonaMemory["kind"];
   content?: string;
+}
+
+function parsePersonaControlRaw(raw: string | undefined) {
+  if (!raw) return undefined;
+  try {
+    return JSON.parse(raw) as PersonaControlPayload;
+  } catch {
+    return undefined;
+  }
+}
+
+function relationshipStageMinDepth(stage: RelationshipStage) {
+  if (stage === "new") return 0;
+  if (stage === "acquaintance") return 25;
+  if (stage === "friendly") return 45;
+  if (stage === "close") return 65;
+  return 85;
 }
 
 function normalizeMemoryText(text: string) {
@@ -134,6 +204,143 @@ function applyMemoryRemovalDirectives(
   return { kept, removedIds: Array.from(removedIds) };
 }
 
+function clampSummaryTokenBudget(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return SUMMARY_DEFAULT_TOKEN_BUDGET;
+  }
+  const normalized = Math.max(
+    SUMMARY_MIN_TOKEN_BUDGET,
+    Math.min(SUMMARY_MAX_TOKEN_BUDGET, Math.round(value)),
+  );
+  // Migrate legacy low budgets (e.g. 1000) to the current default.
+  return Math.max(SUMMARY_DEFAULT_TOKEN_BUDGET, normalized);
+}
+
+function trimSummaryItems(
+  items: string[] | undefined,
+  maxItems = 10,
+  maxLen = 220,
+) {
+  if (!Array.isArray(items)) return [] as string[];
+  return items
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) =>
+      item.length > maxLen
+        ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`
+        : item,
+    )
+    .slice(0, maxItems);
+}
+
+function buildConversationSummaryContext(chat: ChatSession | undefined) {
+  if (!chat) return undefined;
+  const summary = (chat.conversationSummary || "").trim();
+  const facts = trimSummaryItems(chat.summaryFacts, 12, 180);
+  const goals = trimSummaryItems(chat.summaryGoals, 10, 180);
+  const openThreads = trimSummaryItems(chat.summaryOpenThreads, 12, 220);
+  const agreements = trimSummaryItems(chat.summaryAgreements, 10, 220);
+  if (
+    !summary &&
+    facts.length === 0 &&
+    goals.length === 0 &&
+    openThreads.length === 0 &&
+    agreements.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    summary,
+    facts,
+    goals,
+    openThreads,
+    agreements,
+  };
+}
+
+function buildDialogTimeline(messages: ChatMessage[]) {
+  return messages.filter(
+    (message) =>
+      (message.role === "user" || message.role === "assistant") &&
+      message.content.trim().length > 0,
+  );
+}
+
+async function maybeRefreshConversationSummary(params: {
+  chat: ChatSession;
+  persona: Persona;
+  settings: AppSettings;
+  messages: ChatMessage[];
+}) {
+  const timeline = buildDialogTimeline(params.messages);
+  if (timeline.length <= RECENT_CONTEXT_MESSAGE_LIMIT) return null;
+  const boundaryIndexExclusive = timeline.length - RECENT_CONTEXT_MESSAGE_LIMIT;
+  if (boundaryIndexExclusive <= 0) return null;
+
+  const cursorId = (params.chat.summaryCursorMessageId || "").trim();
+  const cursorIndex = cursorId
+    ? timeline.findIndex((message) => message.id === cursorId)
+    : -1;
+  const startIndex = cursorIndex >= 0 ? cursorIndex + 1 : 0;
+  if (startIndex >= boundaryIndexExclusive) return null;
+
+  const pending = timeline.slice(startIndex, boundaryIndexExclusive);
+  const pendingChars = pending.reduce(
+    (acc, message) => acc + message.content.trim().length,
+    0,
+  );
+  if (
+    pending.length < SUMMARY_MIN_NEW_MESSAGES &&
+    pendingChars < SUMMARY_MIN_NEW_CHARS
+  ) {
+    return null;
+  }
+
+  const existing = {
+    summary: (params.chat.conversationSummary || "").trim(),
+    facts: trimSummaryItems(params.chat.summaryFacts, 12, 180),
+    goals: trimSummaryItems(params.chat.summaryGoals, 10, 180),
+    openThreads: trimSummaryItems(params.chat.summaryOpenThreads, 12, 220),
+    agreements: trimSummaryItems(params.chat.summaryAgreements, 10, 220),
+  };
+  const targetTokens = clampSummaryTokenBudget(params.chat.summaryTokenBudget);
+  const transcript = pending.map((message) => ({
+    role: message.role as "user" | "assistant",
+    content:
+      message.content.length > 2000
+        ? `${message.content.slice(0, 1999).trimEnd()}…`
+        : message.content,
+  }));
+
+  try {
+    const next = await requestConversationSummaryUpdate(
+      params.settings,
+      params.persona,
+      {
+        existing,
+        transcript,
+        targetTokens,
+      },
+    );
+    const cursorMessageId = timeline[boundaryIndexExclusive - 1]?.id;
+    if (!cursorMessageId) return null;
+    return {
+      conversationSummary: next.summary || undefined,
+      summaryFacts: next.facts.length > 0 ? next.facts : undefined,
+      summaryGoals: next.goals.length > 0 ? next.goals : undefined,
+      summaryOpenThreads:
+        next.openThreads.length > 0 ? next.openThreads : undefined,
+      summaryAgreements:
+        next.agreements.length > 0 ? next.agreements : undefined,
+      summaryCursorMessageId: cursorMessageId,
+      summaryUpdatedAt: nowIso(),
+      summaryTokenBudget: targetTokens,
+    } satisfies Partial<ChatSession>;
+  } catch {
+    return null;
+  }
+}
+
 async function loadChatArtifacts(chatId: string | null) {
   if (!chatId) {
     return {
@@ -147,7 +354,8 @@ async function loadChatArtifacts(chatId: string | null) {
     dbApi.getPersonaState(chatId),
     dbApi.getMemories(chatId),
   ]);
-  const recoveredMessages = await recoverAbandonedChatImageGenerations(messages);
+  const recoveredMessages =
+    await recoverAbandonedChatImageGenerations(messages);
   return {
     messages: recoveredMessages,
     state: state ?? null,
@@ -158,7 +366,9 @@ async function loadChatArtifacts(chatId: string | null) {
 function isAbandonedPendingFromPreviousSession(createdAt: string) {
   const createdAtMs = Date.parse(createdAt);
   if (!Number.isFinite(createdAtMs)) return true;
-  return createdAtMs < STORE_RUNTIME_STARTED_AT_MS - ABANDONED_GENERATION_GRACE_MS;
+  return (
+    createdAtMs < STORE_RUNTIME_STARTED_AT_MS - ABANDONED_GENERATION_GRACE_MS
+  );
 }
 
 async function recoverAbandonedChatImageGenerations(messages: ChatMessage[]) {
@@ -170,7 +380,7 @@ async function recoverAbandonedChatImageGenerations(messages: ChatMessage[]) {
     const completed =
       typeof message.imageGenerationCompleted === "number"
         ? message.imageGenerationCompleted
-        : message.imageUrls?.length ?? 0;
+        : (message.imageUrls?.length ?? 0);
     const expected =
       typeof message.imageGenerationExpected === "number"
         ? Math.max(message.imageGenerationExpected, completed)
@@ -218,7 +428,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         const starter: Persona = {
           id: id(),
           name: "Астра",
-          personalityPrompt: "Доброжелательная, любопытная, поддерживающая, структурная.",
+          personalityPrompt:
+            "Доброжелательная, любопытная, поддерживающая, структурная.",
           stylePrompt: "Говорит понятно, спокойно и по делу, без лишней воды.",
           appearance: {
             faceDescription: "мягкие черты лица, спокойный взгляд",
@@ -268,7 +479,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         isLoading: false,
       });
     } catch (error) {
-      set({ initialized: true, isLoading: false, error: (error as Error).message });
+      set({
+        initialized: true,
+        isLoading: false,
+        error: (error as Error).message,
+      });
     }
   },
 
@@ -332,7 +547,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           skin: input.appearance.skin.trim(),
         },
         imageCheckpoint: input.imageCheckpoint.trim(),
-        advanced: normalizeAdvancedProfile(input.advanced ?? createDefaultAdvancedProfile()),
+        advanced: normalizeAdvancedProfile(
+          input.advanced ?? createDefaultAdvancedProfile(),
+        ),
         avatarUrl: input.avatarUrl.trim(),
         fullBodyUrl: input.fullBodyUrl.trim(),
         fullBodySideUrl: input.fullBodySideUrl.trim(),
@@ -343,7 +560,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         fullBodyBackImageId: input.fullBodyBackImageId?.trim() ?? "",
         imageMetaByUrl: input.imageMetaByUrl,
         lookPromptCache: input.lookPromptCache,
-        createdAt: get().personas.find((personaItem) => personaItem.id === input.id)?.createdAt ?? ts,
+        createdAt:
+          get().personas.find((personaItem) => personaItem.id === input.id)
+            ?.createdAt ?? ts,
         updatedAt: ts,
       };
 
@@ -406,8 +625,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       await dbApi.saveChat(chat);
 
-      const persona = get().personas.find((item) => item.id === activePersonaId);
-      const initialState = persona ? createInitialPersonaState(persona, chat.id) : null;
+      const persona = get().personas.find(
+        (item) => item.id === activePersonaId,
+      );
+      const initialState = persona
+        ? createInitialPersonaState(persona, chat.id)
+        : null;
       if (initialState) {
         await dbApi.savePersonaState(initialState);
       }
@@ -490,7 +713,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   sendMessage: async (content) => {
     const state = get();
-    const activePersona = state.personas.find((persona) => persona.id === state.activePersonaId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === state.activePersonaId,
+    );
     if (!activePersona) return;
 
     let activeChatId = state.activeChatId;
@@ -516,19 +741,31 @@ export const useAppStore = create<AppState>((set, get) => ({
       await dbApi.saveMessage(userMessage);
 
       const activeChat = get().chats.find((chat) => chat.id === activeChatId);
-      const loadedState = get().activePersonaState ?? (await dbApi.getPersonaState(activeChatId));
-      const runtimeState = ensurePersonaState(loadedState ?? undefined, activePersona, activeChatId);
+      const loadedState =
+        get().activePersonaState ?? (await dbApi.getPersonaState(activeChatId));
+      const runtimeState = ensurePersonaState(
+        loadedState ?? undefined,
+        activePersona,
+        activeChatId,
+      );
       if (!loadedState) {
         await dbApi.savePersonaState(runtimeState);
       }
 
-      const memoryPool = get().activeMemories.length > 0 ? get().activeMemories : await dbApi.getMemories(activeChatId);
-      const recentMessages = buildRecentMessages(nextMessages);
+      const memoryPool =
+        get().activeMemories.length > 0
+          ? get().activeMemories
+          : await dbApi.getMemories(activeChatId);
+      const recentMessages = buildRecentMessages(
+        nextMessages,
+        RECENT_CONTEXT_MESSAGE_LIMIT,
+      );
       const memoryCard = buildLayeredMemoryContextCard(
         memoryPool,
         recentMessages,
         activePersona.advanced.memory.decayDays,
       );
+      const conversationSummary = buildConversationSummaryContext(activeChat);
 
       const answer = await requestChatCompletion(
         get().settings,
@@ -539,6 +776,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           runtimeState,
           memoryCard,
           recentMessages,
+          conversationSummary,
         },
       );
 
@@ -552,9 +790,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         comfyImageDescription: answer.comfyImageDescription,
         comfyImageDescriptions: answer.comfyImageDescriptions,
         imageGenerationPending: false,
-        personaControlRaw: answer.personaControl ? JSON.stringify(answer.personaControl) : undefined,
+        personaControlRaw: answer.personaControl
+          ? JSON.stringify(answer.personaControl)
+          : undefined,
         createdAt: nowIso(),
       };
+      const relationshipProposal = extractRelationshipProposal(
+        answer.personaControl,
+      );
+      if (relationshipProposal) {
+        assistantMessage = {
+          ...assistantMessage,
+          relationshipProposalType: relationshipProposal.type,
+          relationshipProposalStage: relationshipProposal.stage,
+          relationshipProposalStatus: "pending",
+        };
+      }
 
       const promptBlocks =
         assistantMessage.comfyPrompts ??
@@ -602,7 +853,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           let completedCount = 0;
           let expectedGenerationCount = requestedImageCount;
           const styleReferenceImage =
-            activePersona.avatarUrl.trim() || activePersona.fullBodyUrl.trim() || undefined;
+            activePersona.avatarUrl.trim() ||
+            activePersona.fullBodyUrl.trim() ||
+            undefined;
           const chatStyleStrength =
             typeof activeChat?.chatStyleStrength === "number"
               ? activeChat.chatStyleStrength
@@ -675,14 +928,13 @@ export const useAppStore = create<AppState>((set, get) => ({
                 completedCount += 1;
                 const localizedChunk = await localizeImageUrls(promptImageUrls);
                 const item = comfyItems[index];
-                const extractedMeta =
-                  promptImageUrls[0]
-                    ? await readComfyImageGenerationMeta(
-                        promptImageUrls[0],
-                        get().settings.comfyBaseUrl,
-                        get().settings.comfyAuth,
-                      )
-                    : null;
+                const extractedMeta = promptImageUrls[0]
+                  ? await readComfyImageGenerationMeta(
+                      promptImageUrls[0],
+                      get().settings.comfyBaseUrl,
+                      get().settings.comfyAuth,
+                    )
+                  : null;
                 const meta: ImageGenerationMeta = {
                   seed: extractedMeta?.seed ?? item.seed,
                   prompt: extractedMeta?.prompt ?? item.prompt,
@@ -738,7 +990,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         })();
       }
 
-      const fallbackState = evolvePersonaState(runtimeState, activePersona, content.trim(), assistantMessage.content);
+      const fallbackState = evolvePersonaState(
+        runtimeState,
+        activePersona,
+        content.trim(),
+        assistantMessage.content,
+      );
       let resolvedState = fallbackState;
       let controlMemories: PersonaMemory[] = [];
       let controlMemoryRemovals: MemoryRemovalDirective[] = [];
@@ -756,11 +1013,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       await dbApi.savePersonaState(resolvedState);
 
-      const memoryPoolAfterRemovals = applyMemoryRemovalDirectives(memoryPool, controlMemoryRemovals);
+      const memoryPoolAfterRemovals = applyMemoryRemovalDirectives(
+        memoryPool,
+        controlMemoryRemovals,
+      );
       const candidates = [
         ...(answer.personaControl
           ? []
-          : derivePersistentMemoriesFromUserMessage(activePersona, activeChatId, content.trim())),
+          : derivePersistentMemoriesFromUserMessage(
+              activePersona,
+              activeChatId,
+              content.trim(),
+            )),
         ...controlMemories,
       ];
       const memoryReconciliation = reconcilePersistentMemories(
@@ -771,16 +1035,34 @@ export const useAppStore = create<AppState>((set, get) => ({
       );
       await dbApi.saveMemories(memoryReconciliation.kept);
       await dbApi.deleteMemories([
-        ...new Set([...memoryReconciliation.removedIds, ...memoryPoolAfterRemovals.removedIds]),
+        ...new Set([
+          ...memoryReconciliation.removedIds,
+          ...memoryPoolAfterRemovals.removedIds,
+        ]),
       ]);
 
       if (activeChat) {
-        const updatedChat: ChatSession = {
+        let updatedChat: ChatSession = {
           ...activeChat,
-          title: activeChat.title === "Новый чат" ? titleFromText(content) : activeChat.title,
+          title:
+            activeChat.title === "Новый чат"
+              ? titleFromText(content)
+              : activeChat.title,
           lastResponseId: answer.responseId ?? activeChat.lastResponseId,
           updatedAt: nowIso(),
         };
+        const summaryPatch = await maybeRefreshConversationSummary({
+          chat: updatedChat,
+          persona: activePersona,
+          settings: get().settings,
+          messages: finalMessages,
+        });
+        if (summaryPatch) {
+          updatedChat = {
+            ...updatedChat,
+            ...summaryPatch,
+          };
+        }
         await dbApi.saveChat(updatedChat);
       }
 
@@ -794,6 +1076,250 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ isLoading: false, error: (error as Error).message });
     }
+  },
+
+  regenerateMessageComfyPromptAtIndex: async (messageId, promptIndex) => {
+    const state = get();
+    const activeChatId = state.activeChatId;
+    const activePersona = state.personas.find(
+      (persona) => persona.id === state.activePersonaId,
+    );
+    if (!activeChatId || !activePersona) return;
+
+    const targetMessage = state.messages.find(
+      (message) =>
+        message.id === messageId &&
+        message.chatId === activeChatId &&
+        message.role === "assistant",
+    );
+    if (!targetMessage) return;
+
+    const currentPrompts = collectMessageComfyPrompts(targetMessage);
+    if (currentPrompts.length === 0) {
+      set({ error: "В сообщении нет ComfyUI prompt для перегенерации." });
+      return;
+    }
+
+    const normalizedIndex = Math.max(
+      0,
+      Math.min(currentPrompts.length - 1, Math.floor(promptIndex || 0)),
+    );
+    const currentPrompt = currentPrompts[normalizedIndex];
+    const imageDescriptions = collectMessageComfyImageDescriptions(targetMessage);
+    const sourceDescription =
+      imageDescriptions[normalizedIndex] ||
+      imageDescriptions[0] ||
+      currentPrompt;
+
+    set({ isLoading: true, error: null });
+    try {
+      let regeneratedPrompt = (
+        await generateComfyPromptFromImageDescription(
+          get().settings,
+          activePersona,
+          sourceDescription,
+          normalizedIndex + 1,
+        )
+      ).trim();
+
+      if (!regeneratedPrompt) {
+        throw new Error("Не удалось перегенерировать ComfyUI prompt.");
+      }
+
+      if (regeneratedPrompt === currentPrompt) {
+        regeneratedPrompt = (
+          await generateComfyPromptFromImageDescription(
+            get().settings,
+            activePersona,
+            `${sourceDescription}\nНужна другая вариация композиции и света, сохранив смысл сцены.`,
+            normalizedIndex + 101,
+          )
+        ).trim();
+      }
+
+      if (!regeneratedPrompt) {
+        throw new Error("Не удалось получить новый вариант ComfyUI prompt.");
+      }
+
+      const nextPrompts = [...currentPrompts];
+      nextPrompts[normalizedIndex] = regeneratedPrompt;
+
+      const sourceImageUrls = [...(targetMessage.imageUrls ?? [])];
+      const sourceUrl = sourceImageUrls[normalizedIndex] ?? sourceImageUrls[0] ?? "";
+      const styleReferenceImage =
+        activePersona.avatarUrl.trim() ||
+        activePersona.fullBodyUrl.trim() ||
+        undefined;
+      const activeChat = get().chats.find((chat) => chat.id === activeChatId);
+      const chatStyleStrength =
+        typeof activeChat?.chatStyleStrength === "number"
+          ? activeChat.chatStyleStrength
+          : get().settings.chatStyleStrength;
+      const item = {
+        flow: "base" as const,
+        prompt: regeneratedPrompt,
+        checkpointName: activePersona.imageCheckpoint || undefined,
+        seed: randomSeed(),
+        styleReferenceImage,
+        styleStrength: styleReferenceImage ? chatStyleStrength : undefined,
+        compositionStrength: 0,
+        saveComfyOutputs: get().settings.saveComfyOutputs,
+      };
+      const generatedUrls = await generateComfyImages(
+        [item],
+        get().settings.comfyBaseUrl,
+        get().settings.comfyAuth,
+      );
+      const localizedUrls = await localizeImageUrls(generatedUrls);
+      const localizedImageUrl = localizedUrls[0] ?? "";
+      if (!localizedImageUrl) {
+        throw new Error("ComfyUI не вернул изображение для нового prompt.");
+      }
+
+      const extractedMeta = generatedUrls[0]
+        ? await readComfyImageGenerationMeta(
+            generatedUrls[0],
+            get().settings.comfyBaseUrl,
+            get().settings.comfyAuth,
+          )
+        : null;
+      const nextMeta: ImageGenerationMeta = {
+        seed: extractedMeta?.seed ?? item.seed,
+        prompt: extractedMeta?.prompt ?? item.prompt,
+        model: extractedMeta?.model ?? item.checkpointName,
+        flow: extractedMeta?.flow ?? item.flow,
+      };
+      await dbApi.saveImageAsset({
+        id: crypto.randomUUID(),
+        dataUrl: localizedImageUrl,
+        meta: nextMeta,
+        createdAt: nowIso(),
+      });
+
+      let nextImageUrls = [...sourceImageUrls];
+      if (nextImageUrls.length === 0) {
+        nextImageUrls = [localizedImageUrl];
+      } else if (normalizedIndex < nextImageUrls.length) {
+        nextImageUrls[normalizedIndex] = localizedImageUrl;
+      } else {
+        nextImageUrls.push(localizedImageUrl);
+      }
+
+      const nextContent =
+        sourceUrl && targetMessage.content.includes(sourceUrl)
+          ? targetMessage.content.split(sourceUrl).join(localizedImageUrl)
+          : targetMessage.content;
+
+      const sourceMetaByUrl = { ...(targetMessage.imageMetaByUrl ?? {}) };
+      if (sourceUrl) {
+        delete sourceMetaByUrl[sourceUrl];
+      }
+      sourceMetaByUrl[localizedImageUrl] = nextMeta;
+      const nextMetaByUrl = Object.fromEntries(
+        Object.entries(sourceMetaByUrl).filter(([url]) => nextImageUrls.includes(url)),
+      ) as Record<string, ImageGenerationMeta>;
+      nextMetaByUrl[localizedImageUrl] = nextMeta;
+
+      const updatedMessage: ChatMessage = {
+        ...targetMessage,
+        content: nextContent,
+        comfyPrompt: nextPrompts[0],
+        comfyPrompts: nextPrompts,
+        imageUrls: nextImageUrls,
+        imageMetaByUrl: nextMetaByUrl,
+        imageGenerationPending: false,
+        imageGenerationExpected: Math.max(
+          targetMessage.imageGenerationExpected ?? 0,
+          nextPrompts.length,
+        ),
+        imageGenerationCompleted: nextImageUrls.length,
+      };
+
+      await dbApi.saveMessage(updatedMessage);
+
+      set((current) => ({
+        messages: current.messages.map((message) =>
+          message.id === updatedMessage.id ? updatedMessage : message,
+        ),
+        isLoading: false,
+      }));
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  resolveRelationshipProposal: async (messageId, decision) => {
+    const state = get();
+    const activeChatId = state.activeChatId;
+    if (!activeChatId) return;
+
+    const targetMessage = state.messages.find(
+      (message) => message.id === messageId && message.chatId === activeChatId,
+    );
+    if (!targetMessage || targetMessage.role !== "assistant") return;
+    if (targetMessage.relationshipProposalStatus && targetMessage.relationshipProposalStatus !== "pending") {
+      return;
+    }
+
+    const parsedFromRaw = parsePersonaControlRaw(targetMessage.personaControlRaw);
+    const parsedFromContent = splitAssistantContent(targetMessage.content).personaControl;
+    const proposal =
+      extractRelationshipProposal(parsedFromRaw) ??
+      extractRelationshipProposal(parsedFromContent);
+    const proposalType = targetMessage.relationshipProposalType ?? proposal?.type;
+    const proposalStage = targetMessage.relationshipProposalStage ?? proposal?.stage;
+    if (!proposalType && !proposalStage) return;
+
+    const handledAt = nowIso();
+    const updatedMessage: ChatMessage = {
+      ...targetMessage,
+      relationshipProposalType: proposalType,
+      relationshipProposalStage: proposalStage,
+      relationshipProposalStatus: decision,
+      relationshipProposalHandledAt: handledAt,
+    };
+    await dbApi.saveMessage(updatedMessage);
+
+    let nextActiveState = state.activePersonaState;
+    if (decision === "accepted") {
+      const activePersona = state.personas.find(
+        (persona) => persona.id === state.activePersonaId,
+      );
+      if (activePersona) {
+        const loadedState =
+          state.activePersonaState ?? (await dbApi.getPersonaState(activeChatId));
+        const runtimeState = ensurePersonaState(
+          loadedState ?? undefined,
+          activePersona,
+          activeChatId,
+        );
+        let nextState: PersonaRuntimeState = {
+          ...runtimeState,
+        };
+        if (proposalType) {
+          nextState.relationshipType = proposalType;
+        }
+        if (proposalStage) {
+          nextState.relationshipDepth = Math.max(
+            nextState.relationshipDepth,
+            relationshipStageMinDepth(proposalStage),
+          );
+        }
+        nextState.relationshipStage = relationshipStageFromDepth(
+          nextState.relationshipDepth,
+        );
+        nextState.updatedAt = handledAt;
+        await dbApi.savePersonaState(nextState);
+        nextActiveState = nextState;
+      }
+    }
+
+    set((current) => ({
+      messages: current.messages.map((message) =>
+        message.id === updatedMessage.id ? updatedMessage : message,
+      ),
+      activePersonaState: nextActiveState ?? current.activePersonaState,
+    }));
   },
 
   saveSettings: async (settings) => {

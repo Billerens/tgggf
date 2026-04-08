@@ -339,6 +339,56 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
   } else {
     delete next.chatStyleStrength;
   }
+  const normalizeSummaryList = (input: unknown, maxItems = 10, maxLen = 220) => {
+    if (!Array.isArray(input)) return [] as string[];
+    return input
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean)
+      .map((item) => (item.length > maxLen ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…` : item))
+      .slice(0, maxItems);
+  };
+  const summaryText = toTrimmedString(next.conversationSummary);
+  if (summaryText) {
+    next.conversationSummary =
+      summaryText.length > 6000
+        ? `${summaryText.slice(0, 5999).trimEnd()}…`
+        : summaryText;
+  } else {
+    delete next.conversationSummary;
+  }
+  next.summaryFacts = normalizeSummaryList(next.summaryFacts, 10, 180);
+  next.summaryGoals = normalizeSummaryList(next.summaryGoals, 8, 180);
+  next.summaryOpenThreads = normalizeSummaryList(next.summaryOpenThreads, 10, 200);
+  next.summaryAgreements = normalizeSummaryList(next.summaryAgreements, 8, 200);
+  if (!next.summaryFacts.length) delete next.summaryFacts;
+  if (!next.summaryGoals.length) delete next.summaryGoals;
+  if (!next.summaryOpenThreads.length) delete next.summaryOpenThreads;
+  if (!next.summaryAgreements.length) delete next.summaryAgreements;
+  const cursor = toTrimmedString(next.summaryCursorMessageId);
+  if (cursor) {
+    next.summaryCursorMessageId = cursor;
+  } else {
+    delete next.summaryCursorMessageId;
+  }
+  const summaryUpdatedAt = toTrimmedString(next.summaryUpdatedAt);
+  if (summaryUpdatedAt) {
+    next.summaryUpdatedAt = summaryUpdatedAt;
+  } else {
+    delete next.summaryUpdatedAt;
+  }
+  if (
+    typeof next.summaryTokenBudget === "number" &&
+    Number.isFinite(next.summaryTokenBudget)
+  ) {
+    const normalizedBudget = Math.max(
+      600,
+      Math.min(3000, Math.round(next.summaryTokenBudget)),
+    );
+    // Migrate legacy low values to the current default budget.
+    next.summaryTokenBudget = Math.max(3000, normalizedBudget);
+  } else {
+    delete next.summaryTokenBudget;
+  }
   return next;
 }
 

@@ -44,6 +44,7 @@ export type MoodId =
   | "angry";
 export type RelationshipStage = "new" | "acquaintance" | "friendly" | "close" | "bonded";
 export type RelationshipType = "neutral" | "friendship" | "romantic" | "mentor" | "playful";
+export type RelationshipProposalStatus = "pending" | "accepted" | "rejected";
 export type PersonaMemoryKind = "fact" | "preference" | "goal" | "event";
 export type PersonaMemoryLayer = "short_term" | "episodic" | "long_term";
 export type GroupMemoryKind =
@@ -192,6 +193,14 @@ export interface ChatSession {
   title: string;
   lastResponseId?: string;
   chatStyleStrength?: number;
+  conversationSummary?: string;
+  summaryFacts?: string[];
+  summaryGoals?: string[];
+  summaryOpenThreads?: string[];
+  summaryAgreements?: string[];
+  summaryCursorMessageId?: string;
+  summaryUpdatedAt?: string;
+  summaryTokenBudget?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -211,6 +220,10 @@ export interface ChatMessage {
   imageGenerationCompleted?: number;
   imageMetaByUrl?: Record<string, ImageGenerationMeta>;
   personaControlRaw?: string;
+  relationshipProposalType?: RelationshipType;
+  relationshipProposalStage?: RelationshipStage;
+  relationshipProposalStatus?: RelationshipProposalStatus;
+  relationshipProposalHandledAt?: string;
   createdAt: string;
 }
 
@@ -415,7 +428,6 @@ export interface PersonaRuntimeState {
   relationshipType: RelationshipType;
   relationshipDepth: number;
   relationshipStage: RelationshipStage;
-  activeTopics: string[];
   updatedAt: string;
 }
 

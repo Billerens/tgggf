@@ -29,6 +29,9 @@ interface DropdownProps {
   portal?: boolean;
   renderSelectedLabel?: (option: DropdownOption) => ReactNode;
   renderOption?: (option: DropdownOption, isSelected: boolean) => ReactNode;
+  searchable?: boolean;
+  searchPlaceholder?: string;
+  emptyLabel?: string;
 }
 
 export function Dropdown({
@@ -42,13 +45,29 @@ export function Dropdown({
   portal = false,
   renderSelectedLabel,
   renderOption,
+  searchable = true,
+  searchPlaceholder = "Поиск...",
+  emptyLabel = "Ничего не найдено",
 }: DropdownProps) {
   const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [portalMenuStyle, setPortalMenuStyle] = useState<CSSProperties>({});
   const containerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const selectedOption = useMemo(() => options.find((option) => option.value === value), [options, value]);
+  const showSearch = searchable && options.length >= 6;
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const filteredOptions = useMemo(() => {
+    if (!normalizedQuery) return options;
+    return options.filter((option) => {
+      const haystack = [option.label, option.description || "", option.value]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    });
+  }, [normalizedQuery, options]);
 
   const updatePortalMenuPosition = () => {
     if (!portal || !open) return;
@@ -97,12 +116,25 @@ export function Dropdown({
     }
   }, [disabled]);
 
+  useEffect(() => {
+    if (open) return;
+    setSearchQuery("");
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !showSearch) return;
+    const rafId = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [open, showSearch]);
+
   useLayoutEffect(() => {
     if (!open || !portal) return;
     updatePortalMenuPosition();
     const rafId = window.requestAnimationFrame(() => updatePortalMenuPosition());
     return () => window.cancelAnimationFrame(rafId);
-  }, [open, portal, options.length]);
+  }, [open, portal, filteredOptions.length, showSearch]);
 
   useEffect(() => {
     if (!open || !portal) return;
@@ -118,48 +150,66 @@ export function Dropdown({
   const menu = (
     <div
       ref={menuRef}
-      className={`dropdown-menu ${portal ? "portal" : ""} ${menuClassName}`.trim()}
-      role="listbox"
+      className={`dropdown-menu ${showSearch ? "with-search" : ""} ${portal ? "portal" : ""} ${menuClassName}`.trim()}
       style={portal ? portalMenuStyle : undefined}
     >
-      {options.map((option) => {
-        const isSelected = option.value === value;
-        const content = renderOption ? (
-          renderOption(option, isSelected)
+      {showSearch ? (
+        <div className="dropdown-search">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder={searchPlaceholder}
+            className="dropdown-search-input"
+            autoComplete="off"
+          />
+        </div>
+      ) : null}
+      <div className="dropdown-options" role="listbox">
+        {filteredOptions.length === 0 ? (
+          <div className="dropdown-empty">{emptyLabel}</div>
         ) : (
-          <>
-            {option.avatarSrc || option.avatarFallbackText ? (
-              <span className="dropdown-option-avatar" aria-hidden="true">
-                {option.avatarSrc ? (
-                  <img src={option.avatarSrc} alt="" loading="lazy" />
-                ) : (
-                  <span>{option.avatarFallbackText?.trim().charAt(0).toUpperCase()}</span>
-                )}
-              </span>
-            ) : null}
-            <span className="dropdown-option-text">
-              <strong>{option.label}</strong>
-              {option.description ? <span>{option.description}</span> : null}
-            </span>
-          </>
-        );
+          filteredOptions.map((option) => {
+            const isSelected = option.value === value;
+            const content = renderOption ? (
+              renderOption(option, isSelected)
+            ) : (
+              <>
+                {option.avatarSrc || option.avatarFallbackText ? (
+                  <span className="dropdown-option-avatar" aria-hidden="true">
+                    {option.avatarSrc ? (
+                      <img src={option.avatarSrc} alt="" loading="lazy" />
+                    ) : (
+                      <span>{option.avatarFallbackText?.trim().charAt(0).toUpperCase()}</span>
+                    )}
+                  </span>
+                ) : null}
+                <span className="dropdown-option-text">
+                  <strong>{option.label}</strong>
+                  {option.description ? <span>{option.description}</span> : null}
+                </span>
+              </>
+            );
 
-        return (
-          <button
-            key={option.value}
-            type="button"
-            className={`dropdown-option ${isSelected ? "active" : ""}`}
-            onClick={() => {
-              onChange(option.value);
-              setOpen(false);
-            }}
-            role="option"
-            aria-selected={isSelected}
-          >
-            {content}
-          </button>
-        );
-      })}
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`dropdown-option ${isSelected ? "active" : ""}`}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+                role="option"
+                aria-selected={isSelected}
+              >
+                {content}
+              </button>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 

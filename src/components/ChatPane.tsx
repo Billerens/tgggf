@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { SendHorizontal, Trash2, ChevronDown, HeartHandshake, Brain, Database, Zap, Link2 } from "lucide-react";
+import { SendHorizontal, Trash2, ChevronDown, HeartHandshake, Brain, Database, Zap, Link2, RotateCw } from "lucide-react";
 import { getMoodLabel } from "../personaProfiles";
 import { dbApi } from "../db";
 import type {
@@ -10,7 +10,10 @@ import type {
   PersonaRuntimeState,
 } from "../types";
 import type { LookEnhancePromptOverrides, LookEnhanceTarget } from "../ui/types";
-import type { PersonaControlPayload } from "../personaDynamics";
+import {
+  extractRelationshipProposal,
+  type PersonaControlPayload,
+} from "../personaDynamics";
 import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
@@ -45,6 +48,11 @@ interface ChatPaneProps {
   ) => void;
   onDeleteChat: () => void;
   onSubmitMessage: (event: FormEvent) => void;
+  onRegeneratePromptAtIndex: (messageId: string, promptIndex: number) => void;
+  onResolveRelationshipProposal: (
+    messageId: string,
+    decision: "accepted" | "rejected",
+  ) => void;
   onOpenSidebar: () => void;
   onOpenChatDetails: () => void;
 }
@@ -103,9 +111,6 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
       lines.push(`relationshipDepth: ${sign}${stateDelta.relationshipDepth}`);
     }
     if (stateDelta.relationshipStage) lines.push(`relationshipStage: ${stateDelta.relationshipStage}`);
-    if (stateDelta.activeTopicsAdd && stateDelta.activeTopicsAdd.length > 0) {
-      lines.push(`activeTopicsAdd: ${stateDelta.activeTopicsAdd.join(", ")}`);
-    }
   }
 
   if (control.memory_add && control.memory_add.length > 0) {
@@ -157,6 +162,8 @@ export function ChatPane({
   onRegenerateImage,
   onDeleteChat,
   onSubmitMessage,
+  onRegeneratePromptAtIndex,
+  onResolveRelationshipProposal,
   onOpenSidebar,
   onOpenChatDetails,
 }: ChatPaneProps) {
@@ -389,11 +396,38 @@ export function ChatPane({
                   return Array.from(new Set(next));
                 })()
               : [];
-          const personaControlToRender =
-            msg.role === "assistant" && showStatusChangeDetails
+          const personaControlParsed =
+            msg.role === "assistant"
               ? parsePersonaControlRaw(msg.personaControlRaw) ??
                 parsedAssistant?.personaControl
               : undefined;
+          const personaControlToRender =
+            msg.role === "assistant" && showStatusChangeDetails
+              ? personaControlParsed
+              : undefined;
+          const relationshipProposal =
+            msg.role === "assistant"
+              ? extractRelationshipProposal(personaControlParsed)
+              : undefined;
+          const relationshipProposalType =
+            msg.relationshipProposalType ?? relationshipProposal?.type;
+          const relationshipProposalStage =
+            msg.relationshipProposalStage ?? relationshipProposal?.stage;
+          const relationshipProposalStatus =
+            msg.role === "assistant" &&
+            (relationshipProposalType || relationshipProposalStage)
+              ? msg.relationshipProposalStatus ?? "pending"
+              : undefined;
+          const relationshipProposalSummary = [
+            relationshipProposalType
+              ? `Тип: ${relationshipProposalType}`
+              : "",
+            relationshipProposalStage
+              ? `Этап: ${relationshipProposalStage}`
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" • ");
           const statusDetails = buildStatusDetails(personaControlToRender);
           const imageUrlsToRender = msg.imageUrls ?? [];
           const fallbackExpected = Math.max(
@@ -437,8 +471,22 @@ export function ChatPane({
               ))}
               {comfyPromptsToRender.map((prompt, index) => (
                 <section key={`${msg.id}-comfy-${index}`} className="comfy-prompt-block" aria-label="ComfyUI prompt">
-                  <div className="comfy-prompt-head">
-                    {comfyPromptsToRender.length > 1 ? `ComfyUI prompt #${index + 1}` : "ComfyUI prompt"}
+                  <div className="comfy-prompt-head comfy-prompt-head-with-actions">
+                    <span>
+                      {comfyPromptsToRender.length > 1
+                        ? `ComfyUI prompt #${index + 1}`
+                        : "ComfyUI prompt"}
+                    </span>
+                    <button
+                      type="button"
+                      className="comfy-prompt-regenerate-btn"
+                      title="Перегенерировать prompt и изображение"
+                      aria-label="Перегенерировать prompt и изображение"
+                      disabled={isLoading || imageActionBusy}
+                      onClick={() => onRegeneratePromptAtIndex(msg.id, index)}
+                    >
+                      <RotateCw size={14} />
+                    </button>
                   </div>
                   <pre>{prompt}</pre>
                 </section>
@@ -477,6 +525,51 @@ export function ChatPane({
                 <section className="status-change-block" aria-label="Изменения статуса">
                   <div className="comfy-prompt-head">Изменения статуса</div>
                   <pre>{statusDetails}</pre>
+                </section>
+              ) : null}
+              {relationshipProposalStatus ? (
+                <section
+                  className="relationship-proposal-block"
+                  aria-label="Предложение изменения отношений"
+                >
+                  <div className="comfy-prompt-head">
+                    Предложение изменения отношений
+                  </div>
+                  <p className="relationship-proposal-summary">
+                    {relationshipProposalSummary || "Предложен новый уровень отношений."}
+                  </p>
+                  {relationshipProposalStatus === "pending" ? (
+                    <div className="relationship-proposal-actions">
+                      <button
+                        type="button"
+                        className="mini primary"
+                        disabled={isLoading}
+                        onClick={() =>
+                          onResolveRelationshipProposal(msg.id, "accepted")
+                        }
+                      >
+                        Принять
+                      </button>
+                      <button
+                        type="button"
+                        className="mini"
+                        disabled={isLoading}
+                        onClick={() =>
+                          onResolveRelationshipProposal(msg.id, "rejected")
+                        }
+                      >
+                        Отклонить
+                      </button>
+                    </div>
+                  ) : (
+                    <p
+                      className={`relationship-proposal-result ${relationshipProposalStatus}`}
+                    >
+                      {relationshipProposalStatus === "accepted"
+                        ? "Предложение принято."
+                        : "Предложение отклонено."}
+                    </p>
+                  )}
                 </section>
               ) : null}
               <time>{formatShortTime(msg.createdAt)}</time>

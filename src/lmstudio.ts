@@ -32,6 +32,13 @@ export interface ChatCompletionContext {
   runtimeState?: PersonaRuntimeState;
   memoryCard?: LayeredMemoryContextCard;
   recentMessages?: Array<{ role: "user" | "assistant"; content: string }>;
+  conversationSummary?: {
+    summary?: string;
+    facts?: string[];
+    goals?: string[];
+    openThreads?: string[];
+    agreements?: string[];
+  };
 }
 
 function sentenceLengthRule(
@@ -168,6 +175,51 @@ function formatRecentMessages(
   return lines.join("\n");
 }
 
+function summarizeListItems(
+  items: string[] | undefined,
+  label: string,
+  emptyLabel = "none",
+  maxItems = 8,
+  maxLen = 220,
+) {
+  if (!items || items.length === 0) return `${label}: ${emptyLabel}`;
+  const cleaned = items
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, maxItems)
+    .map((item) =>
+      item.length > maxLen
+        ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`
+        : item,
+    );
+  if (cleaned.length === 0) return `${label}: ${emptyLabel}`;
+  return `${label}:\n${cleaned.map((item) => `- ${item}`).join("\n")}`;
+}
+
+function formatConversationSummaryContext(
+  context: ChatCompletionContext["conversationSummary"] | undefined,
+) {
+  if (!context) return "none";
+  const summary = (context.summary || "").trim();
+  const facts = context.facts ?? [];
+  const goals = context.goals ?? [];
+  const openThreads = context.openThreads ?? [];
+  const agreements = context.agreements ?? [];
+  const hasStructured =
+    facts.length > 0 ||
+    goals.length > 0 ||
+    openThreads.length > 0 ||
+    agreements.length > 0;
+  if (!summary && !hasStructured) return "none";
+  return [
+    `Narrative summary: ${summary || "none"}`,
+    summarizeListItems(facts, "Stable facts"),
+    summarizeListItems(goals, "User goals"),
+    summarizeListItems(openThreads, "Open threads"),
+    summarizeListItems(agreements, "Agreements"),
+  ].join("\n");
+}
+
 function formatAppearanceProfile(
   appearance: PersonaAppearanceProfile | undefined,
 ) {
@@ -221,6 +273,9 @@ export function buildSystemPrompt(
     ...(context?.memoryCard?.longTerm.map((m) => m.content) || []),
   ];
   const memoryContext = formatMemoryContextWithUsage(memories);
+  const conversationSummaryContext = formatConversationSummaryContext(
+    context?.conversationSummary,
+  );
 
   return [
     "=== HARD CONSTRAINTS ===",
@@ -265,17 +320,20 @@ export function buildSystemPrompt(
     "",
     "После каждого ответа добавляй технический блок:",
     "<persona_control>",
-    '{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipType":"neutral","relationshipDepth":0,"relationshipStage":"new"},"memory_add":[],"memory_remove":[]}',
+    '{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipDepth":0},"memory_add":[],"memory_remove":[]}',
     "</persona_control>",
     "Если изменений нет, оставь нули и пустые массивы. Без пояснений.",
     "Ты сама определяешь intents, state_delta и операции памяти (memory_add/memory_remove).",
+    "Исполняемые intents (whitelist): flirt, deepen_connection, sensual_description, comfort, reassure, boundary_set, deescalate, ask_clarification, topic_shift, reflect_user, playful_banter, self_disclosure.",
     "Разрешённые mood: calm, warm, playful, focused, analytical, inspired, annoyed, upset, angry.",
-    "Разрешённые relationshipType: neutral, friendship, romantic, mentor, playful.",
-    "Разрешённые relationshipStage: new, acquaintance, friendly, close, bonded.",
+    "Не заполняй relationshipType и relationshipStage в state_delta: эти поля рассчитываются системой.",
+    "Если считаешь, что пора сменить тип/стадию отношений, ОБЯЗАТЕЛЬНО добавь intent-предложение: propose_relationship_type:<type> или propose_relationship_stage:<stage>.",
+    "Неизвестные intents допускаются для внутренней семантики, но напрямую не исполняются движком.",
+    "Допустимые type: neutral, friendship, romantic, mentor, playful.",
+    "Допустимые stage: new, acquaintance, friendly, close, bonded.",
     "Для state_delta используй небольшие шаги; избегай резких скачков.",
     "Лимиты дельт state_delta: trust [-8..+6], engagement [-8..+8], energy [-10..+10], lust [-8..+8], fear [-10..+10], affection [-8..+8], tension [-10..+10], relationshipDepth [-6..+6].",
     "Обычно предпочитай мягкие изменения в диапазоне -3..+3, если контекст не требует иного.",
-    "relationshipType и relationshipStage меняй редко и только при явных основаниях в диалоге.",
     "Для фактов/предпочтений/целей пользователя добавляй memory_add с kind=fact|preference|goal.",
     "memory_add для long_term должен быть атомарным (один факт), коротким и без дословных цитат пользователя.",
     "Не сохраняй в long_term разовые запросы, ситуативные команды и мета-реплики (например: просьбы показать фото/картинку/селфи, рассказать что-то, сгенерировать...).",
@@ -327,6 +385,9 @@ export function buildSystemPrompt(
     runtimeState
       ? `Текущее состояние: mood=${runtimeState.mood}; trust=${runtimeState.trust}; energy=${runtimeState.energy}; engagement=${runtimeState.engagement}; lust=${runtimeState.lust}; fear=${runtimeState.fear}; affection=${runtimeState.affection}; tension=${runtimeState.tension}; relationshipType=${runtimeState.relationshipType}; relationshipDepth=${runtimeState.relationshipDepth}; stage=${runtimeState.relationshipStage}.`
       : "Текущее состояние: нет данных, начни нейтрально-тепло.",
+    "",
+    "=== CONVERSATION SUMMARY ===",
+    conversationSummaryContext,
     "",
     "=== MEMORY CONTEXT ===",
     memoryContext,
@@ -653,6 +714,147 @@ export async function requestChatCompletion(
     personaControl,
     responseId: response.responseId,
   };
+}
+
+export interface ConversationSummaryState {
+  summary: string;
+  facts: string[];
+  goals: string[];
+  openThreads: string[];
+  agreements: string[];
+}
+
+interface ConversationSummaryUpdateRequest {
+  existing: ConversationSummaryState;
+  transcript: Array<{ role: "user" | "assistant"; content: string }>;
+  targetTokens: number;
+}
+
+function parseJsonObjectFromText<T extends object>(value: string): T | null {
+  const text = value.trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(text.slice(start, end + 1)) as T;
+    } catch {
+      return null;
+    }
+  }
+}
+
+function normalizeSummaryList(
+  value: unknown,
+  maxItems = 10,
+  maxLen = 220,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .map((item) =>
+      item.length > maxLen
+        ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`
+        : item,
+    )
+    .slice(0, maxItems);
+}
+
+function normalizeSummaryState(
+  parsed: Record<string, unknown>,
+  fallback: ConversationSummaryState,
+  targetTokens: number,
+): ConversationSummaryState {
+  const estimatedMaxSummaryChars = Math.max(
+    800,
+    Math.min(12000, Math.round(targetTokens * 5.5)),
+  );
+  const summaryRaw = toTrimmedString(parsed.summary);
+  const summary = summaryRaw
+    ? summaryRaw.length > estimatedMaxSummaryChars
+      ? `${summaryRaw.slice(0, estimatedMaxSummaryChars - 1).trimEnd()}…`
+      : summaryRaw
+    : fallback.summary;
+  return {
+    summary,
+    facts: normalizeSummaryList(parsed.facts, 12, 180),
+    goals: normalizeSummaryList(parsed.goals, 10, 180),
+    openThreads: normalizeSummaryList(parsed.openThreads, 12, 220),
+    agreements: normalizeSummaryList(parsed.agreements, 10, 220),
+  };
+}
+
+export async function requestConversationSummaryUpdate(
+  settings: AppSettings,
+  persona: Persona,
+  request: ConversationSummaryUpdateRequest,
+): Promise<ConversationSummaryState> {
+  const safeTargetTokens = Math.max(600, Math.min(3000, request.targetTokens));
+  const responseMaxOutputTokens = Math.max(
+    700,
+    Math.min(5000, Math.round(safeTargetTokens * 1.2)),
+  );
+  const transcript = request.transcript
+    .map((message) => ({
+      role: message.role,
+      content: message.content.trim(),
+    }))
+    .filter((message) => message.content.length > 0)
+    .slice(0, 80);
+  if (transcript.length === 0) {
+    return request.existing;
+  }
+  const systemPrompt = [
+    "Ты компонент суммаризации 1:1 чата между пользователем и персоной.",
+    "Верни ТОЛЬКО JSON-объект без markdown и пояснений.",
+    'Формат: {"summary":"...","facts":["..."],"goals":["..."],"openThreads":["..."],"agreements":["..."]}',
+    "Пиши на русском языке, фактически и нейтрально.",
+    "summary — связная выжимка прошлого контекста, без художественных добавлений.",
+    "facts — устойчивые факты о пользователе/контексте (без одноразовых команд).",
+    "goals — цели и намерения пользователя, если они явно есть.",
+    "openThreads — незавершенные темы/вопросы/задачи.",
+    "agreements — явные договоренности и решения.",
+    "Не дублируй один и тот же пункт разными формулировками.",
+    "Если данных для списка нет — верни пустой массив.",
+    `Ограничь общий объем summary примерно до ${safeTargetTokens} токенов или меньше.`,
+  ].join("\n");
+  const input = [
+    `Персона: ${persona.name}`,
+    `Целевой бюджет токенов для summary: ${safeTargetTokens}`,
+    "",
+    "Текущее состояние summary (можно сжать/переписать):",
+    JSON.stringify(request.existing),
+    "",
+    "Новые сообщения для инкрементального учета:",
+    ...transcript.map(
+      (message) =>
+        `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content}`,
+    ),
+  ].join("\n");
+
+  const response = await requestGenericChatCompletion(
+    settings,
+    "one_to_one_chat",
+    {
+      model: settings.model,
+      input,
+      systemPrompt,
+      maxOutputTokens: responseMaxOutputTokens,
+      temperature: Math.max(0.1, Math.min(0.4, settings.temperature)),
+      store: false,
+    },
+  );
+  const parsed = parseJsonObjectFromText<Record<string, unknown>>(
+    response.content,
+  );
+  if (!parsed) {
+    throw new Error("Не удалось распарсить JSON суммаризации.");
+  }
+  return normalizeSummaryState(parsed, request.existing, safeTargetTokens);
 }
 
 export interface GeneratedPersonaDraft {

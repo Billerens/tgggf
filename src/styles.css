@@ -1114,6 +1114,79 @@ button.danger:hover:not(:disabled) {
   font-size: 13px;
   color: var(--text-primary);
 }
+.status-card .status-caption {
+  margin-top: -2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.status-card .status-block-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.015);
+}
+.status-subsection {
+  margin-top: 8px;
+}
+.status-subsection .status-subtitle {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.status-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+.status-list li {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.status-accordion-list {
+  display: grid;
+  gap: 10px;
+}
+.status-accordion {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+.status-accordion > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  user-select: none;
+}
+.status-accordion > summary::-webkit-details-marker {
+  display: none;
+}
+.status-accordion > summary::after {
+  content: "▾";
+  float: right;
+  color: var(--text-secondary);
+  transition: transform 0.2s ease;
+}
+.status-accordion[open] > summary::after {
+  transform: rotate(180deg);
+}
+.status-accordion-body {
+  border-top: 1px solid var(--border-light);
+  padding: 12px;
+}
+.status-accordion-body p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
 .memory-section {
   border: 1px solid var(--border-light);
   border-radius: var(--radius-md);
@@ -1294,7 +1367,7 @@ select,
   right: 0;
   z-index: 20;
   max-height: 260px;
-  overflow-y: auto;
+  overflow: hidden;
   border: 1px solid var(--border-light);
   border-radius: 12px;
   background: var(--bg-surface-solid);
@@ -1303,6 +1376,42 @@ select,
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.dropdown-search {
+  padding: 4px;
+}
+
+.dropdown-search-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.dropdown-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 248px;
+  overflow-y: auto;
+}
+
+.dropdown-menu.with-search .dropdown-options {
+  max-height: 198px;
+}
+
+.dropdown-empty {
+  padding: 10px;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: center;
 }
 
 .dropdown-menu.portal {
@@ -1646,6 +1755,29 @@ select:focus,
   color: var(--accent);
   margin-bottom: 8px;
 }
+.comfy-prompt-head-with-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.comfy-prompt-head-with-actions span {
+  min-width: 0;
+}
+.comfy-prompt-regenerate-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+.comfy-prompt-regenerate-btn svg {
+  width: 14px;
+  height: 14px;
+}
 .comfy-prompt-block pre {
   margin: 0;
   font-family: "IBM Plex Mono", monospace;
@@ -1668,6 +1800,34 @@ select:focus,
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+.relationship-proposal-block {
+  margin-top: 12px;
+  padding: 14px;
+  background: rgba(59, 130, 246, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+.relationship-proposal-summary {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.relationship-proposal-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+.relationship-proposal-result {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.relationship-proposal-result.accepted {
+  color: #86efac;
+}
+.relationship-proposal-result.rejected {
+  color: #fca5a5;
 }
 .bubble-images {
   margin-top: 12px;
