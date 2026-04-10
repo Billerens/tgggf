@@ -171,6 +171,90 @@ function collectMessageComfyImageDescriptions(message: ChatMessage) {
   ]);
 }
 
+type ImageDescriptionType = "person" | "other_person" | "no_person" | "group";
+
+interface ParsedImageDescriptionType {
+  type: ImageDescriptionType;
+  participants: string;
+  includesPersona: boolean;
+  hasExplicitType: boolean;
+}
+
+function normalizeImageDescriptionTypeToken(token: string | undefined) {
+  const normalized = (token || "").trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "person" || normalized === "persona_self" || normalized === "self") {
+    return "person" as const;
+  }
+  if (normalized === "other_person" || normalized === "other") {
+    return "other_person" as const;
+  }
+  if (normalized === "no_person" || normalized === "none" || normalized === "landscape") {
+    return "no_person" as const;
+  }
+  if (normalized === "group" || normalized === "multi_person") {
+    return "group" as const;
+  }
+  return undefined;
+}
+
+function parseImageDescriptionType(
+  rawDescription: string,
+  personaName: string,
+): ParsedImageDescriptionType {
+  const description = rawDescription.trim();
+  const normalized = description.toLowerCase();
+  const typeMatch = normalized.match(/(?:^|\n)\s*type\s*:\s*([a-z_]+)\b/i);
+  const subjectModeMatch = normalized.match(
+    /(?:^|\n)\s*subject_mode\s*:\s*(persona_self|other_person|no_person|group)\b/i,
+  );
+  const explicitType =
+    normalizeImageDescriptionTypeToken(typeMatch?.[1]) ??
+    normalizeImageDescriptionTypeToken(subjectModeMatch?.[1]);
+  const hasExplicitType = Boolean(explicitType);
+  const participantsMatch = description.match(/(?:^|\n)\s*participants\s*:\s*([^\n\r]+)/i);
+  const participants = (participantsMatch?.[1] || "").trim() || "-";
+  const participantsNormalized = participants.toLowerCase();
+  const personaNameNormalized = personaName.trim().toLowerCase();
+
+  const inferredType: ImageDescriptionType =
+    explicitType ??
+    (/\bno_person\b|\bno person\b|\blandscape\b|\bscenery\b|\binterior\b/.test(normalized) ||
+    /пейзаж|ландшафт|интерьер|без людей|без человека/.test(normalized)
+      ? "no_person"
+      : /\bgroup\b|\bmultiple people\b|\bcrowd\b|\bfamily\b|\bfriends\b/.test(normalized) ||
+          /групп|компан|семь|друз|толпа|двое|трое|четверо/.test(normalized)
+        ? "group"
+        : "person");
+
+  const includesPersona =
+    inferredType === "person" ||
+    (inferredType === "group" &&
+      (normalized.includes("participants: persona") ||
+        normalized.includes("participants: персона") ||
+        Boolean(personaNameNormalized && normalized.includes(personaNameNormalized)) ||
+        participantsNormalized.includes("persona") ||
+        participantsNormalized.includes("персона") ||
+        Boolean(
+          personaNameNormalized &&
+            participantsNormalized.includes(personaNameNormalized),
+        )));
+
+  return {
+    type: inferredType,
+    participants,
+    includesPersona,
+    hasExplicitType,
+  };
+}
+
+function shouldAttachPersonaReference(parsed: ParsedImageDescriptionType) {
+  if (parsed.type === "no_person") return false;
+  if (parsed.type === "other_person") return false;
+  if (parsed.type === "group") return parsed.includesPersona;
+  return true;
+}
+
 interface MemoryRemovalDirective {
   id?: string;
   layer?: PersonaMemory["layer"];
@@ -1100,7 +1184,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           const aggregatedMetaByUrl: Record<string, ImageGenerationMeta> = {};
           let completedCount = 0;
           let expectedGenerationCount = requestedImageCount;
-          const styleReferenceImage =
+          const personaStyleReferenceImage =
             activePersona.avatarUrl.trim() ||
             activePersona.fullBodyUrl.trim() ||
             undefined;
@@ -1109,6 +1193,9 @@ export const useAppStore = create<AppState>((set, get) => ({
               ? activeChat.chatStyleStrength
               : get().settings.chatStyleStrength;
           let promptsForGeneration = [...promptBlocks];
+          let parsedTypesForGeneration = promptsForGeneration.map((prompt) =>
+            parseImageDescriptionType(prompt, activePersona.name),
+          );
 
           try {
             if (imageDescriptionBlocks.length > 0) {
@@ -1122,10 +1209,29 @@ export const useAppStore = create<AppState>((set, get) => ({
                   ),
                 ),
               );
-              promptsForGeneration = generatedPromptBatches
-                .flat()
-                .map((value) => value.trim())
-                .filter(Boolean);
+              const parsedTypesByDescription = imageDescriptionBlocks.map(
+                (description) =>
+                  parseImageDescriptionType(description, activePersona.name),
+              );
+              const promptsWithType = generatedPromptBatches.flatMap(
+                (batch, batchIndex) =>
+                  batch
+                    .map((value) => value.trim())
+                    .filter(Boolean)
+                    .map((prompt) => ({
+                      prompt,
+                      parsedType: parsedTypesByDescription[batchIndex] ?? {
+                        type: "person" as const,
+                        participants: "-",
+                        includesPersona: true,
+                        hasExplicitType: false,
+                      },
+                    })),
+              );
+              promptsForGeneration = promptsWithType.map((item) => item.prompt);
+              parsedTypesForGeneration = promptsWithType.map(
+                (item) => item.parsedType,
+              );
               expectedGenerationCount = promptsForGeneration.length;
               await patchAssistantMessage({
                 comfyPrompt: promptsForGeneration[0],
@@ -1156,16 +1262,26 @@ export const useAppStore = create<AppState>((set, get) => ({
             return;
           }
 
-          const comfyItems = promptsForGeneration.map((prompt) => ({
-            flow: "base" as const,
-            prompt,
-            checkpointName: activePersona.imageCheckpoint || undefined,
-            seed: randomSeed(),
-            styleReferenceImage,
-            styleStrength: styleReferenceImage ? chatStyleStrength : undefined,
-            compositionStrength: 0,
-            saveComfyOutputs: get().settings.saveComfyOutputs,
-          }));
+          const comfyItems = promptsForGeneration.map((prompt, index) => {
+            const parsedType =
+              parsedTypesForGeneration[index] ??
+              parseImageDescriptionType(prompt, activePersona.name);
+            const styleReferenceImage = shouldAttachPersonaReference(parsedType)
+              ? personaStyleReferenceImage
+              : undefined;
+            return {
+              flow: "base" as const,
+              prompt,
+              checkpointName: activePersona.imageCheckpoint || undefined,
+              seed: randomSeed(),
+              styleReferenceImage,
+              styleStrength: styleReferenceImage
+                ? chatStyleStrength
+                : undefined,
+              compositionStrength: 0,
+              saveComfyOutputs: get().settings.saveComfyOutputs,
+            };
+          });
 
           try {
             await generateComfyImages(
@@ -1394,10 +1510,17 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const sourceImageUrls = [...(targetMessage.imageUrls ?? [])];
       const sourceUrl = sourceImageUrls[normalizedIndex] ?? sourceImageUrls[0] ?? "";
-      const styleReferenceImage =
+      const parsedType = parseImageDescriptionType(
+        sourceDescription,
+        activePersona.name,
+      );
+      const personaStyleReferenceImage =
         activePersona.avatarUrl.trim() ||
         activePersona.fullBodyUrl.trim() ||
         undefined;
+      const styleReferenceImage = shouldAttachPersonaReference(parsedType)
+        ? personaStyleReferenceImage
+        : undefined;
       const activeChat = get().chats.find((chat) => chat.id === activeChatId);
       const chatStyleStrength =
         typeof activeChat?.chatStyleStrength === "number"

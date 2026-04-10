@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import { RefreshCw, X } from "lucide-react";
+import {
+  CloudDownload,
+  CloudUpload,
+  LogIn,
+  LogOut,
+  RefreshCw,
+  X,
+} from "lucide-react";
 import type {
   AppSettings,
   AuthMode,
@@ -13,6 +20,7 @@ import type {
   BackupImportMode,
   BackupExportScope,
 } from "../features/backup/dataTransfer";
+import type { GoogleDriveFileMeta } from "../features/backup/googleDriveSync";
 
 type PwaInstallStatus = "installed" | "available" | "unavailable";
 
@@ -25,12 +33,26 @@ interface SettingsModalProps {
   exportableChats: Array<{ id: string; title: string; personaName: string }>;
   exportBusy: boolean;
   importBusy: boolean;
+  driveBusy: boolean;
+  googleDriveConfigured: boolean;
+  googleDriveConnected: boolean;
+  googleDriveAccountEmail: string | null;
+  googleDriveBackups: GoogleDriveFileMeta[];
+  selectedGoogleDriveBackupId: string;
+  setSelectedGoogleDriveBackupId: (backupId: string) => void;
+  driveBackupName: string;
+  setDriveBackupName: (name: string) => void;
   dataTransferMessage: string | null;
   exportDownloadUrl: string | null;
   exportDownloadFileName: string | null;
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
   onInstallPwa: () => void;
   onRefreshModels: (provider: LlmProvider) => void;
+  onGoogleDriveConnect: () => Promise<void>;
+  onGoogleDriveDisconnect: () => void;
+  onGoogleDriveRefreshBackups: () => Promise<void>;
+  onGoogleDriveSyncUpload: () => Promise<void>;
+  onGoogleDriveSyncDownload: (mode: BackupImportMode) => Promise<void>;
   onExportData: (params: {
     scope: BackupExportScope;
     format: BackupExportFormat;
@@ -107,6 +129,33 @@ const IMPORT_MODE_OPTIONS: Array<{ value: BackupImportMode; label: string }> = [
   { value: "merge", label: "Добавить / объединить" },
   { value: "replace", label: "Заменить текущие данные" },
 ];
+
+function formatDriveBackupDate(value: string | undefined) {
+  if (!value) return "время неизвестно";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatDriveBackupSize(value: string | undefined) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "размер неизвестен";
+  }
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
 
 function AuthSettingsSection({
   title,
@@ -196,12 +245,26 @@ export function SettingsModal({
   exportableChats,
   exportBusy,
   importBusy,
+  driveBusy,
+  googleDriveConfigured,
+  googleDriveConnected,
+  googleDriveAccountEmail,
+  googleDriveBackups,
+  selectedGoogleDriveBackupId,
+  setSelectedGoogleDriveBackupId,
+  driveBackupName,
+  setDriveBackupName,
   dataTransferMessage,
   exportDownloadUrl,
   exportDownloadFileName,
   setSettingsDraft,
   onInstallPwa,
   onRefreshModels,
+  onGoogleDriveConnect,
+  onGoogleDriveDisconnect,
+  onGoogleDriveRefreshBackups,
+  onGoogleDriveSyncUpload,
+  onGoogleDriveSyncDownload,
   onExportData,
   onImportData,
   onClose,
@@ -213,6 +276,28 @@ export function SettingsModal({
   const [exportChatId, setExportChatId] = useState("");
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importMode, setImportMode] = useState<BackupImportMode>("merge");
+  const googleDriveBackupOptions = useMemo(() => {
+    if (googleDriveBackups.length === 0) {
+      return [{ value: "", label: "Бэкапы в Drive не найдены" }];
+    }
+    return googleDriveBackups.map((backup, index) => {
+      const versionPart = backup.versionTag ? `v${backup.versionTag}` : `#${index + 1}`;
+      const labelPart = backup.backupLabel || "Без названия";
+      return {
+        value: backup.id,
+        label: `${labelPart} • ${versionPart}`,
+        description: `${formatDriveBackupDate(
+          backup.modifiedTime || backup.exportedAt,
+        )} • ${formatDriveBackupSize(backup.size)} • ${backup.name}`,
+      };
+    });
+  }, [googleDriveBackups]);
+  const selectedGoogleDriveBackup = useMemo(
+    () =>
+      googleDriveBackups.find((backup) => backup.id === selectedGoogleDriveBackupId) ??
+      null,
+    [googleDriveBackups, selectedGoogleDriveBackupId],
+  );
   const updateDetailStrengthValue = (
     level: AppSettings["enhanceDetailLevelAll"],
     key: DetailStrengthColumnKey,
@@ -709,6 +794,130 @@ export function SettingsModal({
           {activeTab === "data" ? (
             <>
               <div className="persona-section">
+                <h5>Google Drive (ручная синхронизация)</h5>
+                <small style={{ color: "var(--text-secondary)" }}>
+                  Авторизация происходит через всплывающее окно Google в браузере.
+                  Автоматической фоновой синхронизации нет, только по кнопке.
+                </small>
+                <div className="inline-row" style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => void onGoogleDriveConnect()}
+                    disabled={
+                      driveBusy || exportBusy || importBusy || !googleDriveConfigured
+                    }
+                  >
+                    <LogIn size={14} />
+                    {driveBusy
+                      ? "Подключение..."
+                      : googleDriveConnected
+                        ? "Переавторизовать Drive"
+                        : "Подключить Drive"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onGoogleDriveDisconnect}
+                    disabled={
+                      driveBusy || exportBusy || importBusy || !googleDriveConnected
+                    }
+                  >
+                    <LogOut size={14} />
+                    Отключить
+                  </button>
+                </div>
+                <label>
+                  Название бэкапа (опционально)
+                  <input
+                    value={driveBackupName}
+                    onChange={(event) => setDriveBackupName(event.target.value)}
+                    placeholder="Например: перед релизом 1.4"
+                    disabled={driveBusy || exportBusy || importBusy || !googleDriveConfigured}
+                  />
+                </label>
+                <div className="inline-row" style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    onClick={() => void onGoogleDriveSyncUpload()}
+                    disabled={
+                      driveBusy ||
+                      exportBusy ||
+                      importBusy ||
+                      !googleDriveConfigured
+                    }
+                  >
+                    <CloudUpload size={14} />
+                    {driveBusy ? "Синк..." : "Синхронизировать в Drive"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onGoogleDriveRefreshBackups()}
+                    disabled={driveBusy || exportBusy || importBusy || !googleDriveConfigured}
+                  >
+                    <RefreshCw size={14} className={driveBusy ? "spin" : ""} />
+                    Обновить версии
+                  </button>
+                </div>
+                <label>
+                  Версия/название для восстановления
+                  <Dropdown
+                    value={selectedGoogleDriveBackupId}
+                    options={googleDriveBackupOptions}
+                    onChange={setSelectedGoogleDriveBackupId}
+                    disabled={
+                      driveBusy ||
+                      exportBusy ||
+                      importBusy ||
+                      !googleDriveConfigured ||
+                      googleDriveBackups.length === 0
+                    }
+                  />
+                </label>
+                <div className="inline-row">
+                  <button
+                    type="button"
+                    onClick={() => void onGoogleDriveSyncDownload(importMode)}
+                    disabled={
+                      driveBusy ||
+                      exportBusy ||
+                      importBusy ||
+                      !googleDriveConfigured ||
+                      googleDriveBackups.length === 0 ||
+                      !selectedGoogleDriveBackupId
+                    }
+                  >
+                    <CloudDownload size={14} />
+                    {driveBusy ? "Восстановление..." : "Восстановить из Drive"}
+                  </button>
+                </div>
+                {selectedGoogleDriveBackup ? (
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    Выбран бэкап: {selectedGoogleDriveBackup.name}
+                    {selectedGoogleDriveBackup.versionTag
+                      ? ` • v${selectedGoogleDriveBackup.versionTag}`
+                      : ""}
+                    {selectedGoogleDriveBackup.backupLabel
+                      ? ` • ${selectedGoogleDriveBackup.backupLabel}`
+                      : ""}
+                  </small>
+                ) : null}
+                {!googleDriveConfigured ? (
+                  <small style={{ color: "var(--danger)" }}>
+                    Google Drive не настроен в приложении (нет OAuth Client ID).
+                  </small>
+                ) : null}
+                <small style={{ color: "var(--text-secondary)" }}>
+                  Статус:{" "}
+                  {googleDriveConnected
+                    ? `подключено${
+                        googleDriveAccountEmail
+                          ? ` (${googleDriveAccountEmail})`
+                          : ""
+                      }`
+                    : "не подключено"}
+                </small>
+              </div>
+
+              <div className="persona-section">
                 <h5>Экспорт</h5>
                 <label>
                   Набор данных
@@ -764,6 +973,7 @@ export function SettingsModal({
                   disabled={
                     exportBusy ||
                     importBusy ||
+                    driveBusy ||
                     ((exportFormat === "json" || exportFormat === "zip") &&
                       exportScope === "chat" &&
                       !exportChatId)
@@ -820,7 +1030,7 @@ export function SettingsModal({
                     onClick={() =>
                       importFile && void onImportData(importFile, importMode)
                     }
-                    disabled={!importFile || importBusy || exportBusy}
+                    disabled={!importFile || importBusy || exportBusy || driveBusy}
                   >
                     {importBusy ? "Импорт..." : "Импортировать"}
                   </button>

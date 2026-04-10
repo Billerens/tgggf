@@ -4,6 +4,9 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   server: {
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+    },
     proxy: {
       "/lmstudio/": {
         target: "https://t1.tun.uforge.online",
@@ -29,6 +32,11 @@ export default defineConfig({
         secure: false,
         rewrite: (path) => path.replace(/^\/comfyloc/, ""),
       },
+    },
+  },
+  preview: {
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
     },
   },
 });

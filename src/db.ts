@@ -290,6 +290,8 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   merged.personaGenerationModel =
     toTrimmedString(merged.personaGenerationModel) || merged.model || DEFAULT_SETTINGS.model;
   merged.comfyBaseUrl = toTrimmedString(merged.comfyBaseUrl) || DEFAULT_SETTINGS.comfyBaseUrl;
+  merged.googleDriveClientId = toTrimmedString(merged.googleDriveClientId);
+  merged.googleDriveFolderId = toTrimmedString(merged.googleDriveFolderId);
   merged.saveComfyOutputs = Boolean(merged.saveComfyOutputs);
   if (!Number.isFinite(merged.chatStyleStrength)) {
     merged.chatStyleStrength = DEFAULT_SETTINGS.chatStyleStrength;
@@ -463,6 +465,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   openRouterBaseUrl: DEFAULT_OPENROUTER_BASE_URL,
   huggingFaceBaseUrl: DEFAULT_HUGGINGFACE_BASE_URL,
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
+  googleDriveClientId: "",
+  googleDriveFolderId: "",
   saveComfyOutputs: false,
   oneToOneProvider: "lmstudio",
   groupOrchestratorProvider: "lmstudio",

@@ -91,6 +91,11 @@ interface BuildBackupPayloadOptions {
   chatId?: string;
 }
 
+interface ExportBackupFileOptions {
+  backupName?: string;
+  versionTag?: string;
+}
+
 const BACKUP_SCHEMA_VERSION = 2;
 const RAW_BACKUP_SCHEMA_VERSION = 1;
 const BACKUP_JSON_FILE_NAME = "backup.json";
@@ -172,8 +177,35 @@ function uniqueByKey<T>(items: T[], getKey: (item: T) => string) {
   return Array.from(map.values());
 }
 
-function fileTimestamp() {
-  return new Date().toISOString().replace(/[:.]/g, "-");
+function sanitizeFilePart(value: string) {
+  return value
+    .trim()
+    .replace(/[\u0000-\u001F]/g, "")
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+}
+
+export function createBackupVersionTag(date = new Date()) {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}${month}${day}-${hours}${minutes}${seconds}`;
+}
+
+function normalizeVersionTag(value: string | undefined) {
+  const normalized = (value || "").trim();
+  if (!normalized) return "";
+  const safe = normalized
+    .replace(/[^0-9A-Za-z_-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return safe.slice(0, 40);
 }
 
 function scopeToFilePart(scope: BackupExportScope) {
@@ -419,8 +451,20 @@ export async function buildBackupPayload({
 export async function exportBackupFile(
   payload: AppBackupPayload,
   format: Extract<BackupExportFormat, "json" | "zip">,
+  options?: ExportBackupFileOptions,
 ): Promise<PreparedBackupFile> {
-  const baseName = `tg-gf-export-${scopeToFilePart(payload.exportScope)}-${fileTimestamp()}`;
+  const safeVersion =
+    normalizeVersionTag(options?.versionTag) || createBackupVersionTag();
+  const safeBackupName = sanitizeFilePart(options?.backupName || "");
+  const baseParts = [
+    "tg-gf-export",
+    scopeToFilePart(payload.exportScope),
+    `v${safeVersion}`,
+  ];
+  if (safeBackupName) {
+    baseParts.push(safeBackupName);
+  }
+  const baseName = baseParts.join("-");
   const jsonText = JSON.stringify(payload, null, 2);
   if (format === "json") {
     return {
@@ -453,7 +497,7 @@ export async function exportRawBackupFile(
     exportedAt: new Date().toISOString(),
     stores,
   };
-  const baseName = `tg-gf-raw-idb-${fileTimestamp()}`;
+  const baseName = `tg-gf-raw-idb-v${createBackupVersionTag()}`;
   const jsonText = JSON.stringify(payload, null, 2);
 
   if (format === "raw_json") {

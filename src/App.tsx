@@ -53,6 +53,7 @@ import {
   importBackupPayload,
   parseBackupFile,
 } from "./features/backup/dataTransfer";
+import { useGoogleDriveBackupSync } from "./features/backup/useGoogleDriveBackupSync";
 import type { ChatSession } from "./types";
 
 export default function App() {
@@ -594,6 +595,31 @@ export default function App() {
     }
   };
 
+  const {
+    driveBusy,
+    googleDriveConfigured,
+    googleDriveConnected,
+    googleDriveAccountEmail,
+    googleDriveBackups,
+    selectedGoogleDriveBackupId,
+    setSelectedGoogleDriveBackupId,
+    driveBackupName,
+    setDriveBackupName,
+    onGoogleDriveConnect,
+    onGoogleDriveDisconnect,
+    onGoogleDriveRefreshBackups,
+    onGoogleDriveSyncUpload,
+    onGoogleDriveSyncDownload,
+  } = useGoogleDriveBackupSync({
+    settingsDraft,
+    setSettingsDraft,
+    saveSettings,
+    initialize,
+    isSettingsOpen: showSettingsModal,
+    setDataTransferMessage,
+    onError: (message) => useAppStore.setState({ error: message }),
+  });
+
   return (
     <>
       <div className="aurora-bg" />
@@ -800,6 +826,15 @@ export default function App() {
           exportableChats={exportableChatOptions}
           exportBusy={exportBusy}
           importBusy={importBusy}
+          driveBusy={driveBusy}
+          googleDriveConfigured={googleDriveConfigured}
+          googleDriveConnected={googleDriveConnected}
+          googleDriveAccountEmail={googleDriveAccountEmail}
+          googleDriveBackups={googleDriveBackups}
+          selectedGoogleDriveBackupId={selectedGoogleDriveBackupId}
+          setSelectedGoogleDriveBackupId={setSelectedGoogleDriveBackupId}
+          driveBackupName={driveBackupName}
+          setDriveBackupName={setDriveBackupName}
           dataTransferMessage={dataTransferMessage}
           exportDownloadUrl={readyExportFile?.url ?? null}
           exportDownloadFileName={readyExportFile?.fileName ?? null}
@@ -812,6 +847,11 @@ export default function App() {
             );
             void loadModels(provider, target.baseUrl, target.auth);
           }}
+          onGoogleDriveConnect={onGoogleDriveConnect}
+          onGoogleDriveDisconnect={onGoogleDriveDisconnect}
+          onGoogleDriveRefreshBackups={onGoogleDriveRefreshBackups}
+          onGoogleDriveSyncUpload={onGoogleDriveSyncUpload}
+          onGoogleDriveSyncDownload={onGoogleDriveSyncDownload}
           onExportData={onExportData}
           onImportData={onImportData}
           onClose={() => setShowSettingsModal(false)}

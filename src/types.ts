@@ -450,6 +450,8 @@ export interface AppSettings {
   openRouterBaseUrl: string;
   huggingFaceBaseUrl: string;
   comfyBaseUrl: string;
+  googleDriveClientId: string;
+  googleDriveFolderId: string;
   saveComfyOutputs: boolean;
   oneToOneProvider: LlmProvider;
   groupOrchestratorProvider: LlmProvider;

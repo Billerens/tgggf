@@ -305,16 +305,30 @@ export function buildSystemPrompt(
     "Если отказываешь в фото, не добавляй <comfyui_image_description> в этом ответе.",
     "Если изображения нужны, добавь по одному блоку <comfyui_image_description>...</comfyui_image_description> для каждого изображения (если их несколько) или один (если изображение нужно одно):",
     "<comfyui_image_description>",
+    "type: person|other_person|no_person|group",
+    "participants: ...",
     "Подробное описание желаемого кадра: кто в кадре, поза, выражение, одежда/материалы, фон, свет, ракурс, композиция, настроение, важные визуальные ограничения.",
     "</comfyui_image_description>",
     "",
+    "ЖЕСТКОЕ ПРАВИЛО: в каждом comfyui_image_description первая строка ОБЯЗАТЕЛЬНО type: person|other_person|no_person|group.",
+    "type=person: в кадре текущая персона (селфи/портрет/фото персонажа).",
+    "type=other_person: в кадре другой человек, НЕ текущая персона.",
+    "type=no_person: в кадре нет людей (пейзаж/интерьер/предмет).",
+    "type=group: в кадре несколько людей.",
+    "Для type=group и type=other_person строка participants ОБЯЗАТЕЛЬНА и должна кратко перечислять состав кадра.",
+    "Для type=no_person указывай participants: none.",
+    "Если для type=other_person не хватает явных визуальных деталей человека, задай 1 уточняющий вопрос и НЕ добавляй comfyui_image_description в этом ответе.",
+    "Если type=group и в кадре есть персона, обязательно явно отметь это в participants (например: participants: persona + brother).",
     "Внутри comfyui_image_description используй только полезные для изображения детали, без мета-комментариев и без markdown.",
     "Используй только наблюдаемые визуальные факты, без психологических ярлыков и мотиваций (например: narcissistic, exhibitionist, self-promotion, casual language, slang).",
     "Не добавляй детали, которых нет в запросе пользователя или в описании внешности персонажа.",
     "КРИТИЧНО: сохраняй консистентность важных деталей между запросом и описанием кадра: ключевые черты внешности, эмоция/выражение, одежда и материалы, окружение, условия сцены (время суток/погода/свет).",
     "Если пользователь задал конкретные детали, не заменяй их синонимами с другим смыслом и не ослабляй их важность.",
-    "Для консистентности внешности в каждом comfyui_image_description обязательно повторяй стабильные признаки персонажа из поля «Внешность» (волосы, цвет волос, глаза, возрастной тип, телосложение, отличительные детали).",
-    "Не меняй базовую внешность между сообщениями без явной просьбы пользователя.",
+    "Для type=person обязательно повторяй стабильные признаки текущей персоны из поля «Внешность».",
+    "Для type=other_person запрещено подмешивать внешность текущей персоны.",
+    "Для type=no_person запрещено добавлять людей и признаки внешности персоны.",
+    "Для type=group применяй внешность текущей персоны только к ней и только если она указана в participants.",
+    "Не меняй базовую внешность текущей персоны между сообщениями без явной просьбы пользователя.",
     "Не добавляй взаимоисключающие теги (например одновременно blonde hair и black hair).",
     "Без markdown-оберток вокруг этого блока.",
     "",
@@ -983,6 +997,85 @@ export async function generateThemedComfyPrompt(
   return mergeRequiredTags(fallbackPrompt, themeTags);
 }
 
+type ImageDescriptionType = "person" | "other_person" | "no_person" | "group";
+
+interface ParsedImageDescriptionContext {
+  type: ImageDescriptionType;
+  participants: string;
+  includesPersona: boolean;
+  hasExplicitType: boolean;
+}
+
+function normalizeImageDescriptionTypeToken(token: string | undefined) {
+  const normalized = toTrimmedString(token).toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "person" || normalized === "persona_self" || normalized === "self") {
+    return "person" as const;
+  }
+  if (normalized === "other_person" || normalized === "other") {
+    return "other_person" as const;
+  }
+  if (normalized === "no_person" || normalized === "none" || normalized === "landscape") {
+    return "no_person" as const;
+  }
+  if (normalized === "group" || normalized === "multi_person") {
+    return "group" as const;
+  }
+  return undefined;
+}
+
+function parseImageDescriptionContext(
+  description: string,
+  personaName: string,
+): ParsedImageDescriptionContext {
+  const normalized = description.toLowerCase();
+  const typeMatch = normalized.match(/(?:^|\n)\s*type\s*:\s*([a-z_]+)\b/i);
+  const subjectModeMatch = normalized.match(
+    /(?:^|\n)\s*subject_mode\s*:\s*(persona_self|other_person|no_person|group)\b/i,
+  );
+  const explicitType =
+    normalizeImageDescriptionTypeToken(typeMatch?.[1]) ??
+    normalizeImageDescriptionTypeToken(subjectModeMatch?.[1]);
+  const hasExplicitType = Boolean(explicitType);
+  const participantsMatch = description.match(/(?:^|\n)\s*participants\s*:\s*([^\n\r]+)/i);
+  const participants = toTrimmedString(participantsMatch?.[1]) || "-";
+  const personaNameNormalized = personaName.trim().toLowerCase();
+  const participantsNormalized = participants.toLowerCase();
+  const mentionsPersona =
+    normalized.includes("participants: persona") ||
+    normalized.includes("participants: персона") ||
+    normalized.includes("персона") ||
+    (personaNameNormalized && normalized.includes(personaNameNormalized));
+
+  const inferredType: ImageDescriptionType =
+    explicitType ??
+    (/\bno_person\b|\bno person\b|\blandscape\b|\bscenery\b|\binterior\b/.test(normalized) ||
+    /пейзаж|ландшафт|интерьер|без людей|без человека/.test(normalized)
+      ? "no_person"
+      : /\bgroup\b|\bmultiple people\b|\bcrowd\b|\bfamily\b|\bfriends\b/.test(normalized) ||
+          /групп|компан|семь|друз|толпа|двое|трое|четверо/.test(normalized)
+        ? "group"
+        : "person");
+
+  const includesPersona =
+    inferredType === "person" ||
+    (inferredType === "group" &&
+      (mentionsPersona ||
+        participantsNormalized.includes("persona") ||
+        participantsNormalized.includes("персона") ||
+        Boolean(
+          personaNameNormalized &&
+            participantsNormalized.includes(personaNameNormalized),
+        )));
+
+  return {
+    type: inferredType,
+    participants,
+    includesPersona,
+    hasExplicitType,
+  };
+}
+
 export async function generateComfyPromptsFromImageDescription(
   settings: AppSettings,
   persona: Pick<
@@ -1002,12 +1095,27 @@ export async function generateComfyPromptsFromImageDescription(
       "Пустое описание изображения для генерации ComfyUI prompt.",
     );
   }
+  const sceneContext = parseImageDescriptionContext(
+    description,
+    persona.name || "",
+  );
+  const shouldUsePersonaContext =
+    sceneContext.type === "person" ||
+    (sceneContext.type === "group" && sceneContext.includesPersona);
+  const appearanceContext = shouldUsePersonaContext
+    ? formatAppearanceProfile(persona.appearance)
+    : "N/A (persona appearance is disabled for this type)";
+  const lookPromptCacheContext = shouldUsePersonaContext
+    ? formatLookPromptCacheInput(persona.lookPromptCache)
+    : "DISABLED (persona identity prior must not be used for this type)";
 
   const systemPrompt = [
     "Ты конвертер описания сцены в список ComfyUI prompts.",
     "Верни один или несколько блоков <comfyui_prompt>...</comfyui_prompt> без markdown и пояснений.",
     "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный <comfyui_prompt> для каждого кадра.",
     "Если описание одного кадра, верни только один блок.",
+    "Определи тип кадра из поля type в Image description: person|other_person|no_person|group.",
+    "Строку type и participants считай служебными и НЕ копируй в теги.",
     "Внутри блока только comma-separated English tags (никаких предложений).",
     "Формат внутри блока: строго ОДНА строка, разделитель строго и обязательно должен быть ', ' (запятая + пробел), без переносов и без лишних пробелов.",
     "Длина prompt: 30-46 тегов.",
@@ -1016,12 +1124,14 @@ export async function generateComfyPromptsFromImageDescription(
     "CONSISTENCY LOCKS (обязательны): key appearance traits, emotion/expression, outfit/materials, environment, scene conditions (time/weather/lighting).",
     "Все lock-детали из Image description должны перейти в prompt без потери смысла, но не перегружай prompt.",
     "Не подменяй lock-детали похожими, но другими по смыслу формулировками.",
-    "Для персонажа используй ТОЛЬКО детали из Image description + Appearance.",
-    "Если в input есть LookPrompt cache, используй его как identity prior для стабильных черт (hair/face/eyes/body/outfit), но scene-specific детали бери из Image description.",
-    "LookPrompt cache НЕ должен ломать требования Image description по эмоции/сцене/условиям.",
+    "type=person: используй детали персонажа из Image description + Appearance + LookPrompt cache.",
+    "type=other_person: запрещено использовать Appearance и LookPrompt cache текущей персоны.",
+    "type=no_person: строго без людей/лиц/персонажей; Appearance и LookPrompt cache запрещены.",
+    "type=group: используй Appearance/LookPrompt cache только если participants явно включает текущую персону; иначе запрещено.",
+    "Если в input явно сказано, что Appearance/LookPrompt cache disabled, НЕ используй их ни в каком виде.",
     "Одежда должна соответствовать ситуации!",
     "ОБЯЗАТЕЛЬНО!: описывай детали сцены досконально - вид, одежда, окружение, действия, фокус на определенных частях тела и тд.",
-    "При конфликте: scene-specific детали (эмоция, одежда, окружение, условия) берутся из Image description; стабильная идентичность (волосы/глаза/возрастной тип/телосложение) — из Appearance.",
+    "При конфликте: scene-specific детали (эмоция, одежда, окружение, условия) берутся из Image description; стабильная идентичность из Appearance применима только когда тип кадра это допускает.",
     "Не добавляй детали, которых нет в исходном описании (например пирсинг/тату/аксессуары/фетиш-атрибуты, если они не указаны).",
     "ВАЖНО: Старайся покрыть тегами переданный Image description по максимуму, но без противоречий, чтобы передать все описанные детали! При этом - не выходи за общие лимиты!",
     "Запрещено добавлять любые role/biography теги, которых нет в описании сцены (student, office worker, nurse и т.п.).",
@@ -1030,8 +1140,8 @@ export async function generateComfyPromptsFromImageDescription(
     "Запрещен quality spam: не более 4 quality/technical тегов суммарно.",
     "Избегай противоречий в кадрировании: не ставь одновременно full body и close-up.",
     "Если это selfie и не указан mirror full body, предпочитай upper body/waist-up framing.",
-    "По описанию определяй сколько лиц участвует в сцене.",
-    "Описывай одного человека (solo, single subject, one person), или сразу нескольких если описание этого требует.",
+    "По описанию определяй сколько лиц участвует в сцене (для type=no_person людей должно быть 0).",
+    "Используй solo/single subject/one person только когда в кадре один человек; для type=group используй multi-person теги; для type=no_person не добавляй людей вовсе.",
     "Удали дубли и семантические дубли тегов.",
     "Запрещены взаимоисключающие теги (например black hair и blonde hair вместе).",
     "Если есть сомнение, лучше пропусти тег, не выдумывай.",
@@ -1040,10 +1150,14 @@ export async function generateComfyPromptsFromImageDescription(
 
   const input = [
     `Character name: ${persona.name || "Unknown"}`,
-    `Appearance: ${formatAppearanceProfile(persona.appearance)}`,
+    `Scene type (parsed): ${sceneContext.type}`,
+    `Type field present in description: ${sceneContext.hasExplicitType ? "yes" : "no"}`,
+    `Participants: ${sceneContext.participants}`,
+    `Use persona appearance context: ${shouldUsePersonaContext ? "yes" : "no"}`,
+    `Appearance: ${appearanceContext}`,
     `Style: ${persona.stylePrompt || "-"}`,
     `Personality: ${persona.personalityPrompt || "-"}`,
-    `LookPrompt cache:\n${formatLookPromptCacheInput(persona.lookPromptCache)}`,
+    `LookPrompt cache:\n${lookPromptCacheContext}`,
     `Image description: ${description}`,
     `Iteration: ${iteration}`,
   ].join("\n");
