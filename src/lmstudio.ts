@@ -17,7 +17,6 @@ import {
   buildAdvancedProfileFromLegacy,
   normalizeAdvancedProfile,
 } from "./personaProfiles";
-import { splitAssistantContent } from "./messageContent";
 import {
   getToneUsageExamples,
   getExpressivenessBehavior,
@@ -27,6 +26,11 @@ import {
   getValuesImplementation,
   getSocialInteractionRules,
 } from "./personaBehaviors";
+import {
+  createChatTurnToolConfig,
+  createComfyPromptsFromDescriptionToolConfig,
+  createThemedComfyPromptToolConfig,
+} from "./tooling/registry";
 
 export interface ChatCompletionContext {
   runtimeState?: PersonaRuntimeState;
@@ -160,10 +164,21 @@ function formatRecentMessages(
   userInput: string,
 ) {
   if (!recentMessages || recentMessages.length === 0) return userInput;
+  const normalizeForComparison = (value: string) =>
+    value.replace(/\s+/g, " ").trim();
+  const normalizedUserInput = normalizeForComparison(userInput);
+  const sanitizedRecentMessages = [...recentMessages];
+  while (sanitizedRecentMessages.length > 0) {
+    const last = sanitizedRecentMessages[sanitizedRecentMessages.length - 1];
+    if (last.role !== "user") break;
+    if (normalizeForComparison(last.content) !== normalizedUserInput) break;
+    sanitizedRecentMessages.pop();
+  }
+  if (sanitizedRecentMessages.length === 0) return userInput;
 
   const lines = [
     "КОНТЕКСТ ПОСЛЕДНИХ РЕПЛИК:",
-    ...recentMessages.map(
+    ...sanitizedRecentMessages.map(
       (message) =>
         `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content}`,
     ),
@@ -302,24 +317,20 @@ export function buildSystemPrompt(
     "После отправки изображения выдерживай минимум 3 текстовых ответа до следующего изображения, если нет явного запроса пользователя.",
     "Проактивные изображения разрешены редко, чтобы разбавить диалог (примерно 1 раз на 7-10 ответов): уместны селфи, обстановка, ситуация и тому подобное.",
     "Проактивное изображение отправляй только если это естественно по контексту и действительно повышает вовлеченность.",
-    "Если отказываешь в фото, не добавляй <comfyui_image_description> в этом ответе.",
-    "Если изображения нужны, добавь по одному блоку <comfyui_image_description>...</comfyui_image_description> для каждого изображения (если их несколько) или один (если изображение нужно одно):",
-    "<comfyui_image_description>",
-    "type: person|other_person|no_person|group",
-    "participants: ...",
-    "Подробное описание желаемого кадра: кто в кадре, поза, выражение, одежда/материалы, фон, свет, ракурс, композиция, настроение, важные визуальные ограничения.",
-    "</comfyui_image_description>",
+    "Если отказываешь в фото, не добавляй service JSON блок в этом ответе.",
+    "Если изображения нужны, добавь в конце ответа service JSON (предпочтительно в ```json```), где ключ comfy_image_descriptions содержит массив описаний кадров.",
+    'Пример service JSON: {"comfy_image_descriptions":["type: person\\nparticipants: persona\\nПодробное описание кадра..."]}',
     "",
-    "ЖЕСТКОЕ ПРАВИЛО: в каждом comfyui_image_description первая строка ОБЯЗАТЕЛЬНО type: person|other_person|no_person|group.",
+    "ЖЕСТКОЕ ПРАВИЛО: в каждом элементе comfy_image_descriptions первая строка ОБЯЗАТЕЛЬНО type: person|other_person|no_person|group.",
     "type=person: в кадре текущая персона (селфи/портрет/фото персонажа).",
     "type=other_person: в кадре другой человек, НЕ текущая персона.",
     "type=no_person: в кадре нет людей (пейзаж/интерьер/предмет).",
     "type=group: в кадре несколько людей.",
     "Для type=group и type=other_person строка participants ОБЯЗАТЕЛЬНА и должна кратко перечислять состав кадра.",
     "Для type=no_person указывай participants: none.",
-    "Если для type=other_person не хватает явных визуальных деталей человека, задай 1 уточняющий вопрос и НЕ добавляй comfyui_image_description в этом ответе.",
+    "Если для type=other_person не хватает явных визуальных деталей человека, задай 1 уточняющий вопрос и НЕ добавляй service JSON в этом ответе.",
     "Если type=group и в кадре есть персона, обязательно явно отметь это в participants (например: participants: persona + brother).",
-    "Внутри comfyui_image_description используй только полезные для изображения детали, без мета-комментариев и без markdown.",
+    "Внутри каждого описания используй только полезные для изображения детали, без мета-комментариев и без markdown.",
     "Используй только наблюдаемые визуальные факты, без психологических ярлыков и мотиваций (например: narcissistic, exhibitionist, self-promotion, casual language, slang).",
     "Не добавляй детали, которых нет в запросе пользователя или в описании внешности персонажа.",
     "КРИТИЧНО: сохраняй консистентность важных деталей между запросом и описанием кадра: ключевые черты внешности, эмоция/выражение, одежда и материалы, окружение, условия сцены (время суток/погода/свет).",
@@ -330,18 +341,16 @@ export function buildSystemPrompt(
     "Для type=group применяй внешность текущей персоны только к ней и только если она указана в participants.",
     "Не меняй базовую внешность текущей персоны между сообщениями без явной просьбы пользователя.",
     "Не добавляй взаимоисключающие теги (например одновременно blonde hair и black hair).",
-    "Без markdown-оберток вокруг этого блока.",
+    "Если используешь markdown для service JSON, только один короткий fenced json-блок без дополнительного текста внутри.",
     "",
-    "После каждого ответа добавляй технический блок:",
-    "<persona_control>",
-    '{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipDepth":0},"memory_add":[],"memory_remove":[]}',
-    "</persona_control>",
-    "Если изменений нет, оставь нули и пустые массивы. Без пояснений.",
+    "После каждого ответа добавляй persona_control в service JSON:",
+    '{"persona_control":{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipDepth":0},"memory_add":[],"memory_remove":[]}}',
+    "Если изменений нет, оставь нули и пустые массивы.",
     "Ты сама определяешь intents, state_delta и операции памяти (memory_add/memory_remove).",
     "Исполняемые intents (whitelist): flirt, deepen_connection, sensual_description, comfort, reassure, boundary_set, deescalate, ask_clarification, topic_shift, reflect_user, playful_banter, self_disclosure.",
     "Разрешённые mood: calm, warm, playful, focused, analytical, inspired, annoyed, upset, angry.",
     "Не заполняй relationshipType и relationshipStage в state_delta: эти поля рассчитываются системой.",
-    "Если считаешь, что пора сменить тип/стадию отношений, ОБЯЗАТЕЛЬНО добавь intent-предложение: propose_relationship_type:<type> или propose_relationship_stage:<stage>.",
+    "Если считаешь, что пора сменить тип/стадию отношений, ОБЯЗАТЕЛЬНО добавь intent-предложение: propose_relationship_type:TYPE или propose_relationship_stage:STAGE.",
     "Неизвестные intents допускаются для внутренней семантики, но напрямую не исполняются движком.",
     "Допустимые type: neutral, friendship, romantic, mentor, playful.",
     "Допустимые stage: new, acquaintance, friendly, close, bonded.",
@@ -443,6 +452,29 @@ export interface GenericChatRequest {
   temperature: number;
   store?: boolean;
   previousResponseId?: string;
+  tools?: GenericChatToolDefinition[];
+  toolChoice?: GenericChatToolChoice;
+}
+
+export interface GenericChatToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export type GenericChatToolChoice = "auto" | "required";
+
+export interface GenericProviderToolCall {
+  name: string;
+  argumentsText: string;
+  arguments?: unknown;
+}
+
+export interface GenericProviderChatResult {
+  content: string;
+  responseId?: string;
+  raw: unknown;
+  toolCalls?: GenericProviderToolCall[];
 }
 
 export type ModelRoutingTask =
@@ -452,8 +484,92 @@ export type ModelRoutingTask =
   | "image_prompt"
   | "persona_generation";
 
+export type ToolCallingCapabilityStatus =
+  | "supported"
+  | "unsupported"
+  | "unknown";
+
+export type ToolExecutionMode =
+  | "tool_required"
+  | "tool_preferred"
+  | "legacy_only";
+
+export interface ModelRoutingTarget {
+  task: ModelRoutingTask;
+  provider: LlmProvider;
+  model: string;
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+}
+
+export interface ToolCallingCapabilityProbeResult {
+  provider: LlmProvider;
+  model: string;
+  baseUrl: string;
+  status: ToolCallingCapabilityStatus;
+  checkedAt: string;
+  checkedAtMs: number;
+  fromCache: boolean;
+  reason?: string;
+  endpoint?: string;
+  httpStatus?: number;
+}
+
+export interface LlmToolingTelemetryEvent {
+  event:
+    | "llm_tool_mode_selected"
+    | "llm_legacy_fallback_used"
+    | "llm_tool_validation_failed";
+  task: ModelRoutingTask | "conversation_summary";
+  provider?: LlmProvider;
+  model?: string;
+  mode?: ToolExecutionMode;
+  capability?: ToolCallingCapabilityStatus;
+  reason?: string;
+  source?: string;
+  timestamp?: string;
+}
+
+interface ToolCallingCapabilityCacheEntry {
+  status: ToolCallingCapabilityStatus;
+  checkedAtMs: number;
+  reason?: string;
+  endpoint?: string;
+  httpStatus?: number;
+}
+
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
+const TOOL_CALLING_CAPABILITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_TOOL_CALLING_PROBE_TIMEOUT_MS = 12_000;
+const toolCallingCapabilityCache = new Map<
+  string,
+  ToolCallingCapabilityCacheEntry
+>();
+
+export function emitLlmToolingTelemetry(event: LlmToolingTelemetryEvent) {
+  const payload = {
+    ...event,
+    timestamp: event.timestamp ?? new Date().toISOString(),
+  };
+  if (typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(
+        new CustomEvent("llm-tooling-telemetry", {
+          detail: payload,
+        }),
+      );
+    } catch {
+      // no-op
+    }
+  }
+  try {
+    // eslint-disable-next-line no-console
+    console.info("[llm-tooling-telemetry]", payload);
+  } catch {
+    // no-op
+  }
+}
 
 function normalizeProvider(value: unknown): LlmProvider {
   return value === "openrouter" || value === "huggingface" ? value : "lmstudio";
@@ -515,6 +631,490 @@ function resolveProviderAuth(settings: AppSettings, provider: LlmProvider) {
   return settings.lmAuth;
 }
 
+function buildToolCapabilityCacheKey(
+  provider: LlmProvider,
+  baseUrl: string,
+  model: string,
+) {
+  return `${provider}|${normalizeBaseUrl(baseUrl)}|${model.trim().toLowerCase()}`;
+}
+
+function getCachedToolCallingCapability(
+  provider: LlmProvider,
+  baseUrl: string,
+  model: string,
+) {
+  const key = buildToolCapabilityCacheKey(provider, baseUrl, model);
+  const cached = toolCallingCapabilityCache.get(key);
+  if (!cached) return null;
+  const ageMs = Date.now() - cached.checkedAtMs;
+  if (ageMs > TOOL_CALLING_CAPABILITY_CACHE_TTL_MS) {
+    toolCallingCapabilityCache.delete(key);
+    return null;
+  }
+  return cached;
+}
+
+function setCachedToolCallingCapability(
+  provider: LlmProvider,
+  baseUrl: string,
+  model: string,
+  entry: ToolCallingCapabilityCacheEntry,
+) {
+  const key = buildToolCapabilityCacheKey(provider, baseUrl, model);
+  toolCallingCapabilityCache.set(key, entry);
+}
+
+function buildToolCallingCapabilityResult(params: {
+  provider: LlmProvider;
+  model: string;
+  baseUrl: string;
+  status: ToolCallingCapabilityStatus;
+  fromCache: boolean;
+  checkedAtMs?: number;
+  reason?: string;
+  endpoint?: string;
+  httpStatus?: number;
+}) {
+  const checkedAtMs = params.checkedAtMs ?? Date.now();
+  return {
+    provider: params.provider,
+    model: params.model,
+    baseUrl: params.baseUrl,
+    status: params.status,
+    checkedAt: new Date(checkedAtMs).toISOString(),
+    checkedAtMs,
+    fromCache: params.fromCache,
+    reason: params.reason,
+    endpoint: params.endpoint,
+    httpStatus: params.httpStatus,
+  } satisfies ToolCallingCapabilityProbeResult;
+}
+
+function buildOpenAiToolProbePayload(model: string) {
+  return {
+    model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a capability probe. Always respond with a tool call only.",
+      },
+      { role: "user", content: "Return probe response via tool call." },
+    ],
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "emit_probe_result",
+          description: "Emit probe result.",
+          parameters: {
+            type: "object",
+            properties: {
+              ok: { type: "boolean" },
+            },
+            required: ["ok"],
+            additionalProperties: false,
+          },
+        },
+      },
+    ],
+    tool_choice: "required",
+    temperature: 0,
+    max_tokens: 64,
+    stream: false,
+  } as const;
+}
+
+function buildLmStudioToolProbePayload(model: string) {
+  return {
+    model,
+    input: "Return probe response via tool call.",
+    system_prompt:
+      "You are a capability probe. Always respond with a tool call only.",
+    tools: [
+      {
+        type: "function",
+        function: {
+          name: "emit_probe_result",
+          description: "Emit probe result.",
+          parameters: {
+            type: "object",
+            properties: {
+              ok: { type: "boolean" },
+            },
+            required: ["ok"],
+            additionalProperties: false,
+          },
+        },
+      },
+    ],
+    tool_choice: "required",
+    temperature: 0,
+    max_output_tokens: 64,
+    store: false,
+  } as const;
+}
+
+function buildToolCallingProbeEndpoints(provider: LlmProvider, baseUrl: string) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) return [] as string[];
+  if (provider === "lmstudio") {
+    return Array.from(
+      new Set([
+        `${normalizedBaseUrl}/chat/completions`,
+        `${normalizedBaseUrl}/v1/chat/completions`,
+        `${normalizedBaseUrl}/api/v1/chat/completions`,
+        `${normalizedBaseUrl}/api/v1/chat`,
+      ]),
+    );
+  }
+  return Array.from(
+    new Set([
+      `${normalizedBaseUrl}/chat/completions`,
+      `${normalizedBaseUrl}/v1/chat/completions`,
+      `${normalizedBaseUrl}/api/v1/chat/completions`,
+    ]),
+  );
+}
+
+async function fetchWithTimeout(
+  endpoint: string,
+  init: RequestInit,
+  timeoutMs: number,
+) {
+  if (timeoutMs <= 0) {
+    return fetch(endpoint, init);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const externalSignal = init.signal;
+  const forwardAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    externalSignal.addEventListener("abort", forwardAbort, { once: true });
+  }
+  try {
+    return await fetch(endpoint, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener("abort", forwardAbort);
+    }
+  }
+}
+
+function parseToolCallingProbeErrorMessage(value: unknown) {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  const record = value as Record<string, unknown>;
+  const direct = toTrimmedString(record.error);
+  if (direct) return direct;
+  if (record.error && typeof record.error === "object") {
+    const nested = record.error as Record<string, unknown>;
+    const nestedMessage = toTrimmedString(
+      nested.message ?? nested.code ?? nested.type,
+    );
+    if (nestedMessage) return nestedMessage;
+  }
+  return toTrimmedString(record.message ?? record.detail ?? record.code);
+}
+
+function responseContainsToolCall(data: unknown) {
+  if (!data || typeof data !== "object") return false;
+  const record = data as Record<string, unknown>;
+
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  for (const choice of choices) {
+    if (!choice || typeof choice !== "object") continue;
+    const choiceRec = choice as Record<string, unknown>;
+    const message =
+      choiceRec.message && typeof choiceRec.message === "object"
+        ? (choiceRec.message as Record<string, unknown>)
+        : undefined;
+    const toolCalls = message?.tool_calls;
+    if (Array.isArray(toolCalls) && toolCalls.length > 0) return true;
+  }
+
+  const output = Array.isArray(record.output) ? record.output : [];
+  for (const item of output) {
+    if (!item || typeof item !== "object") continue;
+    const type = toTrimmedString((item as Record<string, unknown>).type)
+      .toLowerCase()
+      .replace(/\s+/g, "_");
+    if (type.includes("tool")) return true;
+  }
+
+  return false;
+}
+
+function errorSuggestsUnsupportedToolCalling(message: string) {
+  const normalized = message.toLowerCase();
+  if (!normalized) return false;
+  return (
+    /tool[_\s-]?choice/.test(normalized) ||
+    /\btools?\b/.test(normalized) ||
+    /function[_\s-]?call/.test(normalized) ||
+    /unsupported/.test(normalized) ||
+    /unknown field/.test(normalized) ||
+    /not (?:supported|allowed|recognized)/.test(normalized) ||
+    /invalid(?:\s+request)?/.test(normalized)
+  );
+}
+
+function parseProbeStatusFromSuccess(data: unknown) {
+  if (responseContainsToolCall(data)) {
+    return {
+      status: "supported" as const,
+      reason: "tool_call_detected",
+    };
+  }
+  return {
+    status: "unsupported" as const,
+    reason: "tool_call_not_detected_in_success_response",
+  };
+}
+
+export function clearToolCallingCapabilityCache() {
+  toolCallingCapabilityCache.clear();
+}
+
+export function resolveModelRoutingTarget(
+  settings: AppSettings,
+  task: ModelRoutingTask,
+  modelOverride?: string,
+): ModelRoutingTarget {
+  const provider = resolveProviderForTask(settings, task);
+  const model = toTrimmedString(modelOverride) || resolveModelForTask(settings, task);
+  return {
+    task,
+    provider,
+    model,
+    baseUrl: resolveProviderBaseUrl(settings, provider),
+    auth: resolveProviderAuth(settings, provider),
+  };
+}
+
+export async function probeModelToolCallingCapability(params: {
+  provider: LlmProvider;
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+  model: string;
+  apiKey?: string;
+  forceRefresh?: boolean;
+  timeoutMs?: number;
+}): Promise<ToolCallingCapabilityProbeResult> {
+  const provider = params.provider;
+  const model = toTrimmedString(params.model);
+  const baseUrl = toTrimmedString(params.baseUrl);
+
+  if (!model) {
+    return buildToolCallingCapabilityResult({
+      provider,
+      model,
+      baseUrl,
+      status: "unsupported",
+      fromCache: false,
+      reason: "model_is_empty",
+    });
+  }
+  if (!baseUrl) {
+    return buildToolCallingCapabilityResult({
+      provider,
+      model,
+      baseUrl,
+      status: "unsupported",
+      fromCache: false,
+      reason: "base_url_is_empty",
+    });
+  }
+
+  if (!params.forceRefresh) {
+    const cached = getCachedToolCallingCapability(provider, baseUrl, model);
+    if (cached) {
+      return buildToolCallingCapabilityResult({
+        provider,
+        model,
+        baseUrl,
+        status: cached.status,
+        checkedAtMs: cached.checkedAtMs,
+        reason: cached.reason,
+        endpoint: cached.endpoint,
+        httpStatus: cached.httpStatus,
+        fromCache: true,
+      });
+    }
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...buildAuthHeaders(params.auth, params.apiKey),
+  };
+  if (provider === "openrouter" && typeof window !== "undefined") {
+    headers["HTTP-Referer"] = window.location.origin;
+    headers["X-Title"] = "tg-gf";
+  }
+
+  const endpoints = buildToolCallingProbeEndpoints(provider, baseUrl);
+  if (endpoints.length === 0) {
+    return buildToolCallingCapabilityResult({
+      provider,
+      model,
+      baseUrl,
+      status: "unsupported",
+      fromCache: false,
+      reason: "probe_endpoints_not_resolved",
+    });
+  }
+
+  let lastUnknownReason = "probe_failed";
+  let sawAuthError = false;
+
+  for (const endpoint of endpoints) {
+    try {
+      const isLmStudioChatEndpoint = endpoint.endsWith("/api/v1/chat");
+      const response = await fetchWithTimeout(
+        endpoint,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(
+            isLmStudioChatEndpoint
+              ? buildLmStudioToolProbePayload(model)
+              : buildOpenAiToolProbePayload(model),
+          ),
+        },
+        params.timeoutMs ?? DEFAULT_TOOL_CALLING_PROBE_TIMEOUT_MS,
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+        let parsedReason = text.trim();
+        try {
+          const parsed = JSON.parse(text) as unknown;
+          parsedReason = parseToolCallingProbeErrorMessage(parsed) || parsedReason;
+        } catch {
+          // keep raw reason
+        }
+        const reason = parsedReason || `http_${response.status}`;
+
+        if (response.status === 401 || response.status === 403) {
+          sawAuthError = true;
+          lastUnknownReason = `auth_error:${reason}`;
+          continue;
+        }
+
+        if (errorSuggestsUnsupportedToolCalling(reason)) {
+          const cachedEntry: ToolCallingCapabilityCacheEntry = {
+            status: "unsupported",
+            checkedAtMs: Date.now(),
+            reason: `probe_error:${reason}`,
+            endpoint,
+            httpStatus: response.status,
+          };
+          setCachedToolCallingCapability(provider, baseUrl, model, cachedEntry);
+          return buildToolCallingCapabilityResult({
+            provider,
+            model,
+            baseUrl,
+            status: "unsupported",
+            checkedAtMs: cachedEntry.checkedAtMs,
+            reason: cachedEntry.reason,
+            endpoint,
+            httpStatus: response.status,
+            fromCache: false,
+          });
+        }
+
+        lastUnknownReason = `probe_http_error:${response.status}:${reason}`;
+        continue;
+      }
+
+      const data = (await response.json()) as unknown;
+      const parsed = parseProbeStatusFromSuccess(data);
+      const cachedEntry: ToolCallingCapabilityCacheEntry = {
+        status: parsed.status,
+        checkedAtMs: Date.now(),
+        reason: parsed.reason,
+        endpoint,
+        httpStatus: response.status,
+      };
+      setCachedToolCallingCapability(provider, baseUrl, model, cachedEntry);
+      return buildToolCallingCapabilityResult({
+        provider,
+        model,
+        baseUrl,
+        status: parsed.status,
+        checkedAtMs: cachedEntry.checkedAtMs,
+        reason: cachedEntry.reason,
+        endpoint,
+        httpStatus: response.status,
+        fromCache: false,
+      });
+    } catch (error) {
+      const message = (error as Error)?.message || "unknown_error";
+      lastUnknownReason = `probe_exception:${message}`;
+    }
+  }
+
+  return buildToolCallingCapabilityResult({
+    provider,
+    model,
+    baseUrl,
+    status: "unknown",
+    fromCache: false,
+    reason: sawAuthError ? `auth_error:${lastUnknownReason}` : lastUnknownReason,
+  });
+}
+
+export async function resolveToolExecutionModeForTask(
+  settings: AppSettings,
+  task: ModelRoutingTask,
+  options?: {
+    model?: string;
+    forceRefresh?: boolean;
+    timeoutMs?: number;
+    emitTelemetry?: boolean;
+  },
+) {
+  const target = resolveModelRoutingTarget(settings, task, options?.model);
+  const capability = await probeModelToolCallingCapability({
+    provider: target.provider,
+    baseUrl: target.baseUrl,
+    auth: target.auth,
+    model: target.model,
+    apiKey: settings.apiKey,
+    forceRefresh: options?.forceRefresh,
+    timeoutMs: options?.timeoutMs,
+  });
+  const mode: ToolExecutionMode =
+    capability.status === "supported"
+      ? "tool_required"
+      : capability.status === "unsupported"
+        ? "legacy_only"
+        : "tool_preferred";
+  if (options?.emitTelemetry !== false) {
+    emitLlmToolingTelemetry({
+      event: "llm_tool_mode_selected",
+      task,
+      provider: target.provider,
+      model: target.model,
+      mode,
+      capability: capability.status,
+      reason: capability.reason,
+      source: "resolve_tool_execution_mode",
+    });
+  }
+  return {
+    mode,
+    target,
+    capability,
+  };
+}
+
 function parseOpenAiMessageContent(content: unknown): string {
   if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return "";
@@ -533,11 +1133,118 @@ function parseOpenAiMessageContent(content: unknown): string {
     .trim();
 }
 
+function parseToolCallArguments(raw: unknown): {
+  argumentsText: string;
+  arguments?: unknown;
+} {
+  if (typeof raw === "string") {
+    const text = raw.trim();
+    if (!text) return { argumentsText: "" };
+    const parsed = parseJsonObjectFromText<Record<string, unknown>>(text);
+    return {
+      argumentsText: text,
+      arguments: parsed ?? undefined,
+    };
+  }
+  if (raw && typeof raw === "object") {
+    try {
+      return {
+        argumentsText: JSON.stringify(raw),
+        arguments: raw,
+      };
+    } catch {
+      return {
+        argumentsText: "",
+        arguments: raw,
+      };
+    }
+  }
+  return {
+    argumentsText: toTrimmedString(raw),
+  };
+}
+
+function extractOpenAiToolCalls(data: unknown): GenericProviderToolCall[] {
+  if (!data || typeof data !== "object") return [];
+  const record = data as Record<string, unknown>;
+  const choices = Array.isArray(record.choices) ? record.choices : [];
+  const calls: GenericProviderToolCall[] = [];
+  for (const choice of choices) {
+    if (!choice || typeof choice !== "object") continue;
+    const message = (choice as Record<string, unknown>).message;
+    if (!message || typeof message !== "object") continue;
+    const toolCalls = Array.isArray((message as Record<string, unknown>).tool_calls)
+      ? ((message as Record<string, unknown>).tool_calls as unknown[])
+      : [];
+    for (const toolCall of toolCalls) {
+      if (!toolCall || typeof toolCall !== "object") continue;
+      const toolRecord = toolCall as Record<string, unknown>;
+      const functionRecord =
+        toolRecord.function && typeof toolRecord.function === "object"
+          ? (toolRecord.function as Record<string, unknown>)
+          : undefined;
+      const name = toTrimmedString(
+        functionRecord?.name ?? toolRecord.name ?? toolRecord.tool_name,
+      );
+      if (!name) continue;
+      const parsedArgs = parseToolCallArguments(
+        functionRecord?.arguments ?? toolRecord.arguments ?? toolRecord.input,
+      );
+      calls.push({
+        name,
+        argumentsText: parsedArgs.argumentsText,
+        arguments: parsedArgs.arguments,
+      });
+    }
+  }
+  return calls;
+}
+
+function extractLmStudioToolCalls(data: unknown): GenericProviderToolCall[] {
+  if (!data || typeof data !== "object") return [];
+  const record = data as Record<string, unknown>;
+  const output = Array.isArray(record.output) ? record.output : [];
+  const calls: GenericProviderToolCall[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== "object") continue;
+    const itemRecord = item as Record<string, unknown>;
+    const type = toTrimmedString(itemRecord.type).toLowerCase();
+    if (!type.includes("tool")) continue;
+    const functionRecord =
+      itemRecord.function && typeof itemRecord.function === "object"
+        ? (itemRecord.function as Record<string, unknown>)
+        : undefined;
+    const name = toTrimmedString(
+      functionRecord?.name ??
+        itemRecord.name ??
+        itemRecord.tool_name ??
+        itemRecord.tool,
+    );
+    if (!name) continue;
+    const parsedArgs = parseToolCallArguments(
+      functionRecord?.arguments ??
+        itemRecord.arguments ??
+        itemRecord.input ??
+        itemRecord.content,
+    );
+    calls.push({
+      name,
+      argumentsText: parsedArgs.argumentsText,
+      arguments: parsedArgs.arguments,
+    });
+  }
+  return calls;
+}
+
 async function requestProviderChatCompletion(
   settings: AppSettings,
   provider: LlmProvider,
-  request: Required<GenericChatRequest>,
-) {
+  request: GenericChatRequest & {
+    model: string;
+    store: boolean;
+    previousResponseId: string;
+  },
+): Promise<GenericProviderChatResult> {
   const baseUrl = normalizeBaseUrl(resolveProviderBaseUrl(settings, provider));
   const auth = resolveProviderAuth(settings, provider);
   const headers: Record<string, string> = {
@@ -552,6 +1259,15 @@ async function requestProviderChatCompletion(
 
   if (provider === "lmstudio") {
     const endpoint = `${baseUrl}/api/v1/chat`;
+    const tools =
+      request.tools?.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+        },
+      })) ?? [];
     const payload: Record<string, unknown> = {
       model: request.model,
       input: request.input,
@@ -560,6 +1276,10 @@ async function requestProviderChatCompletion(
       temperature: request.temperature,
       store: request.store,
     };
+    if (tools.length > 0) {
+      payload.tools = tools;
+      payload.tool_choice = request.toolChoice ?? "required";
+    }
     if (request.previousResponseId) {
       payload.previous_response_id = request.previousResponseId;
     }
@@ -582,14 +1302,25 @@ async function requestProviderChatCompletion(
       .filter(Boolean)
       .join("\n\n")
       .trim();
+    const toolCalls = extractLmStudioToolCalls(data as unknown);
 
     return {
       content: text,
       responseId: data.response_id,
       raw: data,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     };
   }
 
+  const tools =
+    request.tools?.map((tool) => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    })) ?? [];
   const endpoint = `${baseUrl}/chat/completions`;
   const payload: Record<string, unknown> = {
     model: request.model,
@@ -601,6 +1332,10 @@ async function requestProviderChatCompletion(
     temperature: request.temperature,
     stream: false,
   };
+  if (tools.length > 0) {
+    payload.tools = tools;
+    payload.tool_choice = request.toolChoice ?? "required";
+  }
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -624,11 +1359,13 @@ async function requestProviderChatCompletion(
   const content = parseOpenAiMessageContent(
     data.choices?.[0]?.message?.content,
   );
+  const toolCalls = extractOpenAiToolCalls(data as unknown);
 
   return {
     content,
     responseId: typeof data.id === "string" ? data.id : undefined,
     raw: data,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
   };
 }
 
@@ -636,7 +1373,7 @@ export async function requestGenericChatCompletion(
   settings: AppSettings,
   task: ModelRoutingTask,
   request: GenericChatRequest,
-) {
+): Promise<GenericProviderChatResult> {
   const provider = resolveProviderForTask(settings, task);
   const model =
     toTrimmedString(request.model) || resolveModelForTask(settings, task);
@@ -648,6 +1385,191 @@ export async function requestGenericChatCompletion(
   });
 }
 
+export type ToolRuntimeValidationResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: string };
+
+export interface ToolRuntimeDefinition<T> extends GenericChatToolDefinition {
+  validate: (payload: unknown) => ToolRuntimeValidationResult<T>;
+}
+
+export interface ToolRuntimeRequest<T> {
+  task: ModelRoutingTask;
+  request: GenericChatRequest;
+  tool: ToolRuntimeDefinition<T>;
+  maxRepairAttempts?: number;
+  legacyExtractor?: (content: string) => ToolRuntimeValidationResult<T>;
+}
+
+export interface ToolRuntimeResult<T> {
+  value: T;
+  responseId?: string;
+  raw: unknown;
+  mode: ToolExecutionMode;
+  source: "tool_call" | "legacy";
+  attemptsUsed: number;
+}
+
+function selectToolCall(
+  calls: GenericProviderToolCall[] | undefined,
+  toolName: string,
+) {
+  if (!calls || calls.length === 0) return undefined;
+  return calls.find((call) => call.name === toolName) ?? calls[0];
+}
+
+function buildToolRepairInput(
+  originalInput: string,
+  toolName: string,
+  validationReason: string,
+) {
+  return [
+    originalInput,
+    "",
+    `[TOOL_VALIDATION_ERROR:${toolName}]`,
+    validationReason,
+    `Return ONLY a valid tool call for "${toolName}".`,
+  ].join("\n");
+}
+
+export async function requestGenericToolRuntime<T>(
+  settings: AppSettings,
+  params: ToolRuntimeRequest<T>,
+): Promise<ToolRuntimeResult<T>> {
+  const modeResolution = await resolveToolExecutionModeForTask(
+    settings,
+    params.task,
+    {
+      model: params.request.model,
+    },
+  );
+  const maxRepairAttempts = Math.max(
+    0,
+    Math.min(4, Math.floor(params.maxRepairAttempts ?? 2)),
+  );
+  const toolName = params.tool.name;
+  const runLegacyPath = async (
+    fallbackReason: string,
+    fallbackResponse?: GenericProviderChatResult,
+    attemptsUsed = 0,
+  ): Promise<ToolRuntimeResult<T>> => {
+    if (!params.legacyExtractor) {
+      throw new Error(fallbackReason);
+    }
+    const response =
+      fallbackResponse ??
+      (await requestGenericChatCompletion(settings, params.task, {
+        ...params.request,
+        tools: undefined,
+        toolChoice: undefined,
+      }));
+    const extracted = params.legacyExtractor(response.content);
+    if (!extracted.ok) {
+      throw new Error(
+        `${fallbackReason}; legacy_extractor_failed:${extracted.reason}`,
+      );
+    }
+    emitLlmToolingTelemetry({
+      event: "llm_legacy_fallback_used",
+      task: params.task,
+      provider: modeResolution.target.provider,
+      model: modeResolution.target.model,
+      mode: modeResolution.mode,
+      capability: modeResolution.capability.status,
+      reason: fallbackReason,
+      source: "requestGenericToolRuntime",
+    });
+    return {
+      value: extracted.value,
+      responseId: response.responseId,
+      raw: response.raw,
+      mode: modeResolution.mode,
+      source: "legacy",
+      attemptsUsed,
+    };
+  };
+
+  if (modeResolution.mode === "legacy_only") {
+    return runLegacyPath("legacy_only_mode_forced", undefined, 0);
+  }
+
+  let lastValidationReason = "tool_call_missing";
+  let lastResponse: GenericProviderChatResult | undefined;
+
+  for (let attempt = 0; attempt <= maxRepairAttempts; attempt += 1) {
+    const requestInput =
+      attempt === 0
+        ? params.request.input
+        : buildToolRepairInput(
+            params.request.input,
+            toolName,
+            lastValidationReason,
+          );
+    const response = await requestGenericChatCompletion(settings, params.task, {
+      ...params.request,
+      input: requestInput,
+      tools: [
+        {
+          name: params.tool.name,
+          description: params.tool.description,
+          parameters: params.tool.parameters,
+        },
+      ],
+      toolChoice:
+        modeResolution.mode === "tool_required" ? "required" : "auto",
+    });
+    lastResponse = response;
+
+    const toolCall = selectToolCall(response.toolCalls, toolName);
+    if (!toolCall) {
+      lastValidationReason = `tool_call_missing:${toolName}`;
+      emitLlmToolingTelemetry({
+        event: "llm_tool_validation_failed",
+        task: params.task,
+        provider: modeResolution.target.provider,
+        model: modeResolution.target.model,
+        mode: modeResolution.mode,
+        capability: modeResolution.capability.status,
+        reason: lastValidationReason,
+        source: "requestGenericToolRuntime",
+      });
+      continue;
+    }
+
+    const validation = params.tool.validate(
+      toolCall.arguments ?? toolCall.argumentsText,
+    );
+    if (validation.ok) {
+      return {
+        value: validation.value,
+        responseId: response.responseId,
+        raw: response.raw,
+        mode: modeResolution.mode,
+        source: "tool_call",
+        attemptsUsed: attempt,
+      };
+    }
+
+    lastValidationReason = validation.reason || "tool_validation_failed";
+    emitLlmToolingTelemetry({
+      event: "llm_tool_validation_failed",
+      task: params.task,
+      provider: modeResolution.target.provider,
+      model: modeResolution.target.model,
+      mode: modeResolution.mode,
+      capability: modeResolution.capability.status,
+      reason: lastValidationReason,
+      source: "requestGenericToolRuntime",
+    });
+  }
+
+  return runLegacyPath(
+    `tool_runtime_exhausted:${toolName}:${lastValidationReason}`,
+    lastResponse,
+    maxRepairAttempts + 1,
+  );
+}
+
 export async function requestChatCompletion(
   settings: AppSettings,
   persona: Persona,
@@ -655,10 +1577,10 @@ export async function requestChatCompletion(
   previousResponseId?: string,
   context?: ChatCompletionContext,
 ): Promise<NativeChatResult> {
-  const response = await requestGenericChatCompletion(
-    settings,
-    "one_to_one_chat",
-    {
+  const chatToolConfig = createChatTurnToolConfig();
+  const runtime = await requestGenericToolRuntime(settings, {
+    task: "one_to_one_chat",
+    request: {
       model: settings.model,
       input: formatRecentMessages(context?.recentMessages, userInput),
       systemPrompt: buildSystemPrompt(persona, settings, context),
@@ -667,70 +1589,41 @@ export async function requestChatCompletion(
       store: true,
       previousResponseId,
     },
-  );
+    ...chatToolConfig,
+  });
 
-  const rawContent = response.content.trim();
-  const {
-    visibleText,
-    comfyPrompt,
-    comfyPrompts,
-    comfyImageDescription,
-    comfyImageDescriptions,
-    personaControl,
-  } = splitAssistantContent(rawContent);
-  const sanitizedContent = sanitizeAssistantText(visibleText);
-  const sanitizedComfyPrompts =
-    comfyPrompts && comfyPrompts.length > 0
-      ? comfyPrompts
-      : comfyPrompt
-        ? [comfyPrompt]
-        : [];
-  const sanitizedImageDescriptions =
-    comfyImageDescriptions && comfyImageDescriptions.length > 0
-      ? comfyImageDescriptions
-      : comfyImageDescription
-        ? [comfyImageDescription]
-        : [];
-  const sanitizedComfyPrompt = sanitizedComfyPrompts[0];
-  const sanitizedImageDescription = sanitizedImageDescriptions[0];
-  const filteredImageOnlyResponse =
-    !sanitizedContent &&
-    sanitizedComfyPrompts.length === 0 &&
-    sanitizedImageDescriptions.length === 0 &&
-    !personaControl &&
-    Boolean(
-      comfyPrompt ||
-      (comfyPrompts && comfyPrompts.length > 0) ||
-      comfyImageDescription ||
-      (comfyImageDescriptions && comfyImageDescriptions.length > 0),
-    );
-  const fallbackContent = filteredImageOnlyResponse
-    ? "Могу отправить изображение по явному запросу. Опиши, что именно нужно сгенерировать."
-    : "";
-  const finalContent = sanitizedContent || fallbackContent;
-
+  const normalized: NativeChatResult = {
+    content: sanitizeAssistantText(runtime.value.content || ""),
+    comfyPrompt: runtime.value.comfyPrompt,
+    comfyPrompts: runtime.value.comfyPrompts,
+    comfyImageDescription: runtime.value.comfyImageDescription,
+    comfyImageDescriptions: runtime.value.comfyImageDescriptions,
+    personaControl: runtime.value.personaControl,
+    responseId: runtime.responseId,
+  };
   if (
-    !finalContent &&
-    sanitizedComfyPrompts.length === 0 &&
-    sanitizedImageDescriptions.length === 0 &&
-    !personaControl
+    !normalized.content &&
+    !normalized.comfyPrompt &&
+    (!normalized.comfyPrompts || normalized.comfyPrompts.length === 0) &&
+    !normalized.comfyImageDescription &&
+    (!normalized.comfyImageDescriptions ||
+      normalized.comfyImageDescriptions.length === 0) &&
+    !normalized.personaControl
   ) {
-    throw new Error("LMStudio returned an empty response.");
+    emitLlmToolingTelemetry({
+      event: "llm_legacy_fallback_used",
+      task: "one_to_one_chat",
+      reason: "normalized_chat_turn_empty_safe_fallback_used",
+      source: "requestChatCompletion",
+    });
+    return {
+      content:
+        "Не получилось получить содержательный ответ от модели. Сформулируй запрос чуть конкретнее, и я попробую снова.",
+      responseId: runtime.responseId,
+    };
   }
 
-  return {
-    content: finalContent,
-    comfyPrompt: sanitizedComfyPrompt,
-    comfyPrompts:
-      sanitizedComfyPrompts.length > 0 ? sanitizedComfyPrompts : undefined,
-    comfyImageDescription: sanitizedImageDescription,
-    comfyImageDescriptions:
-      sanitizedImageDescriptions.length > 0
-        ? sanitizedImageDescriptions
-        : undefined,
-    personaControl,
-    responseId: response.responseId,
-  };
+  return normalized;
 }
 
 export interface ConversationSummaryState {
@@ -810,6 +1703,13 @@ export async function requestConversationSummaryUpdate(
   persona: Persona,
   request: ConversationSummaryUpdateRequest,
 ): Promise<ConversationSummaryState> {
+  const modeResolution = await resolveToolExecutionModeForTask(
+    settings,
+    "one_to_one_chat",
+    {
+      model: settings.model,
+    },
+  );
   const safeTargetTokens = Math.max(600, Math.min(3000, request.targetTokens));
   const responseMaxOutputTokens = Math.max(
     700,
@@ -869,6 +1769,19 @@ export async function requestConversationSummaryUpdate(
     response.content,
   );
   if (!parsed) {
+    if (modeResolution.mode === "legacy_only") {
+      emitLlmToolingTelemetry({
+        event: "llm_legacy_fallback_used",
+        task: "conversation_summary",
+        provider: modeResolution.target.provider,
+        model: modeResolution.target.model,
+        mode: modeResolution.mode,
+        capability: modeResolution.capability.status,
+        reason: "summary_json_parse_failed_return_existing_summary",
+        source: "requestConversationSummaryUpdate",
+      });
+      return request.existing;
+    }
     throw new Error("Не удалось распарсить JSON суммаризации.");
   }
   return normalizeSummaryState(parsed, request.existing, safeTargetTokens);
@@ -928,11 +1841,12 @@ export async function generateThemedComfyPrompt(
 ): Promise<string> {
   const systemPrompt = [
     "Ты генератор одного ComfyUI prompt для изображения персонажа.",
-    "Ответ должен содержать ровно два блока без markdown: сначала <theme_tags>...</theme_tags>, затем <comfyui_prompt>...</comfyui_prompt>.",
-    "В блоке <theme_tags> верни 8-12 кратких comma-separated English tags, которые напрямую описывают тему/контекст кадра.",
+    "Верни JSON-объект без markdown и пояснений.",
+    'Формат: {"theme_tags":["..."],"comfy_prompts":["..."]}',
+    "theme_tags: 8-12 кратких English tags, которые напрямую описывают тему/контекст кадра.",
+    "comfy_prompts: массив из одного prompt (строка с comma-separated English tags).",
     "theme_tags должны быть конкретными (локация, роль, действие, атмосфера) и не противоречить теме.",
-    "Внутри ОБОИХ блоков разрешены ТОЛЬКО comma-separated English tags.",
-    "Формат внутри блоков: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
+    "Формат внутри comfy_prompts[0]: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
     "Каждый тег: строго 1-2 слова, в редких случаях допускается 3; lowercase, без точки в конце.",
     "ЗАПРЕЩЕНО: полные предложения, художественные описания, markdown, двоеточия с пояснениями, нумерация, буллеты, кавычки.",
     "ЗАПРЕЩЕНО: конструкции типа 'a woman standing...', 'she is...', 'this scene shows...'.",
@@ -944,11 +1858,11 @@ export async function generateThemedComfyPrompt(
     "Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
     "Если в input есть блок LookPrompt cache, используй его как identity prior: hair/face/eyes/body/outfit-теги приоритетны и помогают держать консистентность.",
     "Из LookPrompt cache можно брать только стабильные identity/outfit детали, но не добавляй лишние детали, которых нет в теме.",
-    "Все теги из <theme_tags> ОБЯЗАТЕЛЬНО должны присутствовать в <comfyui_prompt> без потери смысла.",
+    "Все теги из theme_tags ОБЯЗАТЕЛЬНО должны присутствовать в comfy_prompts[0] без потери смысла.",
     "Используй уместную одежду, если тема не требует специального костюма.",
     "Добавляй композицию, свет, фон, ракурс, качество.",
     "Перед отправкой проверь self-check: если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
-    "Без пояснений вне блока.",
+    "Без дополнительных полей и пояснений.",
   ].join("\n");
 
   const input = [
@@ -962,10 +1876,13 @@ export async function generateThemedComfyPrompt(
     "Generate one unique prompt variation for this iteration.",
   ].join("\n");
 
-  const response = await requestGenericChatCompletion(
-    settings,
-    "image_prompt",
-    {
+  const themedPromptToolConfig = createThemedComfyPromptToolConfig(
+    topic,
+    fallbackThemeTags,
+  );
+  const runtime = await requestGenericToolRuntime(settings, {
+    task: "image_prompt",
+    request: {
       model: resolveImagePromptModel(settings),
       input,
       systemPrompt,
@@ -973,28 +1890,18 @@ export async function generateThemedComfyPrompt(
       temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
       store: false,
     },
-  );
-  const text = response.content.trim();
+    ...themedPromptToolConfig,
+  });
 
-  if (!text) {
+  const prompt = toTrimmedString(runtime.value.prompt);
+  if (!prompt) {
     throw new Error("Модель вернула пустой comfy prompt.");
   }
-
-  const parsed = splitAssistantContent(text);
-  const prompt = toTrimmedString(
-    parsed.comfyPrompts?.[0] ?? parsed.comfyPrompt,
-  );
-  const themeTags = extractThemeTags(text, topic);
-  if (prompt) {
-    return mergeRequiredTags(prompt, themeTags);
-  }
-
-  const fallbackPrompt = text
-    .replace(/<\/?comfyui_prompt>/gi, "")
-    .replace(/<\/?theme_tags>/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return mergeRequiredTags(fallbackPrompt, themeTags);
+  const themeTags =
+    runtime.value.themeTags.length > 0
+      ? runtime.value.themeTags
+      : fallbackThemeTags(topic);
+  return mergeRequiredTags(prompt, themeTags);
 }
 
 type ImageDescriptionType = "person" | "other_person" | "no_person" | "group";
@@ -1099,6 +2006,7 @@ export async function generateComfyPromptsFromImageDescription(
     description,
     persona.name || "",
   );
+  const imagePromptModel = resolveImagePromptModel(settings);
   const shouldUsePersonaContext =
     sceneContext.type === "person" ||
     (sceneContext.type === "group" && sceneContext.includesPersona);
@@ -1111,9 +2019,11 @@ export async function generateComfyPromptsFromImageDescription(
 
   const systemPrompt = [
     "Ты конвертер описания сцены в список ComfyUI prompts.",
-    "Верни один или несколько блоков <comfyui_prompt>...</comfyui_prompt> без markdown и пояснений.",
-    "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный <comfyui_prompt> для каждого кадра.",
-    "Если описание одного кадра, верни только один блок.",
+    "Верни JSON-объект без markdown и пояснений.",
+    'Формат: {"prompts":["..."]}',
+    "Возвращай структурированный ответ через tool call; если tool call недоступен, допустим fallback в JSON или в одной comma-separated строке.",
+    "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный элемент в prompts для каждого кадра.",
+    "Если описание одного кадра, верни один элемент в prompts.",
     "Определи тип кадра из поля type в Image description: person|other_person|no_person|group.",
     "Строку type и participants считай служебными и НЕ копируй в теги.",
     "Внутри блока только comma-separated English tags (никаких предложений).",
@@ -1162,50 +2072,21 @@ export async function generateComfyPromptsFromImageDescription(
     `Iteration: ${iteration}`,
   ].join("\n");
 
-  const response = await requestGenericChatCompletion(
-    settings,
-    "image_prompt",
-    {
-      model: resolveImagePromptModel(settings),
+  const comfyPromptsToolConfig = createComfyPromptsFromDescriptionToolConfig();
+  const runtime = await requestGenericToolRuntime(settings, {
+    task: "image_prompt",
+    request: {
+      model: imagePromptModel,
       input,
       systemPrompt,
       maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
       temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
       store: false,
     },
-  );
-  const text = response.content.trim();
-  if (!text) {
-    throw new Error("Модель вернула пустой comfy prompt из описания.");
-  }
+    ...comfyPromptsToolConfig,
+  });
 
-  const parsed = splitAssistantContent(text);
-  const parsedPrompts = (
-    parsed.comfyPrompts && parsed.comfyPrompts.length > 0
-      ? parsed.comfyPrompts
-      : parsed.comfyPrompt
-        ? [parsed.comfyPrompt]
-        : []
-  )
-    .map((item) => toTrimmedString(item))
-    .filter(Boolean);
-  if (parsedPrompts.length > 0) return parsedPrompts;
-
-  const tagMatches = Array.from(
-    text.matchAll(/<comfyui_prompt\b[^>]*>([\s\S]*?)<\/comfyui_prompt>/gi),
-  )
-    .map((match) => toTrimmedString(match[1]))
-    .filter(Boolean);
-  if (tagMatches.length > 0) return tagMatches;
-
-  const fallbackPrompt = text
-    .replace(/<\/?comfyui_prompt>/gi, "")
-    .replace(/<\/?comfyui_image_description>/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (fallbackPrompt) return [fallbackPrompt];
-
-  throw new Error("Не удалось извлечь ComfyUI prompt из ответа модели.");
+  return runtime.value.prompts;
 }
 
 export async function generateComfyPromptFromImageDescription(
@@ -1232,19 +2113,6 @@ export async function generateComfyPromptFromImageDescription(
     throw new Error("Не удалось извлечь ComfyUI prompt из ответа модели.");
   }
   return first;
-}
-
-function extractThemeTags(text: string, topic: string): string[] {
-  const direct = extractTaggedBlock(text, "theme_tags");
-  const parsedDirect = splitTags(direct || "");
-  if (parsedDirect.length > 0) return parsedDirect;
-  return fallbackThemeTags(topic);
-}
-
-function extractTaggedBlock(text: string, tag: string): string {
-  const pattern = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
-  const match = text.match(pattern);
-  return toTrimmedString(match?.[1]);
 }
 
 function fallbackThemeTags(topic: string): string[] {

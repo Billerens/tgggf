@@ -346,6 +346,7 @@ export function useSharedImageActions({
               enableUpscaler: true,
               upscaleFactor: 1.4,
               saveComfyOutputs: settings.saveComfyOutputs,
+              ...(mode === "enhance" ? { debugEnhanceOutputs: true } : {}),
               ...(enhanceDetailing ? { detailing: enhanceDetailing } : {}),
             },
           ],

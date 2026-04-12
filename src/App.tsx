@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import type { GeneratedPersonaDraft } from "./lmstudio";
+import type {
+  GeneratedPersonaDraft,
+  ModelRoutingTask,
+  ToolCallingCapabilityStatus,
+} from "./lmstudio";
 import {
   generatePersonaDrafts,
+  probeModelToolCallingCapability,
+  resolveModelRoutingTarget,
   resolveProviderModelCatalogTarget,
 } from "./lmstudio";
 import {
@@ -54,7 +60,84 @@ import {
   parseBackupFile,
 } from "./features/backup/dataTransfer";
 import { useGoogleDriveBackupSync } from "./features/backup/useGoogleDriveBackupSync";
-import type { ChatSession } from "./types";
+import type { ChatSession, LlmProvider } from "./types";
+
+type ToolCapabilityMatrixStatus =
+  | "idle"
+  | "checking"
+  | ToolCallingCapabilityStatus;
+
+type ToolCapabilityProviderField =
+  | "oneToOneProvider"
+  | "groupOrchestratorProvider"
+  | "groupPersonaProvider"
+  | "imagePromptProvider"
+  | "personaGenerationProvider";
+
+type ToolCapabilityModelField =
+  | "model"
+  | "groupOrchestratorModel"
+  | "groupPersonaModel"
+  | "imagePromptModel"
+  | "personaGenerationModel";
+
+interface ToolCapabilityRoleConfig {
+  task: ModelRoutingTask;
+  title: string;
+  providerField: ToolCapabilityProviderField;
+  modelField: ToolCapabilityModelField;
+}
+
+interface ToolCapabilityRowState {
+  fingerprint: string;
+  status: ToolCapabilityMatrixStatus;
+  checkedAt?: string;
+  reason?: string;
+  fromCache?: boolean;
+}
+
+const TOOL_CAPABILITY_ROLE_CONFIGS: ToolCapabilityRoleConfig[] = [
+  {
+    task: "one_to_one_chat",
+    title: "1:1 чат",
+    providerField: "oneToOneProvider",
+    modelField: "model",
+  },
+  {
+    task: "group_orchestrator",
+    title: "Группы: оркестратор",
+    providerField: "groupOrchestratorProvider",
+    modelField: "groupOrchestratorModel",
+  },
+  {
+    task: "group_persona",
+    title: "Группы: персона",
+    providerField: "groupPersonaProvider",
+    modelField: "groupPersonaModel",
+  },
+  {
+    task: "image_prompt",
+    title: "Генератор prompt изображений",
+    providerField: "imagePromptProvider",
+    modelField: "imagePromptModel",
+  },
+  {
+    task: "persona_generation",
+    title: "Генератор карточек персон",
+    providerField: "personaGenerationProvider",
+    modelField: "personaGenerationModel",
+  },
+];
+
+function buildToolCapabilityFingerprint(
+  provider: LlmProvider,
+  baseUrl: string,
+  model: string,
+) {
+  return `${provider}|${baseUrl.trim().replace(/\/+$/g, "")}|${model
+    .trim()
+    .toLowerCase()}`;
+}
 
 export default function App() {
   const {
@@ -136,6 +219,11 @@ export default function App() {
   const [messageInput, setMessageInput] = useState("");
   const [groupMessageInput, setGroupMessageInput] = useState("");
   const [settingsDraft, setSettingsDraft] = useState(settings);
+  const [toolCapabilityByTask, setToolCapabilityByTask] = useState<
+    Partial<Record<ModelRoutingTask, ToolCapabilityRowState>>
+  >({});
+  const [toolCapabilityBatchChecking, setToolCapabilityBatchChecking] =
+    useState(false);
 
   const [generationTheme, setGenerationTheme] = useState("");
   const [generationCount, setGenerationCount] = useState(3);
@@ -620,6 +708,104 @@ export default function App() {
     onError: (message) => useAppStore.setState({ error: message }),
   });
 
+  const toolCapabilityMatrix = useMemo(
+    () =>
+      TOOL_CAPABILITY_ROLE_CONFIGS.map((role) => {
+        const modelOverride = settingsDraft[role.modelField];
+        const target = resolveModelRoutingTarget(
+          settingsDraft,
+          role.task,
+          modelOverride,
+        );
+        const fingerprint = buildToolCapabilityFingerprint(
+          target.provider,
+          target.baseUrl,
+          target.model,
+        );
+        const state = toolCapabilityByTask[role.task];
+        const isSameRoute = Boolean(
+          state && state.fingerprint === fingerprint,
+        );
+
+        return {
+          task: role.task,
+          title: role.title,
+          provider: target.provider,
+          model: target.model,
+          status: isSameRoute ? state?.status ?? "idle" : ("idle" as const),
+          checkedAt: isSameRoute ? state?.checkedAt : undefined,
+          reason: isSameRoute ? state?.reason : undefined,
+          fromCache: isSameRoute ? state?.fromCache : undefined,
+        };
+      }),
+    [settingsDraft, toolCapabilityByTask],
+  );
+
+  const checkToolCapability = async (task: ModelRoutingTask) => {
+    const role = TOOL_CAPABILITY_ROLE_CONFIGS.find((item) => item.task === task);
+    if (!role) return;
+    const modelOverride = settingsDraft[role.modelField];
+    const target = resolveModelRoutingTarget(settingsDraft, task, modelOverride);
+    const fingerprint = buildToolCapabilityFingerprint(
+      target.provider,
+      target.baseUrl,
+      target.model,
+    );
+
+    setToolCapabilityByTask((prev) => ({
+      ...prev,
+      [task]: {
+        fingerprint,
+        status: "checking",
+      },
+    }));
+
+    try {
+      const result = await probeModelToolCallingCapability({
+        provider: target.provider,
+        baseUrl: target.baseUrl,
+        auth: target.auth,
+        model: target.model,
+        apiKey: settingsDraft.apiKey,
+        forceRefresh: true,
+      });
+      setToolCapabilityByTask((prev) => ({
+        ...prev,
+        [task]: {
+          fingerprint,
+          status: result.status,
+          checkedAt: result.checkedAt,
+          reason: result.reason,
+          fromCache: result.fromCache,
+        },
+      }));
+    } catch (error) {
+      setToolCapabilityByTask((prev) => ({
+        ...prev,
+        [task]: {
+          fingerprint,
+          status: "unknown",
+          checkedAt: new Date().toISOString(),
+          reason: (error as Error).message,
+          fromCache: false,
+        },
+      }));
+    }
+  };
+
+  const checkAllToolCapabilities = async () => {
+    setToolCapabilityBatchChecking(true);
+    try {
+      await Promise.all(
+        TOOL_CAPABILITY_ROLE_CONFIGS.map((role) =>
+          checkToolCapability(role.task),
+        ),
+      );
+    } finally {
+      setToolCapabilityBatchChecking(false);
+    }
+  };
+
   return (
     <>
       <div className="aurora-bg" />
@@ -823,6 +1009,8 @@ export default function App() {
           pwaInstallStatus={pwaInstallStatus}
           availableModelsByProvider={availableModelsByProvider}
           modelsLoadingByProvider={modelsLoadingByProvider}
+          toolCapabilityMatrix={toolCapabilityMatrix}
+          toolCapabilityBatchChecking={toolCapabilityBatchChecking}
           exportableChats={exportableChatOptions}
           exportBusy={exportBusy}
           importBusy={importBusy}
@@ -846,6 +1034,12 @@ export default function App() {
               provider,
             );
             void loadModels(provider, target.baseUrl, target.auth);
+          }}
+          onCheckToolCapability={(task) => {
+            void checkToolCapability(task);
+          }}
+          onCheckAllToolCapabilities={() => {
+            void checkAllToolCapabilities();
           }}
           onGoogleDriveConnect={onGoogleDriveConnect}
           onGoogleDriveDisconnect={onGoogleDriveDisconnect}

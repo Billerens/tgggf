@@ -14,6 +14,10 @@ import type {
   EndpointAuthConfig,
   LlmProvider,
 } from "../types";
+import type {
+  ModelRoutingTask,
+  ToolCallingCapabilityStatus,
+} from "../lmstudio";
 import { Dropdown } from "./Dropdown";
 import type {
   BackupExportFormat,
@@ -23,6 +27,10 @@ import type {
 import type { GoogleDriveFileMeta } from "../features/backup/googleDriveSync";
 
 type PwaInstallStatus = "installed" | "available" | "unavailable";
+type ToolCapabilityMatrixStatus =
+  | "idle"
+  | "checking"
+  | ToolCallingCapabilityStatus;
 
 interface SettingsModalProps {
   open: boolean;
@@ -30,6 +38,17 @@ interface SettingsModalProps {
   pwaInstallStatus: PwaInstallStatus;
   availableModelsByProvider: Record<LlmProvider, string[]>;
   modelsLoadingByProvider: Record<LlmProvider, boolean>;
+  toolCapabilityMatrix: Array<{
+    task: ModelRoutingTask;
+    title: string;
+    provider: LlmProvider;
+    model: string;
+    status: ToolCapabilityMatrixStatus;
+    checkedAt?: string;
+    reason?: string;
+    fromCache?: boolean;
+  }>;
+  toolCapabilityBatchChecking: boolean;
   exportableChats: Array<{ id: string; title: string; personaName: string }>;
   exportBusy: boolean;
   importBusy: boolean;
@@ -48,6 +67,8 @@ interface SettingsModalProps {
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
   onInstallPwa: () => void;
   onRefreshModels: (provider: LlmProvider) => void;
+  onCheckToolCapability: (task: ModelRoutingTask) => void;
+  onCheckAllToolCapabilities: () => void;
   onGoogleDriveConnect: () => Promise<void>;
   onGoogleDriveDisconnect: () => void;
   onGoogleDriveRefreshBackups: () => Promise<void>;
@@ -157,6 +178,28 @@ function formatDriveBackupSize(value: string | undefined) {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+const TOOL_CAPABILITY_STATUS_LABEL: Record<ToolCapabilityMatrixStatus, string> = {
+  idle: "Не проверено",
+  checking: "Проверка…",
+  supported: "Поддерживается",
+  unsupported: "Не поддерживается",
+  unknown: "Неизвестно",
+};
+
+function formatToolCapabilityCheckedAt(value: string | undefined) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
 function AuthSettingsSection({
   title,
   auth,
@@ -242,6 +285,8 @@ export function SettingsModal({
   pwaInstallStatus,
   availableModelsByProvider,
   modelsLoadingByProvider,
+  toolCapabilityMatrix,
+  toolCapabilityBatchChecking,
   exportableChats,
   exportBusy,
   importBusy,
@@ -260,6 +305,8 @@ export function SettingsModal({
   setSettingsDraft,
   onInstallPwa,
   onRefreshModels,
+  onCheckToolCapability,
+  onCheckAllToolCapabilities,
   onGoogleDriveConnect,
   onGoogleDriveDisconnect,
   onGoogleDriveRefreshBackups,
@@ -639,6 +686,88 @@ export function SettingsModal({
                 providerField: "personaGenerationProvider",
                 modelField: "personaGenerationModel",
               })}
+              <div className="persona-section">
+                <h5>Tool Calling Capability Matrix</h5>
+                <small
+                  style={{
+                    color: "var(--text-secondary)",
+                    display: "block",
+                    marginBottom: 8,
+                  }}
+                >
+                  Проверка выполняется для выбранной пары provider+model по каждой роли.
+                </small>
+                <div className="inline-row" style={{ marginBottom: 8 }}>
+                  <button
+                    type="button"
+                    onClick={onCheckAllToolCapabilities}
+                    disabled={toolCapabilityBatchChecking}
+                  >
+                    <RefreshCw
+                      size={14}
+                      className={toolCapabilityBatchChecking ? "spin" : ""}
+                    />{" "}
+                    Проверить все
+                  </button>
+                </div>
+                <div className="settings-table-scroll">
+                  <table className="settings-table toolcap-table">
+                    <thead>
+                      <tr>
+                        <th>Роль</th>
+                        <th>Provider</th>
+                        <th>Model</th>
+                        <th>Статус</th>
+                        <th>Проверено</th>
+                        <th>Детали</th>
+                        <th>Действие</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {toolCapabilityMatrix.map((row) => {
+                        const isChecking = row.status === "checking";
+                        return (
+                          <tr key={row.task}>
+                            <th>{row.title}</th>
+                            <td>{row.provider}</td>
+                            <td title={row.model}>{row.model || "—"}</td>
+                            <td>
+                              <span
+                                className={`toolcap-status toolcap-status-${row.status}`}
+                              >
+                                {TOOL_CAPABILITY_STATUS_LABEL[row.status]}
+                              </span>
+                              {row.fromCache ? (
+                                <div className="toolcap-cache-note">cache</div>
+                              ) : null}
+                            </td>
+                            <td>{formatToolCapabilityCheckedAt(row.checkedAt)}</td>
+                            <td
+                              title={row.reason}
+                              className="toolcap-reason-cell"
+                            >
+                              {row.reason || "—"}
+                            </td>
+                            <td>
+                              <button
+                                type="button"
+                                onClick={() => onCheckToolCapability(row.task)}
+                                disabled={isChecking || toolCapabilityBatchChecking}
+                              >
+                                <RefreshCw
+                                  size={14}
+                                  className={isChecking ? "spin" : ""}
+                                />{" "}
+                                Проверить
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </>
           ) : null}
 

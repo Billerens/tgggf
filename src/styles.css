@@ -1637,6 +1637,59 @@ select:focus,
   padding: 8px 10px;
   font-size: 12px;
 }
+.toolcap-table {
+  min-width: 1080px;
+}
+.toolcap-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 128px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.toolcap-status-idle {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-light);
+}
+.toolcap-status-checking {
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.16);
+  border-color: rgba(96, 165, 250, 0.4);
+}
+.toolcap-status-supported {
+  color: #bbf7d0;
+  background: rgba(22, 163, 74, 0.16);
+  border-color: rgba(34, 197, 94, 0.44);
+}
+.toolcap-status-unsupported {
+  color: #fecaca;
+  background: rgba(220, 38, 38, 0.16);
+  border-color: rgba(248, 113, 113, 0.44);
+}
+.toolcap-status-unknown {
+  color: #fef3c7;
+  background: rgba(217, 119, 6, 0.18);
+  border-color: rgba(251, 191, 36, 0.44);
+}
+.toolcap-cache-note {
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+.toolcap-reason-cell {
+  max-width: 360px;
+  text-align: left !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .split {
   display: grid;
   gap: 20px;

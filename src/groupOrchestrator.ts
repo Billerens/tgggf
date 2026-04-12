@@ -11,14 +11,20 @@ import type {
   Persona,
 } from "./types";
 import type { PersonaControlPayload } from "./personaDynamics";
-import { requestGenericChatCompletion } from "./lmstudio";
-import { splitAssistantContent } from "./messageContent";
+import {
+  emitLlmToolingTelemetry,
+  requestGenericToolRuntime,
+} from "./lmstudio";
 import {
   buildGroupOrchestratorSystemPrompt,
   buildGroupOrchestratorUserInput,
   buildGroupPersonaSystemPrompt,
   buildGroupPersonaUserInput,
 } from "./groupPrompts";
+import {
+  createGroupOrchestratorToolConfig,
+  createGroupPersonaTurnToolConfig,
+} from "./tooling/registry";
 
 export interface GroupOrchestratorTickInput {
   room: GroupRoom;
@@ -49,16 +55,6 @@ export interface PersonaSpeechValidationResult {
   reason?: string;
 }
 
-interface LlmOrchestratorDecision {
-  status?: string;
-  speakerPersonaId?: string;
-  waitForUser?: boolean;
-  waitReason?: string;
-  reason?: string;
-  intent?: string;
-  userContextAction?: string;
-}
-
 export interface GroupPersonaSpeechDraft {
   visibleText: string;
   comfyPrompt?: string;
@@ -75,23 +71,6 @@ function escapeRegExp(value: string) {
 
 function normalizeToken(value: string) {
   return value.trim().toLowerCase();
-}
-
-function parseJsonObjectFromText<T extends object>(value: string): T | null {
-  const text = value.trim();
-  if (!text) return null;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start < 0 || end <= start) return null;
-    try {
-      return JSON.parse(text.slice(start, end + 1)) as T;
-    } catch {
-      return null;
-    }
-  }
 }
 
 function clip(value: string, max = 220) {
@@ -437,10 +416,10 @@ export async function requestLlmOrchestratorDecision(
     recentEvents,
   });
 
-  const response = await requestGenericChatCompletion(
-    input.settings,
-    "group_orchestrator",
-    {
+  const groupOrchestratorToolConfig = createGroupOrchestratorToolConfig();
+  const runtime = await requestGenericToolRuntime(input.settings, {
+    task: "group_orchestrator",
+    request: {
       model: input.settings.groupOrchestratorModel || input.settings.model,
       input: userInput,
       systemPrompt,
@@ -448,12 +427,10 @@ export async function requestLlmOrchestratorDecision(
       temperature: Math.max(0.15, Math.min(0.7, input.settings.temperature)),
       store: false,
     },
-  );
+    ...groupOrchestratorToolConfig,
+  });
 
-  const parsed = parseJsonObjectFromText<LlmOrchestratorDecision>(
-    response.content,
-  );
-  if (!parsed) return null;
+  const parsed = runtime.value;
 
   const status = normalizeLlmStatus(parsed.status);
   if (!status) return null;
@@ -539,10 +516,10 @@ export async function requestLlmPersonaMessage(params: {
     mentionContext,
   });
 
-  const response = await requestGenericChatCompletion(
-    params.settings,
-    "group_persona",
-    {
+  const groupPersonaTurnToolConfig = createGroupPersonaTurnToolConfig();
+  const runtime = await requestGenericToolRuntime(params.settings, {
+    task: "group_persona",
+    request: {
       model: params.settings.groupPersonaModel || params.settings.model,
       input: userInput,
       systemPrompt,
@@ -551,31 +528,42 @@ export async function requestLlmPersonaMessage(params: {
       store: true,
       previousResponseId: params.previousResponseId,
     },
-  );
+    ...groupPersonaTurnToolConfig,
+  });
 
-  const content = response.content.trim();
-  if (!content) {
-    return {
-      visibleText: "",
-    };
-  }
-
-  const parts = splitAssistantContent(content);
+  const isLegacyOnly = runtime.mode === "legacy_only";
   const prefix = `${params.speaker.name}:`;
-  let visibleText = parts.visibleText.trim();
+  let visibleText = sanitizePersonaVisibleText(
+    (runtime.value.visibleText || "").trim(),
+  );
   if (visibleText.toLowerCase().startsWith(prefix.toLowerCase())) {
     visibleText = visibleText.slice(prefix.length).trim();
   }
   visibleText = sanitizePersonaVisibleText(visibleText);
+  if (!visibleText && isLegacyOnly) {
+    emitLlmToolingTelemetry({
+      event: "llm_legacy_fallback_used",
+      task: "group_persona",
+      mode: runtime.mode,
+      reason: "empty_visible_text_after_sanitization_replaced_with_fallback_text",
+      source: "requestLlmPersonaMessage",
+    });
+    visibleText = buildPersonaMessageText(
+      params.room,
+      params.speaker,
+      lastUserMessage,
+      params.userName,
+    );
+  }
 
   return {
     visibleText,
-    comfyPrompt: parts.comfyPrompt,
-    comfyPrompts: parts.comfyPrompts,
-    comfyImageDescription: parts.comfyImageDescription,
-    comfyImageDescriptions: parts.comfyImageDescriptions,
-    personaControl: parts.personaControl,
-    responseId: response.responseId,
+    comfyPrompt: runtime.value.comfyPrompt,
+    comfyPrompts: runtime.value.comfyPrompts,
+    comfyImageDescription: runtime.value.comfyImageDescription,
+    comfyImageDescriptions: runtime.value.comfyImageDescriptions,
+    personaControl: runtime.value.personaControl,
+    responseId: runtime.responseId,
   };
 }
 

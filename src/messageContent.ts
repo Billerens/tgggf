@@ -4,6 +4,7 @@ const COMFY_UI_PROMPT_BLOCK_REGEX = /<comfyui_prompt\b[^>]*>([\s\S]*?)<\/comfyui
 const COMFY_UI_IMAGE_DESCRIPTION_BLOCK_REGEX =
   /<comfyui_image_description\b[^>]*>([\s\S]*?)<\/comfyui_image_description>/gi;
 const PERSONA_CONTROL_BLOCK_REGEX = /<persona_control\b[^>]*>([\s\S]*?)<\/persona_control>/gi;
+const JSON_FENCED_BLOCK_REGEX = /```(?:json)?\s*([\s\S]*?)```/gi;
 
 type ControlStateDelta = NonNullable<PersonaControlPayload["state_delta"]>;
 type ControlMemoryAddItem = NonNullable<PersonaControlPayload["memory_add"]>[number];
@@ -323,12 +324,147 @@ function normalizePersonaControl(input: unknown): PersonaControlPayload | undefi
   return control;
 }
 
+function normalizeServiceStringArray(
+  input: unknown,
+  max: number,
+  objectKeys: string[],
+) {
+  if (typeof input === "string") {
+    const value = input.trim();
+    return value ? [value] : [];
+  }
+  if (!Array.isArray(input)) return [];
+  const values: string[] = [];
+  for (const item of input.slice(0, max)) {
+    if (typeof item === "string") {
+      const value = item.trim();
+      if (value) values.push(value);
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    const text = pickString(item as Record<string, unknown>, objectKeys);
+    if (text) values.push(text);
+  }
+  return values.slice(0, max);
+}
+
+function dedupePreserveOrder(values: string[]) {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const normalized = value.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function extractServicePayload(input: unknown) {
+  if (!input || typeof input !== "object") {
+    return {
+      visibleText: "",
+      comfyPrompts: [] as string[],
+      comfyImageDescriptions: [] as string[],
+      personaControl: undefined as PersonaControlPayload | undefined,
+      consumed: false,
+    };
+  }
+  const root = input as Record<string, unknown>;
+  const service =
+    pickRecord(root, ["service", "payload", "response", "result"]) ?? root;
+  const visibleText = (
+    pickString(service, [
+      "visible_text",
+      "visibleText",
+      "message",
+      "text",
+      "content",
+      "reply",
+    ]) || ""
+  ).trim();
+  const comfyPrompts = dedupePreserveOrder([
+    ...normalizeServiceStringArray(
+      service.comfy_prompts ?? service.comfyPrompts,
+      8,
+      ["prompt", "text", "content", "value"],
+    ),
+    ...normalizeServiceStringArray(
+      service.comfy_prompt ?? service.comfyPrompt,
+      8,
+      ["prompt", "text", "content", "value"],
+    ),
+    ...normalizeServiceStringArray(
+      service.prompts ?? service.prompt,
+      8,
+      ["prompt", "text", "content", "value"],
+    ),
+  ]);
+  const comfyImageDescriptions = dedupePreserveOrder([
+    ...normalizeServiceStringArray(
+      service.comfy_image_descriptions ?? service.comfyImageDescriptions,
+      8,
+      ["description", "text", "content", "value", "scene"],
+    ),
+    ...normalizeServiceStringArray(
+      service.comfy_image_description ?? service.comfyImageDescription,
+      8,
+      ["description", "text", "content", "value", "scene"],
+    ),
+    ...normalizeServiceStringArray(
+      service.image_descriptions ?? service.imageDescriptions,
+      8,
+      ["description", "text", "content", "value", "scene"],
+    ),
+  ]);
+  const personaControlCandidate =
+    (service.persona_control as unknown) ??
+    (service.personaControl as unknown) ??
+    (service.control as unknown);
+  const personaControl =
+    normalizePersonaControl(personaControlCandidate) ||
+    normalizePersonaControl(root.persona_control) ||
+    normalizePersonaControl(root.personaControl);
+
+  return {
+    visibleText,
+    comfyPrompts,
+    comfyImageDescriptions,
+    personaControl,
+    consumed:
+      Boolean(visibleText) ||
+      comfyPrompts.length > 0 ||
+      comfyImageDescriptions.length > 0 ||
+      Boolean(personaControl),
+  };
+}
+
 export function splitAssistantContent(rawContent: string): AssistantContentParts {
   const comfyPrompts: string[] = [];
   const comfyImageDescriptions: string[] = [];
   let personaControl: PersonaControlPayload | undefined;
-  const visibleText = stripLeakedDiagnosticLines(
-    rawContent
+  let serviceVisibleText = "";
+  const mergeServicePayload = (payload: {
+    visibleText?: string;
+    comfyPrompts: string[];
+    comfyImageDescriptions: string[];
+    personaControl?: PersonaControlPayload;
+  }) => {
+    if (!serviceVisibleText && payload.visibleText?.trim()) {
+      serviceVisibleText = payload.visibleText.trim();
+    }
+    for (const prompt of payload.comfyPrompts) {
+      comfyPrompts.push(prompt);
+    }
+    for (const description of payload.comfyImageDescriptions) {
+      comfyImageDescriptions.push(description);
+    }
+    if (!personaControl && payload.personaControl) {
+      personaControl = payload.personaControl;
+    }
+  };
+
+  let workingText = rawContent
     .replace(COMFY_UI_PROMPT_BLOCK_REGEX, (_, inner: string) => {
       const candidate = inner.trim();
       if (candidate) {
@@ -349,18 +485,50 @@ export function splitAssistantContent(rawContent: string): AssistantContentParts
         personaControl = parsed;
       }
       return "";
-    })
-    .replace(/\n{3,}/g, "\n\n")
-    .trim(),
+    });
+
+  workingText = workingText.replace(JSON_FENCED_BLOCK_REGEX, (block, inner: string) => {
+    const parsed = tryParseJsonObject(inner);
+    const payload = extractServicePayload(parsed);
+    if (payload.consumed) {
+      mergeServicePayload(payload);
+      return "";
+    }
+    return block;
+  });
+
+  const trimmedWorkingText = workingText.trim();
+  if (trimmedWorkingText.startsWith("{") && trimmedWorkingText.endsWith("}")) {
+    const parsedRoot = tryParseJsonObject(trimmedWorkingText);
+    const payload = extractServicePayload(parsedRoot);
+    if (payload.consumed) {
+      mergeServicePayload(payload);
+      workingText = "";
+    }
+  }
+
+  let visibleText = stripLeakedDiagnosticLines(
+    workingText.replace(/\n{3,}/g, "\n\n").trim(),
+  );
+  if (!visibleText && serviceVisibleText) {
+    visibleText = stripLeakedDiagnosticLines(serviceVisibleText);
+  }
+
+  const dedupedComfyPrompts = dedupePreserveOrder(comfyPrompts);
+  const dedupedComfyImageDescriptions = dedupePreserveOrder(
+    comfyImageDescriptions,
   );
 
   return {
     visibleText,
-    comfyPrompt: comfyPrompts[0],
-    comfyPrompts: comfyPrompts.length > 0 ? comfyPrompts : undefined,
-    comfyImageDescription: comfyImageDescriptions[0],
+    comfyPrompt: dedupedComfyPrompts[0],
+    comfyPrompts:
+      dedupedComfyPrompts.length > 0 ? dedupedComfyPrompts : undefined,
+    comfyImageDescription: dedupedComfyImageDescriptions[0],
     comfyImageDescriptions:
-      comfyImageDescriptions.length > 0 ? comfyImageDescriptions : undefined,
+      dedupedComfyImageDescriptions.length > 0
+        ? dedupedComfyImageDescriptions
+        : undefined,
     personaControl,
   };
 }

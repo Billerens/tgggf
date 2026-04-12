@@ -46,6 +46,7 @@ interface ComfyHistoryEntry {
 declare global {
   interface Window {
     __TG_GF_LAST_COMFY_DEBUG__?: unknown;
+    __TG_GF_LAST_ENHANCE_OUTPUT_DEBUG__?: unknown;
   }
 }
 
@@ -77,6 +78,7 @@ export interface ComfyGenerationItem {
   outputNodeTitleIncludes?: string[];
   strictOutputNodeMatch?: boolean;
   pickLatestImageOnly?: boolean;
+  debugEnhanceOutputs?: boolean;
   detailing?: {
     enabled?: boolean;
     level?: DetailLevel;
@@ -1610,6 +1612,107 @@ function collectImageUrls(
   return Array.from(new Set(urls));
 }
 
+interface ComfyOutputNodeRef {
+  nodeId: string;
+  nodeTitle: string;
+  classType: string;
+}
+
+interface ComfyOutputUrlAvailability {
+  url: string;
+  nodes: ComfyOutputNodeRef[];
+}
+
+interface EnhanceOutputDebugReport {
+  createdAt: string;
+  promptIndex: number;
+  totalPrompts: number;
+  selectedUrls: string[];
+  selected: ComfyOutputUrlAvailability[];
+  available: ComfyOutputUrlAvailability[];
+}
+
+function collectOutputUrlAvailability(
+  baseUrl: string,
+  workflow: ComfyWorkflow,
+  historyEntry: ComfyHistoryEntry,
+) {
+  const outputs = historyEntry.outputs ?? {};
+  const byUrl = new Map<string, ComfyOutputUrlAvailability>();
+  for (const [nodeId, nodeOutput] of Object.entries(outputs)) {
+    const node = workflow[nodeId];
+    const nodeRef: ComfyOutputNodeRef = {
+      nodeId,
+      nodeTitle: node?._meta?.title?.trim() || "(untitled)",
+      classType: node?.class_type?.trim() || "(unknown)",
+    };
+    for (const image of nodeOutput.images ?? []) {
+      if (!image?.filename) continue;
+      const url = buildViewUrl(baseUrl, image);
+      let entry = byUrl.get(url);
+      if (!entry) {
+        entry = { url, nodes: [] };
+        byUrl.set(url, entry);
+      }
+      if (!entry.nodes.some((candidate) => candidate.nodeId === nodeId)) {
+        entry.nodes.push(nodeRef);
+      }
+    }
+  }
+  return Array.from(byUrl.values()).sort((left, right) =>
+    left.url.localeCompare(right.url),
+  );
+}
+
+function createEnhanceOutputDebugReport(
+  baseUrl: string,
+  workflow: ComfyWorkflow,
+  historyEntry: ComfyHistoryEntry,
+  selectedUrls: string[],
+  index: number,
+  total: number,
+): EnhanceOutputDebugReport {
+  const available = collectOutputUrlAvailability(baseUrl, workflow, historyEntry);
+  const availableByUrl = new Map(available.map((entry) => [entry.url, entry]));
+  const selected = selectedUrls.map((url) => {
+    const entry = availableByUrl.get(url);
+    return entry ?? { url, nodes: [] };
+  });
+  return {
+    createdAt: new Date().toISOString(),
+    promptIndex: index + 1,
+    totalPrompts: total,
+    selectedUrls: Array.from(new Set(selectedUrls)),
+    selected,
+    available,
+  };
+}
+
+function publishEnhanceOutputDebug(report: EnhanceOutputDebugReport) {
+  try {
+    window.__TG_GF_LAST_ENHANCE_OUTPUT_DEBUG__ = report;
+  } catch {
+    // no-op
+  }
+  try {
+    console.groupCollapsed(
+      "[tg-gf][enhance][outputs] list of generated images with available nodes",
+    );
+    console.log(report);
+    console.table(
+      report.available.map((entry) => ({
+        url: entry.url,
+        nodes: entry.nodes
+          .map((node) => `${node.nodeId} • ${node.nodeTitle} • ${node.classType}`)
+          .join(" | "),
+      })),
+    );
+    console.groupEnd();
+  } catch {
+    // no-op
+  }
+}
+
 export async function generateComfyImages(
   itemsOrPrompts: Array<string | ComfyGenerationItem>,
   baseUrlOverride?: string,
@@ -1641,6 +1744,7 @@ export async function generateComfyImages(
             outputNodeTitleIncludes: item.outputNodeTitleIncludes,
             strictOutputNodeMatch: item.strictOutputNodeMatch,
             pickLatestImageOnly: item.pickLatestImageOnly,
+            debugEnhanceOutputs: item.debugEnhanceOutputs,
             detailing: item.detailing,
           },
     )
@@ -1779,6 +1883,18 @@ export async function generateComfyImages(
         item.strictOutputNodeMatch,
         item.pickLatestImageOnly,
       );
+      if (item.debugEnhanceOutputs && imageUrls.length > 0) {
+        publishEnhanceOutputDebug(
+          createEnhanceOutputDebugReport(
+            baseUrl,
+            workflow,
+            historyEntry,
+            imageUrls,
+            index,
+            normalizedItems.length,
+          ),
+        );
+      }
       if (onPromptResult) {
         await onPromptResult(imageUrls, index, normalizedItems.length);
       }

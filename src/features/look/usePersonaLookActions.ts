@@ -1065,6 +1065,7 @@ export function usePersonaLookActions({
               outputNodeTitleIncludes: preferredOutputTitles,
               strictOutputNodeMatch: options?.strictOutputNodeMatch ?? false,
               pickLatestImageOnly: false,
+              debugEnhanceOutputs: true,
               detailing: {
                 enabled: true,
                 level:
