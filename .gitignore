@@ -7,6 +7,12 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Electron
+apps/desktop/release
+
+# Android
+apps/mobile/android/app/build
+
 node_modules
 dist
 dist-ssr
