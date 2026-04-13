@@ -12,6 +12,10 @@ apps/desktop/release
 
 # Android
 apps/mobile/android/app/build
+apps/mobile/android/app/src/main/assets/public/downloads
+
+# Artifact mirrors
+public/downloads
 
 node_modules
 dist
