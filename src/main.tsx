@@ -2,16 +2,27 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { setRuntimeContext } from "./platform/runtimeContext";
+import { getWrapperBridge } from "./platform/wrapperContract";
 import { getWrapperInfo } from "./platform/wrapperBridge";
 import "./styles.css";
 
+const runtimeScope = globalThis as unknown as Record<string, unknown>;
 const wrapperInfo = getWrapperInfo(
-  globalThis as unknown as Record<string, unknown>,
+  runtimeScope,
   typeof import.meta.env.VITE_BACKEND_URL === "string"
     ? import.meta.env.VITE_BACKEND_URL
     : "",
 );
 setRuntimeContext(wrapperInfo);
+
+const wrapperBridge = getWrapperBridge(runtimeScope);
+if (wrapperInfo.mode !== "web" && wrapperBridge?.health) {
+  void wrapperBridge.health().catch((error) => {
+    // Non-fatal: wrapper bridge can recover after backend/plugin warmup.
+    // eslint-disable-next-line no-console
+    console.warn("[wrapper] initial health check failed", error);
+  });
+}
 
 if ("serviceWorker" in navigator && window.isSecureContext) {
   window.addEventListener("load", () => {

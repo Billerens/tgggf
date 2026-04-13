@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveApiUrl, waitForHealth } from "./backendSupervisor.js";
+import { resolveApiUrl, shouldRestart, waitForHealth } from "./backendSupervisor.js";
 
 describe("resolveApiUrl", () => {
   it("returns local api url", () => {
@@ -35,5 +35,22 @@ describe("waitForHealth", () => {
         fetchImpl,
       }),
     ).rejects.toThrow("timeout");
+  });
+});
+
+describe("shouldRestart", () => {
+  it("returns true while attempts are below limit within window", () => {
+    const now = 1_000;
+    expect(shouldRestart([950, 990], now, 3, 200)).toBe(true);
+  });
+
+  it("returns false when attempts reach limit within window", () => {
+    const now = 1_000;
+    expect(shouldRestart([900, 950, 980], now, 3, 200)).toBe(false);
+  });
+
+  it("ignores old attempts outside restart window", () => {
+    const now = 10_000;
+    expect(shouldRestart([1_000, 9_900], now, 2, 200)).toBe(true);
   });
 });

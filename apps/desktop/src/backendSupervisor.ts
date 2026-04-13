@@ -60,6 +60,11 @@ export interface BackendSupervisorConfig {
   nodeBinary?: string;
   startTimeoutMs?: number;
   pollIntervalMs?: number;
+  restartOnCrash?: boolean;
+  maxRestarts?: number;
+  restartWindowMs?: number;
+  restartDelayMs?: number;
+  onCrash?: (error: Error) => void;
 }
 
 export interface BackendSupervisor {
@@ -68,6 +73,20 @@ export interface BackendSupervisor {
   waitUntilReady(): Promise<void>;
   stop(): Promise<void>;
   isRunning(): boolean;
+}
+
+function nowMs() {
+  return Date.now();
+}
+
+export function shouldRestart(
+  attempts: number[],
+  now: number,
+  maxRestarts: number,
+  restartWindowMs: number,
+) {
+  const freshAttempts = attempts.filter((timestamp) => now - timestamp <= restartWindowMs);
+  return freshAttempts.length < maxRestarts;
 }
 
 export function createBackendSupervisor(config: BackendSupervisorConfig): BackendSupervisor {
@@ -79,36 +98,86 @@ export function createBackendSupervisor(config: BackendSupervisorConfig): Backen
     config.backendEntryPath || resolveDefaultBackendEntryPath();
   const startTimeoutMs = config.startTimeoutMs ?? 20_000;
   const pollIntervalMs = config.pollIntervalMs ?? 300;
+  const restartOnCrash = config.restartOnCrash ?? true;
+  const maxRestarts = config.maxRestarts ?? 5;
+  const restartWindowMs = config.restartWindowMs ?? 60_000;
+  const restartDelayMs = config.restartDelayMs ?? 1_000;
   const apiUrl = `http://${apiHost}:${apiPort}`;
   const healthUrl = `${apiUrl}${apiHealthPath}`;
 
   let child: ChildProcessWithoutNullStreams | null = null;
+  let stopRequested = false;
+  let restartAttempts: number[] = [];
+  let restartTimer: NodeJS.Timeout | null = null;
+
+  function clearRestartTimer() {
+    if (!restartTimer) return;
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+
+  function scheduleRestart(lastError: Error) {
+    if (!restartOnCrash || stopRequested) return;
+    const now = nowMs();
+    restartAttempts = restartAttempts.filter(
+      (timestamp) => now - timestamp <= restartWindowMs,
+    );
+    if (!shouldRestart(restartAttempts, now, maxRestarts, restartWindowMs)) {
+      config.onCrash?.(
+        new Error(
+          `Backend crashed too often (${restartAttempts.length}/${maxRestarts} in ${restartWindowMs}ms). Last error: ${lastError.message}`,
+        ),
+      );
+      return;
+    }
+
+    restartAttempts.push(now);
+    clearRestartTimer();
+    restartTimer = setTimeout(() => {
+      void startProcess();
+    }, restartDelayMs);
+  }
+
+  async function startProcess() {
+    if (child && !child.killed) return;
+    if (!existsSync(backendEntryPath)) {
+      throw new Error(
+        `Backend entry not found: ${backendEntryPath}. Run build:api before desktop start.`,
+      );
+    }
+
+    child = spawn(nodeBinary, [backendEntryPath], {
+      stdio: "pipe",
+      env: {
+        ...process.env,
+        API_PORT: String(apiPort),
+      },
+    });
+
+    child.stdout.on("data", (chunk) => {
+      process.stdout.write(`[desktop->api] ${String(chunk)}`);
+    });
+    child.stderr.on("data", (chunk) => {
+      process.stderr.write(`[desktop->api] ${String(chunk)}`);
+    });
+    child.on("exit", (code, signal) => {
+      const abnormal = !stopRequested && (code !== 0 || signal !== null);
+      child = null;
+      if (!abnormal) return;
+      const crashError = new Error(
+        `Backend process exited unexpectedly (code=${String(code)}, signal=${String(signal)})`,
+      );
+      config.onCrash?.(crashError);
+      scheduleRestart(crashError);
+    });
+  }
 
   return {
     apiUrl,
 
     async start() {
-      if (child && !child.killed) return;
-      if (!existsSync(backendEntryPath)) {
-        throw new Error(
-          `Backend entry not found: ${backendEntryPath}. Run build:api before desktop start.`,
-        );
-      }
-
-      child = spawn(nodeBinary, [backendEntryPath], {
-        stdio: "pipe",
-        env: {
-          ...process.env,
-          API_PORT: String(apiPort),
-        },
-      });
-
-      child.stdout.on("data", (chunk) => {
-        process.stdout.write(`[desktop->api] ${String(chunk)}`);
-      });
-      child.stderr.on("data", (chunk) => {
-        process.stderr.write(`[desktop->api] ${String(chunk)}`);
-      });
+      stopRequested = false;
+      await startProcess();
     },
 
     async waitUntilReady() {
@@ -119,6 +188,8 @@ export function createBackendSupervisor(config: BackendSupervisorConfig): Backen
     },
 
     async stop() {
+      stopRequested = true;
+      clearRestartTimer();
       if (!child) return;
       if (!child.killed) {
         child.kill();

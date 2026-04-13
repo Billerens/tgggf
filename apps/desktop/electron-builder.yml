@@ -1,0 +1,29 @@
+appId: com.tggf.desktop
+productName: tg-gf
+
+directories:
+  output: release
+
+files:
+  - dist/**
+  - package.json
+  - "!src/**"
+
+extraResources:
+  - from: ../../dist
+    to: dist
+  - from: ../api/dist
+    to: apps/api/dist
+
+win:
+  target:
+    - nsis
+
+mac:
+  target:
+    - dmg
+
+linux:
+  target:
+    - AppImage
+

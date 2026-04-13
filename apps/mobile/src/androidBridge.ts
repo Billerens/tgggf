@@ -10,8 +10,29 @@ export async function getAndroidLocalHealth() {
   return mapBridgeHealthPayload(payload);
 }
 
+export interface AndroidWrapperBridge {
+  mode: "android";
+  apiBaseUrl: string;
+  health(): ReturnType<typeof getAndroidLocalHealth>;
+}
+
+export function createAndroidWrapperBridge(
+  healthFn: () => ReturnType<typeof getAndroidLocalHealth> = getAndroidLocalHealth,
+): AndroidWrapperBridge {
+  return {
+    mode: "android",
+    apiBaseUrl: resolveAndroidApiBase(),
+    health: healthFn,
+  };
+}
+
+export function installAndroidWrapperBridge(
+  target: Record<string, unknown>,
+  healthFn: () => ReturnType<typeof getAndroidLocalHealth> = getAndroidLocalHealth,
+) {
+  target.tgWrapper = createAndroidWrapperBridge(healthFn);
+}
+
 if (process.env.NODE_ENV !== "test") {
-  // Placeholder for future Capacitor plugin wiring.
-  // eslint-disable-next-line no-console
-  console.log(`[mobile] android api base: ${resolveAndroidApiBase()}`);
+  installAndroidWrapperBridge(globalThis as unknown as Record<string, unknown>);
 }

@@ -7,6 +7,8 @@
     "dev": "npm run build && electron dist/main.js",
     "build": "tsc -p tsconfig.json",
     "start": "electron dist/main.js",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
     "test": "vitest run"
   },
   "dependencies": {
@@ -14,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "electron-builder": "^24.13.3",
     "typescript": "^5.9.3"
   }
 }
