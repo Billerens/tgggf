@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "tsx src/androidBridge.ts",
     "build": "tsc -p tsconfig.json",
-    "sync:android": "cap sync android",
+    "sync:android": "npx @capacitor/cli@6.1.2 sync android",
     "test": "vitest run"
   },
   "dependencies": {
+    "@capacitor/android": "^6.1.2",
     "@capacitor/core": "^6.1.2"
   },
   "devDependencies": {

@@ -1,0 +1,8 @@
+{
+  "appId": "com.tggf.app",
+  "appName": "tg-gf",
+  "webDir": "../../dist",
+  "android": {
+    "path": "android"
+  }
+}

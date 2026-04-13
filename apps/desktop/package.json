@@ -2,7 +2,10 @@
   "name": "@tg-gf/desktop",
   "private": true,
   "version": "0.1.0",
+  "description": "Desktop wrapper for tg-gf",
+  "author": "tg-gf",
   "type": "module",
+  "main": "dist/main.js",
   "scripts": {
     "dev": "npm run build && electron dist/main.js",
     "build": "tsc -p tsconfig.json",
@@ -12,10 +15,11 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "electron": "^31.7.7"
+    "7zip-bin": "^5.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
+    "electron": "31.7.7",
     "electron-builder": "^24.13.3",
     "typescript": "^5.9.3"
   }
