@@ -4,4 +4,8 @@
     <string name="title_activity_main">tg-gf</string>
     <string name="package_name">com.tggf.app</string>
     <string name="custom_url_scheme">com.tggf.app</string>
+    <string name="foreground_service_channel_name">tg-gf background service</string>
+    <string name="foreground_service_channel_description">Keeps local background logic running while app is active on device.</string>
+    <string name="foreground_service_notification_title">tg-gf is running in background</string>
+    <string name="foreground_service_notification_text">Local backend and sync logic stay available while this notification is visible.</string>
 </resources>
