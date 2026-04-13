@@ -1,0 +1,44 @@
+name: Desktop Build
+
+on:
+  push:
+    branches:
+      - master
+      - main
+      - codex/**
+  pull_request:
+
+jobs:
+  desktop:
+    name: desktop-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build desktop package (unpacked)
+        run: npm run pack:desktop
+
+      - name: Upload desktop artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: apps/desktop/release/**
+          if-no-files-found: error
