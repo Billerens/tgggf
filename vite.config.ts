@@ -32,6 +32,11 @@ export default defineConfig({
         secure: false,
         rewrite: (path) => path.replace(/^\/comfyloc/, ""),
       },
+      "/api/": {
+        target: "http://127.0.0.1:8787",
+        changeOrigin: false,
+        secure: false,
+      },
     },
   },
   preview: {

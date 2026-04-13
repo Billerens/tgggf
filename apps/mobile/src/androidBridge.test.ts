@@ -6,4 +6,3 @@ describe("resolveAndroidApiBase", () => {
     expect(resolveAndroidApiBase()).toBe("bridge://api");
   });
 });
-

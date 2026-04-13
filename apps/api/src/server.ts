@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import fastifyCors from "@fastify/cors";
 import { createRepository, type Repository } from "./db/repository.js";
 import { createScheduler, type Scheduler } from "./worker/scheduler.js";
 
@@ -25,6 +26,10 @@ export async function buildServer(options: BuildServerOptions = {}) {
   }
 
   const app = Fastify();
+  await app.register(fastifyCors, {
+    origin: true,
+    credentials: true,
+  });
 
   app.get("/api/health", async () => {
     const repoHealth = await repository.healthcheck();
@@ -56,4 +61,3 @@ export async function startServer() {
 if (process.env.NODE_ENV !== "test") {
   void startServer();
 }
-

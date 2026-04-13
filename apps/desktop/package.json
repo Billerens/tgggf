@@ -4,14 +4,16 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/main.ts",
+    "dev": "npm run build && electron dist/main.js",
     "build": "tsc -p tsconfig.json",
+    "start": "electron dist/main.js",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "electron": "^31.7.7"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
-    "tsx": "^4.19.4",
     "typescript": "^5.9.3"
   }
 }
-
