@@ -22,5 +22,14 @@ describe("wrapper bridge", () => {
     const info = getWrapperInfo({});
     expect(info.mode).toBe("web");
   });
-});
 
+  it("detects android mode from Capacitor when bridge is missing", () => {
+    const info = getWrapperInfo({
+      Capacitor: {
+        getPlatform: () => "android",
+      },
+    });
+    expect(info.mode).toBe("android");
+    expect(info.apiBaseUrl).toBe("bridge://api");
+  });
+});

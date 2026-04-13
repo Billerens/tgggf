@@ -10,22 +10,13 @@ const rootDir = path.resolve(__dirname, "..");
 const mobileAndroidDir = path.join(rootDir, "apps", "mobile", "android");
 const npmCommand = "npm";
 const gradleCommand = process.platform === "win32" ? "gradlew.bat" : "./gradlew";
-const debugApkSource = path.join(
-  mobileAndroidDir,
-  "app",
-  "build",
-  "outputs",
-  "apk",
-  "debug",
-  "app-debug.apk",
-);
-const debugApkTarget = path.join(
-  rootDir,
-  "dist",
-  "downloads",
-  "android",
-  "tg-gf-android-debug.apk",
-);
+const modeArg = process.argv.find((arg) => arg.startsWith("--mode="));
+const mode = modeArg ? modeArg.split("=")[1] : "debug";
+if (mode !== "debug" && mode !== "prod") {
+  console.error(`Unsupported mobile build mode: ${mode}`);
+  process.exit(1);
+}
+const isProd = mode === "prod";
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -85,22 +76,73 @@ async function resolveAndroidJavaHome() {
 }
 
 async function copyDebugApkToDist() {
-  if (!(await pathExists(debugApkSource))) {
-    throw new Error(`Android debug APK not found: ${debugApkSource}`);
+  const apkSources = isProd
+    ? [
+        path.join(
+          mobileAndroidDir,
+          "app",
+          "build",
+          "outputs",
+          "apk",
+          "release",
+          "app-release.apk",
+        ),
+        path.join(
+          mobileAndroidDir,
+          "app",
+          "build",
+          "outputs",
+          "apk",
+          "release",
+          "app-release-unsigned.apk",
+        ),
+      ]
+    : [
+        path.join(
+          mobileAndroidDir,
+          "app",
+          "build",
+          "outputs",
+          "apk",
+          "debug",
+          "app-debug.apk",
+        ),
+      ];
+  const apkSource = await (async () => {
+    for (const candidate of apkSources) {
+      if (await pathExists(candidate)) return candidate;
+    }
+    return null;
+  })();
+
+  if (!apkSource) {
+    throw new Error(
+      `Android ${mode} APK not found. Checked:\n${apkSources.join("\n")}`,
+    );
   }
 
-  await fs.mkdir(path.dirname(debugApkTarget), { recursive: true });
-  await fs.copyFile(debugApkSource, debugApkTarget);
+  const apkTarget = path.join(
+    rootDir,
+    "dist",
+    "downloads",
+    "android",
+    isProd ? "tg-gf-android-release.apk" : "tg-gf-android-debug.apk",
+  );
+  await fs.mkdir(path.dirname(apkTarget), { recursive: true });
+  await fs.copyFile(apkSource, apkTarget);
   console.log(
-    `-> Copied Android debug APK to ${path.relative(rootDir, debugApkTarget).replace(/\\/g, "/")}`,
+    `-> Copied Android ${mode} APK to ${path.relative(rootDir, apkTarget).replace(/\\/g, "/")}`,
   );
 }
 
 async function main() {
+  console.log(`-> Building web bundle (${mode} profile for Android)`);
+  await run(npmCommand, ["run", isProd ? "build:web" : "build:web:mobile-debug"]);
+
   console.log("-> Syncing Android project");
   await run(npmCommand, ["run", "sync:android", "--workspace", "@tg-gf/mobile"]);
 
-  console.log("-> Building Android debug APK");
+  console.log(`-> Building Android ${mode} APK`);
   const androidJavaHome = await resolveAndroidJavaHome();
   const androidBuildEnv = { ...process.env };
   if (androidJavaHome) {
@@ -113,7 +155,7 @@ async function main() {
     console.log(`-> Using JAVA_HOME for Android build: ${androidJavaHome}`);
   }
 
-  await run(gradleCommand, ["assembleDebug"], {
+  await run(gradleCommand, [isProd ? "assembleRelease" : "assembleDebug"], {
     cwd: mobileAndroidDir,
     env: androidBuildEnv,
   });

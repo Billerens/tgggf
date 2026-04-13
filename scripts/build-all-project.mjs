@@ -8,6 +8,13 @@ const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 
 const npmCommand = "npm";
+const modeArg = process.argv.find((arg) => arg.startsWith("--mode="));
+const mode = modeArg ? modeArg.split("=")[1] : "debug";
+if (mode !== "debug" && mode !== "prod") {
+  console.error(`Unsupported build mode: ${mode}`);
+  process.exit(1);
+}
+const isProd = mode === "prod";
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -30,8 +37,10 @@ function run(command, args, options = {}) {
 }
 
 async function main() {
+  console.log(`-> Building all parts in ${mode} mode`);
+
   console.log("-> Building web frontend");
-  await run(npmCommand, ["run", "build:web"]);
+  await run(npmCommand, ["run", isProd ? "build:web" : "build:web:debug"]);
 
   console.log("-> Building API");
   await run(npmCommand, ["run", "build:api"]);
@@ -40,13 +49,30 @@ async function main() {
   await run(npmCommand, ["run", "build:desktop"]);
 
   console.log("-> Building mobile wrapper");
-  await run(npmCommand, ["run", "build:mobile"]);
+  await run(npmCommand, ["run", isProd ? "build:mobile:prod" : "build:mobile"]);
 
   console.log("-> Building desktop installer artifact");
-  await run(npmCommand, ["run", "dist", "--workspace", "@tg-gf/desktop"]);
+  await run(npmCommand, [
+    "run",
+    isProd ? "dist:prod" : "dist:debug",
+    "--workspace",
+    "@tg-gf/desktop",
+  ]);
 
   console.log("-> Copying runtime artifacts to dist/downloads");
-  await run(process.execPath, [path.join(rootDir, "scripts", "copy-runtime-artifacts-to-dist.mjs")]);
+  await run(
+    process.execPath,
+    [
+      path.join(rootDir, "scripts", "copy-runtime-artifacts-to-dist.mjs"),
+      `--mode=${mode}`,
+    ],
+    {
+      env: {
+        ...process.env,
+        TG_BUILD_PROFILE: mode,
+      },
+    },
+  );
 }
 
 main().catch((error) => {

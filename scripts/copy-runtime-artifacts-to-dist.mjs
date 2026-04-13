@@ -7,6 +7,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
 const distDir = path.join(rootDir, "dist");
+const modeArg = process.argv.find((arg) => arg.startsWith("--mode="));
+const mode = modeArg ? modeArg.split("=")[1] : process.env.TG_BUILD_PROFILE || "debug";
+const isProd = mode === "prod";
 
 const WINDOWS_TARGET = path.join(
   distDir,
@@ -81,19 +84,53 @@ async function resolveWindowsSource() {
 }
 
 async function resolveAndroidSource() {
-  const sourcePath = path.join(
-    rootDir,
-    "apps",
-    "mobile",
-    "android",
-    "app",
-    "build",
-    "outputs",
-    "apk",
-    "debug",
-    "app-debug.apk",
-  );
-  return (await pathExists(sourcePath)) ? sourcePath : null;
+  const candidates = isProd
+    ? [
+        path.join(
+          rootDir,
+          "apps",
+          "mobile",
+          "android",
+          "app",
+          "build",
+          "outputs",
+          "apk",
+          "release",
+          "app-release.apk",
+        ),
+        path.join(
+          rootDir,
+          "apps",
+          "mobile",
+          "android",
+          "app",
+          "build",
+          "outputs",
+          "apk",
+          "release",
+          "app-release-unsigned.apk",
+        ),
+      ]
+    : [
+        path.join(
+          rootDir,
+          "apps",
+          "mobile",
+          "android",
+          "app",
+          "build",
+          "outputs",
+          "apk",
+          "debug",
+          "app-debug.apk",
+        ),
+      ];
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 async function copyFileToTarget(sourcePath, targetPath) {
@@ -128,15 +165,34 @@ async function main() {
 
   const androidSource = await resolveAndroidSource();
   if (androidSource) {
-    await copyFileToTarget(androidSource, ANDROID_TARGET);
+    const androidTarget = isProd
+      ? path.join(distDir, "downloads", "android", "tg-gf-android-release.apk")
+      : ANDROID_TARGET;
+    await copyFileToTarget(androidSource, androidTarget);
     console.log(
-      `[artifact-copy] android -> ${path.relative(rootDir, ANDROID_TARGET).replace(/\\/g, "/")}`,
+      `[artifact-copy] android -> ${path.relative(rootDir, androidTarget).replace(/\\/g, "/")}`,
     );
+    if (isProd) {
+      await removeTargetIfExists(ANDROID_TARGET);
+    } else {
+      const releaseTarget = path.join(
+        distDir,
+        "downloads",
+        "android",
+        "tg-gf-android-release.apk",
+      );
+      await removeTargetIfExists(releaseTarget);
+    }
   } else {
     await removeTargetIfExists(ANDROID_TARGET);
-    console.log(
-      "[artifact-copy] android source not found (app-debug.apk). Skipped.",
+    const releaseTarget = path.join(
+      distDir,
+      "downloads",
+      "android",
+      "tg-gf-android-release.apk",
     );
+    await removeTargetIfExists(releaseTarget);
+    console.log("[artifact-copy] android source not found. Skipped.");
   }
 }
 

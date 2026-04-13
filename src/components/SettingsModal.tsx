@@ -18,6 +18,7 @@ import type {
   ModelRoutingTask,
   ToolCallingCapabilityStatus,
 } from "../lmstudio";
+import type { RuntimeMode } from "../platform/runtimeMode";
 import { Dropdown } from "./Dropdown";
 import type {
   BackupExportFormat,
@@ -34,10 +35,15 @@ type ToolCapabilityMatrixStatus =
 
 interface SettingsModalProps {
   open: boolean;
+  runtimeMode: RuntimeMode;
   settingsDraft: AppSettings;
   pwaInstallStatus: PwaInstallStatus;
   windowsArtifactUrl: string;
   androidArtifactUrl: string;
+  foregroundServiceLoading: boolean;
+  foregroundServiceEnabled: boolean;
+  foregroundServiceRunning: boolean;
+  foregroundServiceError: string | null;
   availableModelsByProvider: Record<LlmProvider, string[]>;
   modelsLoadingByProvider: Record<LlmProvider, boolean>;
   toolCapabilityMatrix: Array<{
@@ -68,6 +74,8 @@ interface SettingsModalProps {
   exportDownloadFileName: string | null;
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
   onInstallPwa: () => void;
+  onRefreshForegroundService: () => void;
+  onToggleForegroundService: (enabled: boolean) => void;
   onRefreshModels: (provider: LlmProvider) => void;
   onCheckToolCapability: (task: ModelRoutingTask) => void;
   onCheckAllToolCapabilities: () => void;
@@ -283,10 +291,15 @@ function AuthSettingsSection({
 
 export function SettingsModal({
   open,
+  runtimeMode,
   settingsDraft,
   pwaInstallStatus,
   windowsArtifactUrl,
   androidArtifactUrl,
+  foregroundServiceLoading,
+  foregroundServiceEnabled,
+  foregroundServiceRunning,
+  foregroundServiceError,
   availableModelsByProvider,
   modelsLoadingByProvider,
   toolCapabilityMatrix,
@@ -308,6 +321,8 @@ export function SettingsModal({
   exportDownloadFileName,
   setSettingsDraft,
   onInstallPwa,
+  onRefreshForegroundService,
+  onToggleForegroundService,
   onRefreshModels,
   onCheckToolCapability,
   onCheckAllToolCapabilities,
@@ -666,6 +681,71 @@ export function SettingsModal({
                     Скачать Android
                   </a>
                 </div>
+              </div>
+              <div className="persona-section">
+                <h5>Android фоновый режим</h5>
+                {runtimeMode !== "android" ? (
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    Этот блок доступен только внутри Android-приложения.
+                  </small>
+                ) : (
+                  <>
+                    <label className="checkbox-row">
+                      <input
+                        type="checkbox"
+                        checked={foregroundServiceEnabled}
+                        disabled={foregroundServiceLoading}
+                        onChange={(event) =>
+                          onToggleForegroundService(event.target.checked)
+                        }
+                      />
+                      Держать приложение активным в фоне (постоянная нотификация)
+                    </label>
+                    <div className="inline-row">
+                      <button
+                        type="button"
+                        onClick={onRefreshForegroundService}
+                        disabled={foregroundServiceLoading}
+                      >
+                        <RefreshCw
+                          size={14}
+                          className={foregroundServiceLoading ? "spin" : ""}
+                        />
+                        Обновить статус
+                      </button>
+                      <small style={{ color: "var(--text-secondary)" }}>
+                        Статус:{" "}
+                        {foregroundServiceRunning ? "сервис запущен" : "сервис остановлен"}
+                      </small>
+                    </div>
+                    {foregroundServiceError ? (
+                      <small style={{ color: "var(--danger)" }}>
+                        {foregroundServiceError}
+                      </small>
+                    ) : null}
+                    <div className="android-battery-hints">
+                      <strong>Подсказки по отключению ограничений батареи:</strong>
+                      <ol>
+                        <li>
+                          Откройте системные настройки: Приложения → tg-gf →
+                          Батарея.
+                        </li>
+                        <li>
+                          Включите режим без ограничений:
+                          <span> Unrestricted / No restrictions / Не ограничивать.</span>
+                        </li>
+                        <li>
+                          Добавьте tg-gf в исключения энергосбережения:
+                          <span> Battery optimization → Don&apos;t optimize.</span>
+                        </li>
+                        <li>
+                          Для MIUI/HyperOS, ColorOS, EMUI, OneUI:
+                          <span> включите Autostart и добавьте в Never sleeping apps.</span>
+                        </li>
+                      </ol>
+                    </div>
+                  </>
+                )}
               </div>
             </>
           ) : null}

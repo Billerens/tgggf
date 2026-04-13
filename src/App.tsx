@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import type {
   GeneratedPersonaDraft,
@@ -49,6 +49,10 @@ import { usePersonaLookActions } from "./features/look/usePersonaLookActions";
 import { usePersonaDraftActions } from "./features/persona-editor/usePersonaDraftActions";
 import { useAppInstallPrompt } from "./features/settings/useAppInstallPrompt";
 import { useModelCheckpointCatalog } from "./features/settings/useModelCheckpointCatalog";
+import {
+  getForegroundServiceStatus,
+  setForegroundServiceEnabled,
+} from "./features/mobile/foregroundService";
 import { useGroupStore } from "./groupStore";
 import {
   buildBackupPayload,
@@ -60,6 +64,7 @@ import {
   parseBackupFile,
 } from "./features/backup/dataTransfer";
 import { useGoogleDriveBackupSync } from "./features/backup/useGoogleDriveBackupSync";
+import { getRuntimeContext } from "./platform/runtimeContext";
 import type { ChatSession, LlmProvider } from "./types";
 
 type ToolCapabilityMatrixStatus =
@@ -94,6 +99,13 @@ interface ToolCapabilityRowState {
   checkedAt?: string;
   reason?: string;
   fromCache?: boolean;
+}
+
+interface ForegroundServiceUiState {
+  loading: boolean;
+  enabled: boolean;
+  running: boolean;
+  error: string | null;
 }
 
 const DEFAULT_WINDOWS_ARTIFACT_URL =
@@ -213,6 +225,15 @@ export default function App() {
   const [dataTransferMessage, setDataTransferMessage] = useState<string | null>(
     null,
   );
+  const runtimeMode = getRuntimeContext().mode;
+  const isAndroidRuntime = runtimeMode === "android";
+  const [foregroundServiceState, setForegroundServiceState] =
+    useState<ForegroundServiceUiState>({
+      loading: false,
+      enabled: true,
+      running: false,
+      error: null,
+    });
   const [readyExportFile, setReadyExportFile] = useState<{
     fileName: string;
     url: string;
@@ -294,6 +315,57 @@ export default function App() {
       ? import.meta.env.VITE_ANDROID_ARTIFACT_URL
       : ""
     ).trim() || DEFAULT_ANDROID_ARTIFACT_URL;
+  const refreshForegroundService = useCallback(async () => {
+    if (!isAndroidRuntime) return;
+    setForegroundServiceState((prev) => ({
+      ...prev,
+      loading: true,
+      error: null,
+    }));
+    try {
+      const status = await getForegroundServiceStatus();
+      setForegroundServiceState({
+        loading: false,
+        enabled: status.enabled,
+        running: status.running,
+        error: null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setForegroundServiceState((prev) => ({
+        ...prev,
+        loading: false,
+        error: message,
+      }));
+    }
+  }, [isAndroidRuntime]);
+  const toggleForegroundService = useCallback(
+    async (enabled: boolean) => {
+      if (!isAndroidRuntime) return;
+      setForegroundServiceState((prev) => ({
+        ...prev,
+        loading: true,
+        error: null,
+      }));
+      try {
+        const status = await setForegroundServiceEnabled(enabled);
+        setForegroundServiceState({
+          loading: false,
+          enabled: status.enabled,
+          running: status.running,
+          error: null,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setForegroundServiceState((prev) => ({
+          ...prev,
+          loading: false,
+          error: message,
+        }));
+      }
+    },
+    [isAndroidRuntime],
+  );
   const {
     availableModels,
     availableModelsByProvider,
@@ -596,6 +668,11 @@ export default function App() {
       cancelled = true;
     };
   }, [showSettingsModal]);
+
+  useEffect(() => {
+    if (!showSettingsModal || !isAndroidRuntime) return;
+    void refreshForegroundService();
+  }, [showSettingsModal, isAndroidRuntime, refreshForegroundService]);
 
   useEffect(() => {
     return () => {
@@ -1020,10 +1097,15 @@ export default function App() {
 
         <SettingsModal
           open={showSettingsModal}
+          runtimeMode={runtimeMode}
           settingsDraft={settingsDraft}
           pwaInstallStatus={pwaInstallStatus}
           windowsArtifactUrl={windowsArtifactUrl}
           androidArtifactUrl={androidArtifactUrl}
+          foregroundServiceLoading={foregroundServiceState.loading}
+          foregroundServiceEnabled={foregroundServiceState.enabled}
+          foregroundServiceRunning={foregroundServiceState.running}
+          foregroundServiceError={foregroundServiceState.error}
           availableModelsByProvider={availableModelsByProvider}
           modelsLoadingByProvider={modelsLoadingByProvider}
           toolCapabilityMatrix={toolCapabilityMatrix}
@@ -1045,6 +1127,12 @@ export default function App() {
           exportDownloadFileName={readyExportFile?.fileName ?? null}
           setSettingsDraft={setSettingsDraft}
           onInstallPwa={() => void onInstallPwa()}
+          onRefreshForegroundService={() => {
+            void refreshForegroundService();
+          }}
+          onToggleForegroundService={(enabled) => {
+            void toggleForegroundService(enabled);
+          }}
           onRefreshModels={(provider) => {
             const target = resolveProviderModelCatalogTarget(
               settingsDraft,
