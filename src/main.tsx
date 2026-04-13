@@ -1,7 +1,17 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { setRuntimeContext } from "./platform/runtimeContext";
+import { getWrapperInfo } from "./platform/wrapperBridge";
 import "./styles.css";
+
+const wrapperInfo = getWrapperInfo(
+  globalThis as unknown as Record<string, unknown>,
+  typeof import.meta.env.VITE_BACKEND_URL === "string"
+    ? import.meta.env.VITE_BACKEND_URL
+    : "",
+);
+setRuntimeContext(wrapperInfo);
 
 if ("serviceWorker" in navigator && window.isSecureContext) {
   window.addEventListener("load", () => {
