@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -64,6 +64,7 @@ export interface BackendSupervisorConfig {
   maxRestarts?: number;
   restartWindowMs?: number;
   restartDelayMs?: number;
+  onLog?: (entry: { level: "info" | "error"; message: string }) => void;
   onCrash?: (error: Error) => void;
 }
 
@@ -73,6 +74,14 @@ export interface BackendSupervisor {
   waitUntilReady(): Promise<void>;
   stop(): Promise<void>;
   isRunning(): boolean;
+}
+
+export function shouldForceElectronRunAsNode(nodeBinary: string) {
+  return (
+    Boolean(process.versions.electron) &&
+    nodeBinary === process.execPath &&
+    process.env.ELECTRON_RUN_AS_NODE !== "1"
+  );
 }
 
 function nowMs() {
@@ -102,10 +111,14 @@ export function createBackendSupervisor(config: BackendSupervisorConfig): Backen
   const maxRestarts = config.maxRestarts ?? 5;
   const restartWindowMs = config.restartWindowMs ?? 60_000;
   const restartDelayMs = config.restartDelayMs ?? 1_000;
+  const shouldForwardApiLogs =
+    process.env.TG_DESKTOP_FORWARD_API_LOGS === "1" ||
+    process.env.NODE_ENV === "development";
+  const captureApiLogs = shouldForwardApiLogs || Boolean(config.onLog);
   const apiUrl = `http://${apiHost}:${apiPort}`;
   const healthUrl = `${apiUrl}${apiHealthPath}`;
 
-  let child: ChildProcessWithoutNullStreams | null = null;
+  let child: ChildProcess | null = null;
   let stopRequested = false;
   let restartAttempts: number[] = [];
   let restartTimer: NodeJS.Timeout | null = null;
@@ -114,6 +127,18 @@ export function createBackendSupervisor(config: BackendSupervisorConfig): Backen
     if (!restartTimer) return;
     clearTimeout(restartTimer);
     restartTimer = null;
+  }
+
+  function emitLog(level: "info" | "error", message: string) {
+    config.onLog?.({ level, message });
+    if (!shouldForwardApiLogs) return;
+    if (level === "error") {
+      // eslint-disable-next-line no-console
+      console.error(`[desktop->api] ${message}`);
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[desktop->api] ${message}`);
   }
 
   function scheduleRestart(lastError: Error) {
@@ -147,18 +172,42 @@ export function createBackendSupervisor(config: BackendSupervisorConfig): Backen
     }
 
     child = spawn(nodeBinary, [backendEntryPath], {
-      stdio: "pipe",
+      stdio: captureApiLogs ? "pipe" : "ignore",
       env: {
         ...process.env,
         API_PORT: String(apiPort),
+        ...(shouldForceElectronRunAsNode(nodeBinary)
+          ? { ELECTRON_RUN_AS_NODE: "1" }
+          : {}),
       },
     });
+    emitLog(
+      "info",
+      `spawn pid=${String(child.pid)} nodeBinary="${nodeBinary}" entry="${backendEntryPath}"`,
+    );
 
-    child.stdout.on("data", (chunk) => {
-      process.stdout.write(`[desktop->api] ${String(chunk)}`);
-    });
-    child.stderr.on("data", (chunk) => {
-      process.stderr.write(`[desktop->api] ${String(chunk)}`);
+    if (captureApiLogs && child.stdout) {
+      child.stdout.on("data", (chunk) => {
+        const rawText = String(chunk);
+        for (const line of rawText.split(/\r?\n/)) {
+          const message = line.trimEnd();
+          if (!message) continue;
+          emitLog("info", message);
+        }
+      });
+    }
+    if (captureApiLogs && child.stderr) {
+      child.stderr.on("data", (chunk) => {
+        const rawText = String(chunk);
+        for (const line of rawText.split(/\r?\n/)) {
+          const message = line.trimEnd();
+          if (!message) continue;
+          emitLog("error", message);
+        }
+      });
+    }
+    child.on("error", (error) => {
+      emitLog("error", `process error: ${error.message}`);
     });
     child.on("exit", (code, signal) => {
       const abnormal = !stopRequested && (code !== 0 || signal !== null);
@@ -167,6 +216,7 @@ export function createBackendSupervisor(config: BackendSupervisorConfig): Backen
       const crashError = new Error(
         `Backend process exited unexpectedly (code=${String(code)}, signal=${String(signal)})`,
       );
+      emitLog("error", crashError.message);
       config.onCrash?.(crashError);
       scheduleRestart(crashError);
     });

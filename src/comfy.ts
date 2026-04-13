@@ -4,6 +4,7 @@ import type {
   ImageGenerationMeta,
 } from "./types";
 import { DEFAULT_SETTINGS, dbApi } from "./db";
+import { getRuntimeContext } from "./platform/runtimeContext";
 
 interface ComfyNode {
   class_type?: string;
@@ -217,6 +218,52 @@ function getComfyBaseUrl(overrideBaseUrl?: string) {
 
 function getFlowConfig(flow: ComfyFlow): ComfyFlowConfig {
   return FLOW_CONFIGS[flow];
+}
+
+function isLocalhostComfyUrl(baseUrl: string) {
+  try {
+    const parsed = new URL(baseUrl);
+    return (
+      parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "::1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizeComfyError(error: unknown, baseUrl: string): Error {
+  if (!(error instanceof Error)) {
+    return new Error(String(error));
+  }
+
+  const isNetworkFetchError = /(failed to fetch|networkerror|load failed)/i.test(
+    error.message,
+  );
+  if (!isNetworkFetchError) {
+    return error;
+  }
+
+  const mode = getRuntimeContext().mode;
+  if (mode !== "android") {
+    return new Error(
+      `Не удалось подключиться к ComfyUI (${baseUrl}). Исходная ошибка: ${error.message}`,
+    );
+  }
+
+  const hints = [
+    `Не удалось подключиться к ComfyUI (${baseUrl}) из Android WebView.`,
+  ];
+  if (isLocalhostComfyUrl(baseUrl)) {
+    hints.push(
+      "Локальный localhost недоступен с Android устройства.",
+      "Для эмулятора укажи http://10.0.2.2:8188, для физического устройства — LAN IP компьютера (например http://192.168.x.x:8188).",
+    );
+  }
+  hints.push(`Исходная ошибка: ${error.message}`);
+
+  return new Error(hints.join(" "));
 }
 
 function encodeBase64(value: string) {
@@ -1901,12 +1948,11 @@ export async function generateComfyImages(
       resultUrls.push(...imageUrls);
     }
   } catch (error) {
+    await stopComfyExecution(baseUrl, auth);
     if (error instanceof DOMException && error.name === "AbortError") {
-      await stopComfyExecution(baseUrl, auth);
-    } else {
-      await stopComfyExecution(baseUrl, auth);
+      throw error;
     }
-    throw error;
+    throw normalizeComfyError(error, baseUrl);
   }
 
   return Array.from(new Set(resultUrls));

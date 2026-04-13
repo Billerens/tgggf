@@ -36,6 +36,8 @@ interface SettingsModalProps {
   open: boolean;
   settingsDraft: AppSettings;
   pwaInstallStatus: PwaInstallStatus;
+  windowsArtifactUrl: string;
+  androidArtifactUrl: string;
   availableModelsByProvider: Record<LlmProvider, string[]>;
   modelsLoadingByProvider: Record<LlmProvider, boolean>;
   toolCapabilityMatrix: Array<{
@@ -283,6 +285,8 @@ export function SettingsModal({
   open,
   settingsDraft,
   pwaInstallStatus,
+  windowsArtifactUrl,
+  androidArtifactUrl,
   availableModelsByProvider,
   modelsLoadingByProvider,
   toolCapabilityMatrix,
@@ -642,6 +646,25 @@ export function SettingsModal({
                   >
                     Установить PWA
                   </button>
+                </div>
+                <small style={{ color: "var(--text-secondary)", display: "block", marginTop: 8 }}>
+                  Готовые сборки:
+                </small>
+                <div className="settings-artifact-links">
+                  <a
+                    className="button-link"
+                    href={windowsArtifactUrl}
+                    download="tg-gf-windows.exe"
+                  >
+                    Скачать Windows
+                  </a>
+                  <a
+                    className="button-link"
+                    href={androidArtifactUrl}
+                    download="tg-gf-android-debug.apk"
+                  >
+                    Скачать Android
+                  </a>
                 </div>
               </div>
             </>

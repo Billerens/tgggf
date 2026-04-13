@@ -10,8 +10,12 @@
     "dev": "npm run build && electron dist/main.js",
     "build": "tsc -p tsconfig.json",
     "start": "electron dist/main.js",
-    "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
+    "pack": "npm run pack:debug",
+    "pack:debug": "npm run build && node ../../scripts/desktop-electron-builder-debug.mjs --dir",
+    "pack:prod": "npm run build && electron-builder --dir",
+    "dist": "npm run dist:debug",
+    "dist:debug": "npm run build && node ../../scripts/desktop-electron-builder-debug.mjs",
+    "dist:prod": "npm run build && electron-builder",
     "test": "vitest run"
   },
   "dependencies": {

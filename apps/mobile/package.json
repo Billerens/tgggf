@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/androidBridge.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:ts && node ../../scripts/build-mobile-debug.mjs",
+    "build:ts": "tsc -p tsconfig.json",
     "sync:android": "npx @capacitor/cli@6.1.2 sync android",
     "test": "vitest run"
   },

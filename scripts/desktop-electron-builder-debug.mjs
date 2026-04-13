@@ -6,14 +6,12 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, "..");
-
-const npmCommand = "npm";
+const desktopDir = path.join(rootDir, "apps", "desktop");
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: "inherit",
-      cwd: rootDir,
       shell: process.platform === "win32",
       ...options,
     });
@@ -30,23 +28,19 @@ function run(command, args, options = {}) {
 }
 
 async function main() {
-  console.log("-> Building web frontend");
-  await run(npmCommand, ["run", "build:web"]);
-
-  console.log("-> Building API");
-  await run(npmCommand, ["run", "build:api"]);
-
-  console.log("-> Building desktop wrapper");
-  await run(npmCommand, ["run", "build:desktop"]);
-
-  console.log("-> Building mobile wrapper");
-  await run(npmCommand, ["run", "build:mobile"]);
-
-  console.log("-> Building desktop installer artifact");
-  await run(npmCommand, ["run", "dist", "--workspace", "@tg-gf/desktop"]);
-
-  console.log("-> Copying runtime artifacts to dist/downloads");
-  await run(process.execPath, [path.join(rootDir, "scripts", "copy-runtime-artifacts-to-dist.mjs")]);
+  const builderArgs = process.argv.slice(2);
+  await run(
+    "npm",
+    ["exec", "electron-builder", "--", ...builderArgs],
+    {
+      cwd: desktopDir,
+      env: {
+        ...process.env,
+        NODE_ENV: "development",
+        TG_DESKTOP_DEBUG: "1",
+      },
+    },
+  );
 }
 
 main().catch((error) => {

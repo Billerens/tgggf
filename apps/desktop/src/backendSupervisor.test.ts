@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { resolveApiUrl, shouldRestart, waitForHealth } from "./backendSupervisor.js";
+import {
+  resolveApiUrl,
+  shouldForceElectronRunAsNode,
+  shouldRestart,
+  waitForHealth,
+} from "./backendSupervisor.js";
 
 describe("resolveApiUrl", () => {
   it("returns local api url", () => {
@@ -52,5 +57,13 @@ describe("shouldRestart", () => {
   it("ignores old attempts outside restart window", () => {
     const now = 10_000;
     expect(shouldRestart([1_000, 9_900], now, 2, 200)).toBe(true);
+  });
+});
+
+describe("shouldForceElectronRunAsNode", () => {
+  it("returns false for non-electron node binaries", () => {
+    expect(shouldForceElectronRunAsNode("C:/Program Files/nodejs/node.exe")).toBe(
+      false,
+    );
   });
 });

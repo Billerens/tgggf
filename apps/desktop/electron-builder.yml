@@ -8,6 +8,7 @@ directories:
 
 files:
   - dist/**
+  - preload.cjs
   - package.json
   - "!src/**"
 
@@ -16,6 +17,8 @@ extraResources:
     to: dist
   - from: ../api/dist
     to: apps/api/dist
+  - from: ../api/package.json
+    to: apps/api/package.json
 
 win:
   signAndEditExecutable: false

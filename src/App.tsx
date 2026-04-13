@@ -96,6 +96,11 @@ interface ToolCapabilityRowState {
   fromCache?: boolean;
 }
 
+const DEFAULT_WINDOWS_ARTIFACT_URL =
+  "./downloads/windows/tg-gf-windows.exe";
+const DEFAULT_ANDROID_ARTIFACT_URL =
+  "./downloads/android/tg-gf-android-debug.apk";
+
 const TOOL_CAPABILITY_ROLE_CONFIGS: ToolCapabilityRoleConfig[] = [
   {
     task: "one_to_one_chat",
@@ -279,6 +284,16 @@ export default function App() {
   }, [settings]);
 
   const { pwaInstallStatus, onInstallPwa } = useAppInstallPrompt();
+  const windowsArtifactUrl =
+    (typeof import.meta.env.VITE_WINDOWS_ARTIFACT_URL === "string"
+      ? import.meta.env.VITE_WINDOWS_ARTIFACT_URL
+      : ""
+    ).trim() || DEFAULT_WINDOWS_ARTIFACT_URL;
+  const androidArtifactUrl =
+    (typeof import.meta.env.VITE_ANDROID_ARTIFACT_URL === "string"
+      ? import.meta.env.VITE_ANDROID_ARTIFACT_URL
+      : ""
+    ).trim() || DEFAULT_ANDROID_ARTIFACT_URL;
   const {
     availableModels,
     availableModelsByProvider,
@@ -1007,6 +1022,8 @@ export default function App() {
           open={showSettingsModal}
           settingsDraft={settingsDraft}
           pwaInstallStatus={pwaInstallStatus}
+          windowsArtifactUrl={windowsArtifactUrl}
+          androidArtifactUrl={androidArtifactUrl}
           availableModelsByProvider={availableModelsByProvider}
           modelsLoadingByProvider={modelsLoadingByProvider}
           toolCapabilityMatrix={toolCapabilityMatrix}

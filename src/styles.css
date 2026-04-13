@@ -1606,6 +1606,12 @@ select:focus,
   flex-direction: column;
   gap: 6px;
 }
+.settings-artifact-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 .settings-table-scroll {
   width: 100%;
   overflow-x: auto;

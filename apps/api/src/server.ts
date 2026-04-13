@@ -1,5 +1,4 @@
-import Fastify from "fastify";
-import fastifyCors from "@fastify/cors";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createRepository, type Repository } from "./db/repository.js";
 import { createScheduler, type Scheduler } from "./worker/scheduler.js";
 
@@ -7,6 +6,30 @@ interface BuildServerOptions {
   repository?: Repository;
   scheduler?: Scheduler;
   startScheduler?: boolean;
+}
+
+export interface ApiServer {
+  listen(opts: { host: string; port: number }): Promise<number>;
+  close(): Promise<void>;
+}
+
+function applyCorsHeaders(response: ServerResponse) {
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.setHeader("Access-Control-Allow-Credentials", "true");
+  response.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function sendJson(response: ServerResponse, statusCode: number, payload: unknown) {
+  applyCorsHeaders(response);
+  response.statusCode = statusCode;
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.end(JSON.stringify(payload));
+}
+
+function requestPath(request: IncomingMessage) {
+  const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+  return requestUrl.pathname;
 }
 
 export async function buildServer(options: BuildServerOptions = {}) {
@@ -25,39 +48,94 @@ export async function buildServer(options: BuildServerOptions = {}) {
     scheduler.start();
   }
 
-  const app = Fastify();
-  await app.register(fastifyCors, {
-    origin: true,
-    credentials: true,
+  const server = createServer(async (request, response) => {
+    const method = request.method || "GET";
+    const path = requestPath(request);
+
+    if (method === "OPTIONS") {
+      applyCorsHeaders(response);
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
+
+    if (method === "GET" && path === "/api/health") {
+      const repoHealth = await repository.healthcheck();
+      sendJson(response, 200, {
+        ok: true,
+        service: "local-api",
+        runtime: "node",
+        schedulerRunning: scheduler.isRunning(),
+        repository: repoHealth,
+      });
+      return;
+    }
+
+    sendJson(response, 404, {
+      ok: false,
+      error: "Not Found",
+    });
   });
 
-  app.get("/api/health", async () => {
-    const repoHealth = await repository.healthcheck();
-    return {
-      ok: true,
-      service: "local-api",
-      runtime: "node",
-      schedulerRunning: scheduler.isRunning(),
-      repository: repoHealth,
-    };
-  });
+  let isClosed = false;
 
-  app.addHook("onClose", async () => {
-    scheduler.stop();
-    await repository.close();
-  });
+  return {
+    async listen(opts: { host: string; port: number }) {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => {
+          server.off("listening", onListening);
+          reject(error);
+        };
+        const onListening = () => {
+          server.off("error", onError);
+          resolve();
+        };
 
-  return app;
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(opts.port, opts.host);
+      });
+
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Unable to resolve API server address");
+      }
+      return address.port;
+    },
+
+    async close() {
+      if (isClosed) return;
+      isClosed = true;
+      scheduler.stop();
+      await repository.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+    },
+  } satisfies ApiServer;
 }
 
 export async function startServer() {
   const app = await buildServer();
   const portRaw = Number(process.env.API_PORT ?? process.env.PORT ?? 8787);
   const port = Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 8787;
-  await app.listen({ host: "127.0.0.1", port });
+  await app.listen({
+    host: "127.0.0.1",
+    port,
+  });
   return app;
 }
 
 if (process.env.NODE_ENV !== "test") {
-  void startServer();
+  void startServer().catch((error) => {
+    // eslint-disable-next-line no-console
+    console.error("[api] startup failed", error);
+    process.exit(1);
+  });
 }
