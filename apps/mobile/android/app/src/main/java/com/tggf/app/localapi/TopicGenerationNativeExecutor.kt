@@ -11,6 +11,8 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
+import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -762,14 +764,38 @@ object TopicGenerationNativeExecutor {
                     lastError = "",
                 )
             }
-            val response = requestJson(
-                url = "$baseUrl/history/${urlEncode(promptId)}",
-                method = "GET",
-                payload = null,
-                auth = auth,
-                connectTimeoutMs = 10_000,
-                readTimeoutMs = 30_000,
-            )
+            val response =
+                try {
+                    requestJson(
+                        url = "$baseUrl/history/${urlEncode(promptId)}",
+                        method = "GET",
+                        payload = null,
+                        auth = auth,
+                        connectTimeoutMs = 10_000,
+                        readTimeoutMs = 120_000,
+                    )
+                } catch (error: Exception) {
+                    if (isTransientComfyNetworkError(error)) {
+                        if (!worker.isNullOrBlank()) {
+                            ForegroundSyncService.updateWorkerStatus(
+                                context = context,
+                                worker = worker,
+                                state = "running",
+                                scopeId = scopeId,
+                                detail = "native_wait_history_retry",
+                                progress = false,
+                                claimed = true,
+                                lastError = error.message ?: "history_request_retry",
+                            )
+                        }
+                        Thread.sleep(COMFY_HISTORY_POLL_INTERVAL_MS)
+                        continue
+                    }
+                    throw IllegalStateException(
+                        "Comfy history request failed for prompt_id=$promptId: ${error.message ?: "request_failed"}",
+                        error,
+                    )
+                }
             if (response.code in 200..299) {
                 val payload = parseJsonObject(response.body)
                 val entry = payload.optJSONObject(promptId)
@@ -781,6 +807,25 @@ object TopicGenerationNativeExecutor {
             Thread.sleep(COMFY_HISTORY_POLL_INTERVAL_MS)
         }
         throw IllegalStateException("Comfy history timeout for prompt_id=$promptId")
+    }
+
+    private fun isTransientComfyNetworkError(error: Exception): Boolean {
+        if (error is SocketTimeoutException) return true
+        if (error is SocketException) return true
+        if (error is IOException) {
+            val normalizedMessage = error.message?.lowercase(Locale.ROOT).orEmpty()
+            if (
+                normalizedMessage.contains("connection reset") ||
+                    normalizedMessage.contains("connection aborted") ||
+                    normalizedMessage.contains("broken pipe") ||
+                    normalizedMessage.contains("socket closed") ||
+                    normalizedMessage.contains("timed out") ||
+                    normalizedMessage.contains("eof")
+            ) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun collectImageUrls(
@@ -1238,7 +1283,12 @@ object TopicGenerationNativeExecutor {
         connection.instanceFollowRedirects = true
         connection.connectTimeout = connectTimeoutMs
         connection.readTimeout = readTimeoutMs
+        connection.useCaches = false
         connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Cache-Control", "no-store")
+        connection.setRequestProperty("Pragma", "no-cache")
+        // Avoid reusing stale keep-alive sockets with long history polling.
+        connection.setRequestProperty("Connection", "close")
         val authHeaders = buildAuthHeaders(auth)
         for ((name, value) in authHeaders) {
             connection.setRequestProperty(name, value)
