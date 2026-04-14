@@ -36,6 +36,7 @@ class ForegroundSyncService : Service() {
 
         private const val TOPIC_STALE_THRESHOLD_MS = 20_000L
         private const val GROUP_STALE_THRESHOLD_MS = 30_000L
+        private const val METRICS_CACHE_TTL_MS = 4_000L
         private val workerStatusByType = mutableMapOf<String, WorkerStatusSnapshot>()
         private val workerStatusLock = Any()
         private var activeService: ForegroundSyncService? = null
@@ -174,6 +175,27 @@ class ForegroundSyncService : Service() {
     private var heartbeatRunnable: Runnable? = null
     private var heartbeatSequence = 0L
     private var wakeLock: PowerManager.WakeLock? = null
+    private var notificationMetricsCache: NotificationMetrics? = null
+    private var notificationMetricsCacheAtMs: Long = 0L
+
+    private data class NotificationMetrics(
+        val topicDoneCount: Int,
+        val topicFailedCount: Int,
+        val topicEnabledCount: Int,
+        val topicPendingCount: Int,
+        val topicLeasedCount: Int,
+        val groupDoneCount: Int,
+        val groupFailedCount: Int,
+        val groupEnabledCount: Int,
+        val groupPendingCount: Int,
+        val groupLeasedCount: Int,
+    ) {
+        val totalPendingCount: Int
+            get() = topicPendingCount + groupPendingCount
+
+        val totalLeasedCount: Int
+            get() = topicLeasedCount + groupLeasedCount
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -259,8 +281,9 @@ class ForegroundSyncService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val now = System.currentTimeMillis()
-        val statusSummary = buildNotificationStatusSummary(now)
-        val statusDetails = buildNotificationStatusDetails(now)
+        val metrics = getNotificationMetrics(now)
+        val statusSummary = buildNotificationStatusSummary(now, metrics)
+        val statusDetails = buildNotificationStatusDetails(now, metrics)
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
@@ -305,6 +328,7 @@ class ForegroundSyncService : Service() {
             override fun run() {
                 if (!running) return
                 heartbeatSequence += 1
+                BackgroundRuntimeEngine.requestTick(applicationContext)
                 LocalApiBridgePlugin.emitBackgroundTick(
                     source = "foreground_service",
                     sequence = heartbeatSequence,
@@ -313,6 +337,7 @@ class ForegroundSyncService : Service() {
                     running = isRunning(),
                 )
                 TopicGenerationNativeExecutor.requestTick(applicationContext)
+                GroupIterationNativeExecutor.requestTick(applicationContext)
                 val now = System.currentTimeMillis()
                 if (shouldPulseWebView(now)) {
                     MainActivity.pulseWebViewFromService("heartbeat_$heartbeatSequence")
@@ -355,48 +380,201 @@ class ForegroundSyncService : Service() {
         manager.notify(NOTIFICATION_ID, buildNotification())
     }
 
-    private fun buildNotificationStatusSummary(nowMs: Long): String {
+    private fun buildNotificationStatusSummary(nowMs: Long, metrics: NotificationMetrics): String {
         val snapshots = getWorkerStatusSnapshots()
-        if (snapshots.isEmpty()) return ""
+        if (snapshots.isEmpty()) {
+            if (
+                metrics.totalPendingCount == 0 &&
+                    metrics.totalLeasedCount == 0 &&
+                    metrics.topicDoneCount == 0 &&
+                    metrics.groupDoneCount == 0
+            ) {
+                return ""
+            }
+            return "GEN d${metrics.topicDoneCount}/e${metrics.topicFailedCount} | " +
+                "GRP d${metrics.groupDoneCount}/e${metrics.groupFailedCount} | " +
+                "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
+        }
         val topicLine = formatWorkerSummaryLine(
             label = "GEN",
             snapshot = snapshots.find { it.worker == WORKER_TOPIC_GENERATION },
             nowMs = nowMs,
+            doneCount = metrics.topicDoneCount,
+            failedCount = metrics.topicFailedCount,
         )
         val groupLine = formatWorkerSummaryLine(
             label = "GRP",
             snapshot = snapshots.find { it.worker == WORKER_GROUP_ITERATION },
             nowMs = nowMs,
+            doneCount = metrics.groupDoneCount,
+            failedCount = metrics.groupFailedCount,
         )
-        return listOf(topicLine, groupLine).joinToString(" | ").trim()
+        val queueLine = "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
+        return listOf(topicLine, groupLine, queueLine).joinToString(" | ").trim()
     }
 
-    private fun buildNotificationStatusDetails(nowMs: Long): String {
+    private fun buildNotificationStatusDetails(nowMs: Long, metrics: NotificationMetrics): String {
         val snapshots = getWorkerStatusSnapshots()
-        if (snapshots.isEmpty()) {
-            return getString(R.string.foreground_service_notification_text)
-        }
-        return snapshots.joinToString("\n") { snapshot ->
-            val ageSec = max(0L, (nowMs - snapshot.heartbeatAtMs) / 1_000L)
-            val stale = isWorkerSnapshotStale(snapshot, nowMs)
-            val staleTag = if (stale) "stale" else "live"
-            val scope = snapshot.scopeId.ifBlank { "-" }
-            val detail = snapshot.detail.ifBlank { "-" }
-            val error = snapshot.lastError.ifBlank { "-" }
-            "${snapshot.worker}: ${snapshot.state} [$staleTag, ${ageSec}s] scope=${scope}, detail=${detail}, error=${error}"
-        }
+        val topicSnapshot = snapshots.find { it.worker == WORKER_TOPIC_GENERATION }
+        val groupSnapshot = snapshots.find { it.worker == WORKER_GROUP_ITERATION }
+        val topicLine =
+            buildWorkerDetailsLine(
+                label = "Generator",
+                snapshot = topicSnapshot,
+                nowMs = nowMs,
+                doneCount = metrics.topicDoneCount,
+                failedCount = metrics.topicFailedCount,
+                enabledCount = metrics.topicEnabledCount,
+                pendingCount = metrics.topicPendingCount,
+                leasedCount = metrics.topicLeasedCount,
+            )
+        val groupLine =
+            buildWorkerDetailsLine(
+                label = "Group Chat",
+                snapshot = groupSnapshot,
+                nowMs = nowMs,
+                doneCount = metrics.groupDoneCount,
+                failedCount = metrics.groupFailedCount,
+                enabledCount = metrics.groupEnabledCount,
+                pendingCount = metrics.groupPendingCount,
+                leasedCount = metrics.groupLeasedCount,
+            )
+        val totalsLine =
+            "Queue totals: pending=${metrics.totalPendingCount}, leased=${metrics.totalLeasedCount}"
+        return listOf(topicLine, groupLine, totalsLine).joinToString("\n")
     }
 
     private fun formatWorkerSummaryLine(
         label: String,
         snapshot: WorkerStatusSnapshot?,
         nowMs: Long,
+        doneCount: Int,
+        failedCount: Int,
     ): String {
-        if (snapshot == null) return "$label: n/a"
+        if (snapshot == null) return "$label n/a d$doneCount/e$failedCount"
         val ageSec = max(0L, (nowMs - snapshot.heartbeatAtMs) / 1_000L)
         val stale = isWorkerSnapshotStale(snapshot, nowMs)
-        val state = if (stale) "stale" else snapshot.state
-        return "$label: $state ${ageSec}s"
+        val state = formatWorkerState(snapshot, stale)
+        return "$label $state ${ageSec}s d$doneCount/e$failedCount"
+    }
+
+    private fun buildWorkerDetailsLine(
+        label: String,
+        snapshot: WorkerStatusSnapshot?,
+        nowMs: Long,
+        doneCount: Int,
+        failedCount: Int,
+        enabledCount: Int,
+        pendingCount: Int,
+        leasedCount: Int,
+    ): String {
+        if (snapshot == null) {
+            return "$label: state=n/a, done=$doneCount, failed=$failedCount, enabled=$enabledCount, " +
+                "queue(p=$pendingCount,l=$leasedCount)"
+        }
+        val ageSec = max(0L, (nowMs - snapshot.heartbeatAtMs) / 1_000L)
+        val stale = isWorkerSnapshotStale(snapshot, nowMs)
+        val staleTag = if (stale) "stale" else "live"
+        val state = formatWorkerState(snapshot, stale)
+        val scope = snapshot.scopeId.ifBlank { "-" }
+        val detail = snapshot.detail.ifBlank { "-" }
+        val error = snapshot.lastError.ifBlank { "-" }
+        return "$label: state=$state [$staleTag ${ageSec}s], done=$doneCount, failed=$failedCount, " +
+            "enabled=$enabledCount, queue(p=$pendingCount,l=$leasedCount), scope=$scope, detail=$detail, error=$error"
+    }
+
+    private fun formatWorkerState(snapshot: WorkerStatusSnapshot, stale: Boolean): String {
+        if (stale) return "stale"
+        return when (snapshot.state.lowercase()) {
+            "running" -> "running"
+            "blocked" -> "blocked"
+            "error" -> "error"
+            "idle" -> "idle"
+            else -> snapshot.state
+        }
+    }
+
+    private fun getNotificationMetrics(nowMs: Long): NotificationMetrics {
+        val cached = notificationMetricsCache
+        if (cached != null && nowMs - notificationMetricsCacheAtMs <= METRICS_CACHE_TTL_MS) {
+            return cached
+        }
+        val computed = computeNotificationMetrics()
+        notificationMetricsCache = computed
+        notificationMetricsCacheAtMs = nowMs
+        return computed
+    }
+
+    private fun computeNotificationMetrics(): NotificationMetrics {
+        return try {
+            val runtime = BackgroundRuntimeRepository(applicationContext)
+            val jobs = BackgroundJobRepository(applicationContext)
+            NotificationMetrics(
+                topicDoneCount =
+                    runtime.countEvents(
+                        taskType = WORKER_TOPIC_GENERATION,
+                        stage = "iteration_completed",
+                    ),
+                topicFailedCount =
+                    runtime.countEvents(
+                        taskType = WORKER_TOPIC_GENERATION,
+                        stage = "iteration_failed",
+                    ),
+                topicEnabledCount =
+                    runtime.countDesiredStates(
+                        taskType = WORKER_TOPIC_GENERATION,
+                        enabledOnly = true,
+                    ),
+                topicPendingCount =
+                    jobs.countJobs(
+                        status = BackgroundJobRepository.STATUS_PENDING,
+                        type = WORKER_TOPIC_GENERATION,
+                    ),
+                topicLeasedCount =
+                    jobs.countJobs(
+                        status = BackgroundJobRepository.STATUS_LEASED,
+                        type = WORKER_TOPIC_GENERATION,
+                    ),
+                groupDoneCount =
+                    runtime.countEvents(
+                        taskType = WORKER_GROUP_ITERATION,
+                        stage = "iteration_completed",
+                    ),
+                groupFailedCount =
+                    runtime.countEvents(
+                        taskType = WORKER_GROUP_ITERATION,
+                        stage = "iteration_failed",
+                    ),
+                groupEnabledCount =
+                    runtime.countDesiredStates(
+                        taskType = WORKER_GROUP_ITERATION,
+                        enabledOnly = true,
+                    ),
+                groupPendingCount =
+                    jobs.countJobs(
+                        status = BackgroundJobRepository.STATUS_PENDING,
+                        type = WORKER_GROUP_ITERATION,
+                    ),
+                groupLeasedCount =
+                    jobs.countJobs(
+                        status = BackgroundJobRepository.STATUS_LEASED,
+                        type = WORKER_GROUP_ITERATION,
+                    ),
+            )
+        } catch (_: Exception) {
+            NotificationMetrics(
+                topicDoneCount = 0,
+                topicFailedCount = 0,
+                topicEnabledCount = 0,
+                topicPendingCount = 0,
+                topicLeasedCount = 0,
+                groupDoneCount = 0,
+                groupFailedCount = 0,
+                groupEnabledCount = 0,
+                groupPendingCount = 0,
+                groupLeasedCount = 0,
+            )
+        }
     }
 
     private fun shouldPulseWebView(nowMs: Long): Boolean {

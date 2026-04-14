@@ -38,10 +38,32 @@ class LocalApiBridgePlugin : Plugin() {
             }
             plugin.notifyListeners("backgroundTick", payload)
         }
+
+        @JvmStatic
+        fun emitGroupIterationRunRequest(
+            source: String,
+            roomId: String,
+            jobId: String,
+            intervalMs: Long,
+            leaseUntilMs: Long,
+        ) {
+            val plugin = activePluginRef?.get() ?: return
+            val payload = JSObject().apply {
+                put("ok", true)
+                put("source", source)
+                put("roomId", roomId)
+                put("jobId", jobId)
+                put("intervalMs", intervalMs)
+                put("leaseUntilMs", leaseUntilMs)
+                put("requestedAtMs", System.currentTimeMillis())
+            }
+            plugin.notifyListeners("groupIterationRunRequest", payload)
+        }
     }
 
     private val repository by lazy { LocalRepository(context) }
     private val backgroundJobs by lazy { BackgroundJobRepository(context) }
+    private val backgroundRuntime by lazy { BackgroundRuntimeRepository(context) }
 
     override fun load() {
         super.load()
@@ -141,6 +163,34 @@ class LocalApiBridgePlugin : Plugin() {
             put("lastError", job.lastError)
             put("createdAtMs", job.createdAtMs)
             put("updatedAtMs", job.updatedAtMs)
+        }
+    }
+
+    private fun backgroundDesiredStateToJsObject(record: BackgroundDesiredStateRecord): JSObject {
+        return JSObject().apply {
+            put("taskType", record.taskType)
+            put("scopeId", record.scopeId)
+            put("enabled", record.enabled)
+            put("payload", parsePayloadToAny(record.payloadJson))
+            put("updatedAtMs", record.updatedAtMs)
+        }
+    }
+
+    private fun backgroundRuntimeEventToJsObject(record: BackgroundRuntimeEventRecord): JSObject {
+        return JSObject().apply {
+            put("id", record.id)
+            put("taskType", record.taskType)
+            put("scopeId", record.scopeId)
+            put("jobId", record.jobId)
+            put("stage", record.stage)
+            put("level", record.level)
+            put("message", record.message)
+            if (record.detailsJson.isNullOrBlank()) {
+                put("details", null)
+            } else {
+                put("details", parsePayloadToAny(record.detailsJson))
+            }
+            put("createdAtMs", record.createdAtMs)
         }
     }
 
@@ -675,6 +725,172 @@ class LocalApiBridgePlugin : Plugin() {
                     if (!updated) {
                         put("error", "Background job not found")
                     }
+                },
+            )
+            return
+        }
+
+        if (method == "GET" && path == "/api/background-runtime/desired-state") {
+            val taskType = readQueryParam(query, "taskType")
+            val scopeId = readQueryParam(query, "scopeId")
+            val states = JSONArray()
+            if (!taskType.isNullOrBlank() && !scopeId.isNullOrBlank()) {
+                val single = backgroundRuntime.getDesiredState(taskType.trim(), scopeId.trim())
+                if (single != null) {
+                    states.put(backgroundDesiredStateToJsObject(single))
+                }
+            } else {
+                val rows = backgroundRuntime.listDesiredStates(taskType)
+                for (row in rows) {
+                    if (!scopeId.isNullOrBlank() && row.scopeId != scopeId.trim()) {
+                        continue
+                    }
+                    states.put(backgroundDesiredStateToJsObject(row))
+                }
+            }
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("states", states)
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-runtime/desired-state") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Desired-state payload must be an object")
+                    },
+                )
+                return
+            }
+            val taskType = body.optString("taskType", "").trim()
+            val scopeId = body.optString("scopeId", "").trim()
+            if (taskType.isEmpty() || scopeId.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Desired-state payload requires taskType and scopeId")
+                    },
+                )
+                return
+            }
+            val enabled = body.optBoolean("enabled", false)
+            val payloadJson = parsePayloadJson(body.opt("payload"))
+            val updated = backgroundRuntime.upsertDesiredState(
+                taskType = taskType,
+                scopeId = scopeId,
+                enabled = enabled,
+                payloadJson = payloadJson,
+            )
+            backgroundRuntime.appendEvent(
+                taskType = taskType,
+                scopeId = scopeId,
+                jobId = null,
+                stage = "desired_state_updated",
+                level = "info",
+                message = "Desired state updated",
+                detailsJson =
+                    JSONObject().apply {
+                        put("enabled", enabled)
+                        put("payload", parsePayloadToAny(payloadJson))
+                    }.toString(),
+            )
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("state", backgroundDesiredStateToJsObject(updated))
+                },
+            )
+            return
+        }
+
+        if (method == "GET" && path == "/api/background-runtime/events") {
+            val limit = readIntQueryParam(query, "limit", 120)
+            val taskType = readQueryParam(query, "taskType")
+            val scopeId = readQueryParam(query, "scopeId")
+            val rows = backgroundRuntime.listEvents(
+                limit = limit,
+                taskType = taskType,
+                scopeId = scopeId,
+            )
+            val events = JSONArray().apply {
+                for (row in rows) {
+                    put(backgroundRuntimeEventToJsObject(row))
+                }
+            }
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("events", events)
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-runtime/events") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Runtime event payload must be an object")
+                    },
+                )
+                return
+            }
+            val taskType = body.optString("taskType", "").trim()
+            val scopeId = body.optString("scopeId", "").trim()
+            val stage = body.optString("stage", "").trim()
+            val message = body.optString("message", "").trim()
+            val level = body.optString("level", "info").trim().ifEmpty { "info" }
+            val jobId = body.optString("jobId", "").trim().ifEmpty { null }
+            if (taskType.isEmpty() || scopeId.isEmpty() || stage.isEmpty() || message.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put(
+                            "error",
+                            "Runtime event payload requires taskType, scopeId, stage and message",
+                        )
+                    },
+                )
+                return
+            }
+            val detailsJson = parsePayloadJson(body.opt("details"))
+            val created = backgroundRuntime.appendEvent(
+                taskType = taskType,
+                scopeId = scopeId,
+                jobId = jobId,
+                stage = stage,
+                level = level,
+                message = message,
+                detailsJson = detailsJson,
+            )
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("event", backgroundRuntimeEventToJsObject(created))
                 },
             )
             return

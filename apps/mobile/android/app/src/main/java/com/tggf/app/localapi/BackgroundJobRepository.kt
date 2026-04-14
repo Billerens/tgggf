@@ -280,6 +280,33 @@ class BackgroundJobRepository(
         }
     }
 
+    fun countJobs(status: String? = null, type: String? = null): Int {
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        val normalizedStatus = status?.trim()?.ifEmpty { null }
+        val normalizedType = type?.trim()?.ifEmpty { null }
+        if (normalizedStatus != null) {
+            clauses.add("$COL_STATUS = ?")
+            args.add(normalizedStatus)
+        }
+        if (normalizedType != null) {
+            clauses.add("$COL_TYPE = ?")
+            args.add(normalizedType)
+        }
+        val selection = if (clauses.isEmpty()) null else clauses.joinToString(" AND ")
+        val selectionArgs = if (args.isEmpty()) null else args.toTypedArray()
+        return readableDatabase.rawQuery(
+            """
+            SELECT COUNT(1)
+            FROM $TABLE_JOBS
+            ${if (selection == null) "" else "WHERE $selection"}
+            """.trimIndent(),
+            selectionArgs,
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+
     private fun insertJobInternal(
         db: SQLiteDatabase,
         id: String,

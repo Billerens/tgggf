@@ -1,23 +1,49 @@
 import { useEffect, useRef } from "react";
 import type { AppSettings, GroupRoom, Persona } from "../../types";
+import { dbApi } from "../../db";
 import {
   cancelBackgroundJob,
-  claimBackgroundJobs,
   ensureRecurringBackgroundJob,
   rescheduleBackgroundJob,
 } from "./backgroundJobs";
 import { subscribeBackgroundTick } from "./backgroundTick";
+import { subscribeGroupIterationRunRequest } from "./groupIterationRunRequest";
 import {
   buildGroupIterationJobId,
   GROUP_ITERATION_INTERVAL_MS,
   GROUP_ITERATION_JOB_TYPE,
-  GROUP_ITERATION_LEASE_MS,
   GROUP_ITERATION_MIN_TRIGGER_GAP_MS,
   GROUP_ITERATION_RETRY_DELAY_MS,
-  readGroupIterationRoomId,
 } from "./backgroundJobKeys";
 import { pushSystemLog } from "../system-logs/systemLogStore";
 import { updateForegroundWorkerStatus } from "./foregroundService";
+import {
+  appendBackgroundRuntimeEvent,
+  setBackgroundDesiredState,
+} from "./backgroundRuntime";
+
+interface LocalApiPluginRequestInput {
+  method: "GET" | "PUT";
+  path: string;
+  body?: unknown;
+}
+
+interface LocalApiPluginRequestOutput {
+  status: number;
+  body: unknown;
+}
+
+interface LocalApiPlugin {
+  request(input: LocalApiPluginRequestInput): Promise<LocalApiPluginRequestOutput>;
+}
+
+interface CapacitorLikeScope {
+  Capacitor?: {
+    Plugins?: {
+      LocalApi?: LocalApiPlugin;
+    };
+  };
+}
 
 interface UseGroupIterationBackgroundWorkerParams {
   activeGroupRoom: GroupRoom | null;
@@ -38,6 +64,83 @@ function canRunRoom(room: GroupRoom | null) {
   return true;
 }
 
+function shouldEnableDesiredState(room: GroupRoom | null) {
+  if (!room) return false;
+  return room.status === "active";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null {
+  const plugin = scope.Capacitor?.Plugins?.LocalApi;
+  if (!plugin || typeof plugin.request !== "function") return null;
+  return plugin;
+}
+
+async function syncGroupContextToNative(roomId: string) {
+  const scope = globalThis as unknown as CapacitorLikeScope;
+  const plugin = resolveLocalApiPlugin(scope);
+  if (!plugin) return;
+
+  const [
+    settings,
+    personas,
+    groupRooms,
+    groupParticipants,
+    groupMessages,
+    groupEvents,
+    groupPersonaStates,
+    groupRelationEdges,
+    groupSharedMemories,
+    groupPrivateMemories,
+    groupSnapshots,
+  ] = await Promise.all([
+    dbApi.getSettings(),
+    dbApi.getPersonas(),
+    dbApi.getGroupRooms(),
+    dbApi.getGroupParticipants(roomId),
+    dbApi.getGroupMessages(roomId),
+    dbApi.getGroupEvents(roomId),
+    dbApi.getGroupPersonaStates(roomId),
+    dbApi.getGroupRelationEdges(roomId),
+    dbApi.getGroupSharedMemories(roomId),
+    dbApi.getGroupPrivateMemories(roomId),
+    dbApi.getGroupSnapshots(roomId),
+  ]);
+
+  const response = await plugin.request({
+    method: "PUT",
+    path: "/api/raw-snapshot",
+    body: {
+      mode: "merge",
+      stores: {
+        settings,
+        personas,
+        groupRooms,
+        groupParticipants,
+        groupMessages,
+        groupEvents,
+        groupPersonaStates,
+        groupRelationEdges,
+        groupSharedMemories,
+        groupPrivateMemories,
+        groupSnapshots,
+      },
+    },
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`native_group_context_sync_http_${response.status}`);
+  }
+
+  if (isRecord(response.body) && response.body.ok === false) {
+    const error = typeof response.body.error === "string" ? response.body.error : "";
+    throw new Error(error || "native_group_context_sync_failed");
+  }
+}
+
 export function useGroupIterationBackgroundWorker({
   activeGroupRoom,
   isAndroidRuntime,
@@ -49,10 +152,71 @@ export function useGroupIterationBackgroundWorker({
   const personasRef = useEffectRef(personas);
   const settingsRef = useEffectRef(settings);
   const runActiveGroupIterationRef = useEffectRef(runActiveGroupIteration);
+  const previousRoomIdRef = useRef<string | null>(null);
+  const desiredStateFingerprintRef = useRef<string>("");
+  const desiredStatePendingFingerprintRef = useRef<string>("");
+  const lastNativeSyncAtRef = useRef<number>(0);
+  const syncInFlightRef = useRef<boolean>(false);
 
   useEffect(() => {
+    const previousRoomId = previousRoomIdRef.current;
+    const nextRoomId = activeGroupRoom?.id ?? null;
+    previousRoomIdRef.current = nextRoomId;
+
+    const syncDesiredState = (roomId: string, enabled: boolean) => {
+      if (!isAndroidRuntime) return;
+      const fingerprint = `${roomId}|${enabled ? "1" : "0"}`;
+      if (desiredStateFingerprintRef.current === fingerprint) return;
+      if (desiredStatePendingFingerprintRef.current === fingerprint) return;
+      desiredStatePendingFingerprintRef.current = fingerprint;
+      void setBackgroundDesiredState({
+        taskType: GROUP_ITERATION_JOB_TYPE,
+        scopeId: roomId,
+        enabled,
+        payload: {
+          roomId,
+          intervalMs: GROUP_ITERATION_INTERVAL_MS,
+        },
+      })
+        .then(() => {
+          desiredStateFingerprintRef.current = fingerprint;
+        })
+        .catch((error) => {
+          const errorMessage =
+            error instanceof Error ? error.message : "desired_state_sync_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "group_iteration.desired_state_sync_failed",
+            message: "Failed to sync desired-state for group iteration",
+            details: {
+              roomId,
+              enabled,
+              error: errorMessage,
+            },
+          });
+        })
+        .finally(() => {
+          if (desiredStatePendingFingerprintRef.current === fingerprint) {
+            desiredStatePendingFingerprintRef.current = "";
+          }
+        });
+    };
+
+    if (isAndroidRuntime && previousRoomId && previousRoomId !== nextRoomId) {
+      syncDesiredState(previousRoomId, false);
+      void cancelBackgroundJob(buildGroupIterationJobId(previousRoomId)).catch(() => {
+        // Ignore queue mutation errors while switching rooms.
+      });
+    }
+
     if (!activeGroupRoom) {
       if (isAndroidRuntime) {
+        if (previousRoomId) {
+          syncDesiredState(previousRoomId, false);
+          void cancelBackgroundJob(buildGroupIterationJobId(previousRoomId)).catch(() => {
+            // Ignore queue mutation errors while clearing active room.
+          });
+        }
         void updateForegroundWorkerStatus({
           worker: "group_iteration",
           state: "idle",
@@ -66,6 +230,33 @@ export function useGroupIterationBackgroundWorker({
     }
     const roomId = activeGroupRoom.id;
     const jobId = buildGroupIterationJobId(roomId);
+    syncDesiredState(roomId, shouldEnableDesiredState(activeGroupRoom));
+    if (isAndroidRuntime) {
+      const now = Date.now();
+      if (!syncInFlightRef.current && now - lastNativeSyncAtRef.current > 2_000) {
+        syncInFlightRef.current = true;
+        void syncGroupContextToNative(roomId)
+          .then(() => {
+            lastNativeSyncAtRef.current = Date.now();
+          })
+          .catch((error) => {
+            const errorMessage =
+              error instanceof Error ? error.message : "native_group_context_sync_failed";
+            pushSystemLog({
+              level: "warn",
+              eventType: "group_iteration.native_context_sync_failed",
+              message: "Failed to sync group context to native store",
+              details: {
+                roomId,
+                error: errorMessage,
+              },
+            });
+          })
+          .finally(() => {
+            syncInFlightRef.current = false;
+          });
+      }
+    }
     let lastStatusFingerprint = "";
     let lastStatusAt = 0;
 
@@ -154,238 +345,246 @@ export function useGroupIterationBackgroundWorker({
     }
 
     let disposed = false;
-    let claimInFlight = false;
+    let iterationInFlight = false;
     let ensureInFlight = false;
-    let lastTriggeredAt = 0;
-    let isJobEnsured = false;
-    let lastProgressAt = Date.now();
-    let lastWatchdogRepairAt = 0;
 
-    const processClaimedJobs = async () => {
-      if (disposed || claimInFlight) return;
-
+    const ensureNativeQueueJob = async () => {
+      if (disposed || ensureInFlight) return;
       const currentRoom = activeGroupRoomRef.current;
-      if (!currentRoom || currentRoom.id !== roomId) return;
-      const roomCanRun = canRunRoom(currentRoom);
-
-      if (!roomCanRun) {
-        try {
-          await cancelBackgroundJob(jobId);
-        } catch {
-          // Ignore queue mutation errors; worker will retry on next room change.
-        }
-        isJobEnsured = false;
-        reportWorkerStatus({
-          state: "idle",
-          detail: `room_${currentRoom.status}`,
-        });
+      if (!currentRoom || currentRoom.id !== roomId || !canRunRoom(currentRoom)) {
         return;
       }
-
-      if (!ensureInFlight && !isJobEnsured) {
-        ensureInFlight = true;
-        try {
-          await ensureRecurringBackgroundJob({
-            id: jobId,
-            type: GROUP_ITERATION_JOB_TYPE,
-            payload: {
-              roomId,
-              intervalMs: GROUP_ITERATION_INTERVAL_MS,
-            },
-            runAtMs: Date.now(),
-            maxAttempts: 0,
-          });
-          isJobEnsured = true;
-          reportWorkerStatus({
-            state: "running",
-            detail: "queue_ensured",
-          });
-        } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : "background_job_ensure_failed";
-          reportWorkerStatus({
-            state: "blocked",
-            detail: "queue_ensure_failed",
-            lastError: errorMessage,
-          });
-          pushSystemLog({
-            level: "warn",
-            eventType: "group_iteration.ensure_failed",
-            message: "Failed to ensure recurring group iteration job",
-            details: {
-              roomId,
-              error: errorMessage,
-            },
-          });
-        } finally {
-          ensureInFlight = false;
-        }
-      }
-
-      const watchdogNow = Date.now();
-      if (watchdogNow - lastProgressAt > GROUP_ITERATION_LEASE_MS) {
-        if (watchdogNow - lastWatchdogRepairAt >= 15_000) {
-          lastWatchdogRepairAt = watchdogNow;
-          try {
-            await ensureRecurringBackgroundJob({
-              id: jobId,
-              type: GROUP_ITERATION_JOB_TYPE,
-              payload: {
-                roomId,
-                intervalMs: GROUP_ITERATION_INTERVAL_MS,
-              },
-              runAtMs: Date.now(),
-              maxAttempts: 0,
-            });
-            reportWorkerStatus({
-              state: "blocked",
-              detail: "watchdog_repair",
-            });
-            pushSystemLog({
-              level: "warn",
-              eventType: "group_iteration.watchdog_repair",
-              message: `Watchdog re-ensured group iteration job for room ${roomId}`,
-              details: {
-                roomId,
-                jobId,
-                lastProgressAgeMs: watchdogNow - lastProgressAt,
-              },
-            });
-          } catch {
-            // Ignore transient watchdog repair errors.
-          }
-        }
-      }
-
-      const now = Date.now();
-      if (now - lastTriggeredAt < GROUP_ITERATION_MIN_TRIGGER_GAP_MS) return;
-      claimInFlight = true;
-      lastTriggeredAt = now;
-      reportWorkerStatus({
-        state: "running",
-        detail: "claiming",
-      });
-
+      ensureInFlight = true;
       try {
-        const claimedJobs = await claimBackgroundJobs(
-          4,
-          GROUP_ITERATION_LEASE_MS,
-          GROUP_ITERATION_JOB_TYPE,
-        );
-        if (claimedJobs.length === 0) {
-          reportWorkerStatus({
-            state: "running",
-            detail: "awaiting_due_job",
-          });
-        }
-        for (const job of claimedJobs) {
-          if (disposed) break;
-
-          const latestRoom = activeGroupRoomRef.current;
-          const latestRoomCanRun =
-            latestRoom !== null &&
-            latestRoom.id === roomId &&
-            canRunRoom(latestRoom);
-          const jobRoomId = readGroupIterationRoomId(job);
-          if (!jobRoomId || jobRoomId !== roomId || !latestRoomCanRun) {
-            try {
-              await cancelBackgroundJob(job.id);
-            } catch {
-              // Ignore queue mutation errors; worker will retry on next pump.
-            }
-            continue;
-          }
-
-          try {
-            reportWorkerStatus({
-              state: "running",
-              detail: `claimed_${job.id.slice(0, 8)}`,
-              claimed: true,
-            });
-            const currentPersonas = personasRef.current;
-            const currentSettings = settingsRef.current;
-            await runActiveGroupIterationRef.current(
-              currentPersonas,
-              currentSettings,
-              currentSettings.userName,
-            );
-            lastProgressAt = Date.now();
-            await rescheduleBackgroundJob({
-              id: job.id,
-              runAtMs: Date.now() + GROUP_ITERATION_INTERVAL_MS,
-              incrementAttempts: false,
-            });
-            reportWorkerStatus({
-              state: "running",
-              detail: `progress_${job.id.slice(0, 8)}`,
-              progress: true,
-            });
-          } catch (error) {
-            const errorMessage =
-              error instanceof Error ? error.message : "group_iteration_failed";
-            reportWorkerStatus({
-              state: "error",
-              detail: `job_failed_${job.id.slice(0, 8)}`,
-              lastError: errorMessage,
-            });
-            pushSystemLog({
-              level: "warn",
-              eventType: "group_iteration.job_failed",
-              message: `Group iteration job failed for room ${jobRoomId}`,
-              details: {
-                roomId: jobRoomId,
-                jobId: job.id,
-                error: errorMessage,
-              },
-            });
-            try {
-              await rescheduleBackgroundJob({
-                id: job.id,
-                runAtMs: Date.now() + GROUP_ITERATION_RETRY_DELAY_MS,
-                incrementAttempts: true,
-                lastError: errorMessage,
-              });
-            } catch {
-              // Ignore queue mutation errors; worker will retry on next pump.
-            }
-          }
-        }
+        await ensureRecurringBackgroundJob({
+          id: jobId,
+          type: GROUP_ITERATION_JOB_TYPE,
+          payload: {
+            roomId,
+            intervalMs: GROUP_ITERATION_INTERVAL_MS,
+          },
+          runAtMs: Date.now(),
+          maxAttempts: 0,
+        });
+        reportWorkerStatus({
+          state: "running",
+          detail: "native_queue_ready",
+        });
       } catch (error) {
         const errorMessage =
-          error instanceof Error ? error.message : "background_job_claim_failed";
+          error instanceof Error ? error.message : "background_job_ensure_failed";
         reportWorkerStatus({
           state: "blocked",
-          detail: "claim_failed",
+          detail: "native_queue_ensure_failed",
           lastError: errorMessage,
         });
         pushSystemLog({
           level: "warn",
-          eventType: "group_iteration.claim_failed",
-          message: "Failed to claim background jobs for group iteration",
+          eventType: "group_iteration.ensure_failed",
+          message: "Failed to ensure native-dispatched group iteration job",
           details: {
             roomId,
             error: errorMessage,
           },
         });
       } finally {
-        claimInFlight = false;
+        ensureInFlight = false;
       }
     };
 
-    void processClaimedJobs();
+    void ensureNativeQueueJob();
 
-    const timerId = window.setInterval(() => {
-      void processClaimedJobs();
-    }, GROUP_ITERATION_INTERVAL_MS);
+    const unsubscribeRunRequest = subscribeGroupIterationRunRequest((payload) => {
+      if (disposed) return;
+      if (payload.roomId !== roomId) return;
+      if (!payload.jobId) return;
+      const nextRunAtMs = Date.now() + Math.max(1_000, payload.intervalMs);
+
+      const currentRoom = activeGroupRoomRef.current;
+      const roomCanRun =
+        currentRoom !== null &&
+        currentRoom.id === roomId &&
+        canRunRoom(currentRoom);
+      if (!roomCanRun) {
+        void rescheduleBackgroundJob({
+          id: payload.jobId,
+          runAtMs: nextRunAtMs,
+          incrementAttempts: false,
+        }).catch(() => {
+          // Ignore queue mutation errors during room transitions.
+        });
+        void appendBackgroundRuntimeEvent({
+          taskType: GROUP_ITERATION_JOB_TYPE,
+          scopeId: roomId,
+          jobId: payload.jobId,
+          stage: "iteration_deferred",
+          level: "info",
+          message: "Deferred group iteration because room is blocked",
+          details: {
+            reason: "room_blocked",
+            intervalMs: payload.intervalMs,
+          },
+        }).catch(() => {
+          // Ignore runtime event logging errors.
+        });
+        reportWorkerStatus({
+          state: "idle",
+          detail: "room_blocked",
+        });
+        return;
+      }
+
+      if (!syncInFlightRef.current && Date.now() - lastNativeSyncAtRef.current > 2_000) {
+        syncInFlightRef.current = true;
+        void syncGroupContextToNative(roomId)
+          .then(() => {
+            lastNativeSyncAtRef.current = Date.now();
+          })
+          .catch((error) => {
+            const errorMessage =
+              error instanceof Error ? error.message : "native_group_context_sync_failed";
+            pushSystemLog({
+              level: "warn",
+              eventType: "group_iteration.native_context_sync_failed",
+              message: "Failed to sync group context to native store",
+              details: {
+                roomId,
+                error: errorMessage,
+              },
+            });
+          })
+          .finally(() => {
+            syncInFlightRef.current = false;
+          });
+      }
+
+      if (iterationInFlight) {
+        void rescheduleBackgroundJob({
+          id: payload.jobId,
+          runAtMs: Date.now() + 1_200,
+          incrementAttempts: false,
+        }).catch(() => {
+          // Ignore queue mutation errors while current iteration is still in-flight.
+        });
+        void appendBackgroundRuntimeEvent({
+          taskType: GROUP_ITERATION_JOB_TYPE,
+          scopeId: roomId,
+          jobId: payload.jobId,
+          stage: "iteration_deferred",
+          level: "info",
+          message: "Deferred group iteration because previous iteration is still running",
+          details: {
+            reason: "bridge_busy",
+          },
+        }).catch(() => {
+          // Ignore runtime event logging errors.
+        });
+        reportWorkerStatus({
+          state: "running",
+          detail: "bridge_busy",
+        });
+        return;
+      }
+
+      iterationInFlight = true;
+      reportWorkerStatus({
+        state: "running",
+        detail: `claimed_${payload.jobId.slice(0, 8)}`,
+        claimed: true,
+      });
+
+      void (async () => {
+        try {
+          const currentPersonas = personasRef.current;
+          const currentSettings = settingsRef.current;
+          await runActiveGroupIterationRef.current(
+            currentPersonas,
+            currentSettings,
+            currentSettings.userName,
+          );
+          await rescheduleBackgroundJob({
+            id: payload.jobId,
+            runAtMs: nextRunAtMs,
+            incrementAttempts: false,
+          });
+          void appendBackgroundRuntimeEvent({
+            taskType: GROUP_ITERATION_JOB_TYPE,
+            scopeId: roomId,
+            jobId: payload.jobId,
+            stage: "iteration_completed",
+            level: "info",
+            message: "Group iteration completed in background",
+            details: {
+              intervalMs: payload.intervalMs,
+              requestedAtMs: payload.requestedAtMs,
+            },
+          }).catch(() => {
+            // Ignore runtime event logging errors.
+          });
+          reportWorkerStatus({
+            state: "running",
+            detail: `progress_${payload.jobId.slice(0, 8)}`,
+            progress: true,
+          });
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "group_iteration_failed";
+          reportWorkerStatus({
+            state: "error",
+            detail: `job_failed_${payload.jobId.slice(0, 8)}`,
+            lastError: errorMessage,
+          });
+          pushSystemLog({
+            level: "warn",
+            eventType: "group_iteration.job_failed",
+            message: `Group iteration job failed for room ${roomId}`,
+            details: {
+              roomId,
+              jobId: payload.jobId,
+              error: errorMessage,
+            },
+          });
+          void appendBackgroundRuntimeEvent({
+            taskType: GROUP_ITERATION_JOB_TYPE,
+            scopeId: roomId,
+            jobId: payload.jobId,
+            stage: "iteration_failed",
+            level: "error",
+            message: "Group iteration failed in background",
+            details: {
+              error: errorMessage,
+            },
+          }).catch(() => {
+            // Ignore runtime event logging errors.
+          });
+          try {
+            await rescheduleBackgroundJob({
+              id: payload.jobId,
+              runAtMs: Date.now() + GROUP_ITERATION_RETRY_DELAY_MS,
+              incrementAttempts: true,
+              lastError: errorMessage,
+            });
+          } catch {
+            // Ignore queue mutation errors; native dispatcher will retry after lease expiry.
+          }
+        } finally {
+          iterationInFlight = false;
+        }
+      })();
+    });
 
     const unsubscribeBackgroundTick = subscribeBackgroundTick((payload) => {
       if (!payload.enabled || !payload.running) return;
-      void processClaimedJobs();
+      const currentRoom = activeGroupRoomRef.current;
+      if (currentRoom && currentRoom.id === roomId) {
+        syncDesiredState(roomId, shouldEnableDesiredState(currentRoom));
+      }
+      void ensureNativeQueueJob();
     });
 
     return () => {
       disposed = true;
-      window.clearInterval(timerId);
+      unsubscribeRunRequest();
       unsubscribeBackgroundTick();
       reportWorkerStatus({
         state: "idle",
@@ -394,6 +593,7 @@ export function useGroupIterationBackgroundWorker({
     };
   }, [
     activeGroupRoom?.id,
+    activeGroupRoom?.status,
     isAndroidRuntime,
   ]);
 }

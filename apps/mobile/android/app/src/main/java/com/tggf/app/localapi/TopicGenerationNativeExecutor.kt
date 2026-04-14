@@ -35,6 +35,12 @@ object TopicGenerationNativeExecutor {
     private const val COMFY_SIZE_NODE_ID = "141"
     private const val COMFY_HISTORY_TIMEOUT_MS = 600_000L
     private const val COMFY_HISTORY_POLL_INTERVAL_MS = 1_200L
+    private const val COMFY_WEBP_QUALITY = 82
+    private val BASE_OUTPUT_TITLE_PREFERENCES =
+        listOf(
+            "Preview after Detailing",
+            "Preview after Inpaint",
+        )
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -84,6 +90,7 @@ object TopicGenerationNativeExecutor {
 
     private fun processTick(context: Context) {
         val jobs = BackgroundJobRepository(context)
+        val runtimeRepository = BackgroundRuntimeRepository(context)
         val repository = LocalRepository(context)
         val claimed = jobs.claimDueJobs(
             limit = 1,
@@ -101,6 +108,7 @@ object TopicGenerationNativeExecutor {
                 context = context,
                 repository = repository,
                 jobs = jobs,
+                runtimeRepository = runtimeRepository,
                 job = job,
             )
         }
@@ -165,6 +173,7 @@ object TopicGenerationNativeExecutor {
         context: Context,
         repository: LocalRepository,
         jobs: BackgroundJobRepository,
+        runtimeRepository: BackgroundRuntimeRepository,
         job: BackgroundJobRecord,
     ) {
         val payload = parseJsonObject(job.payloadJson)
@@ -174,6 +183,18 @@ object TopicGenerationNativeExecutor {
             }
         if (sessionId.isEmpty()) {
             jobs.cancelJob(job.id)
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = "unknown",
+                jobId = job.id,
+                stage = "job_scope_missing",
+                level = "error",
+                message = "Failed to resolve sessionId for topic generation job",
+                details = JSONObject().apply {
+                    put("jobId", job.id)
+                    put("payload", payload)
+                },
+            )
             ForegroundSyncService.updateWorkerStatus(
                 context = context,
                 worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
@@ -211,7 +232,26 @@ object TopicGenerationNativeExecutor {
 
         val session = sessions.optJSONObject(sessionIndex) ?: JSONObject()
         if (!session.optString("status", "stopped").equals("running", ignoreCase = true)) {
+            val statusDelayMs =
+                max(0L, (session.optDouble("delaySeconds", 0.0) * 1_000.0).toLong())
             jobs.cancelJob(job.id)
+            syncDesiredState(
+                runtimeRepository = runtimeRepository,
+                sessionId = sessionId,
+                enabled = false,
+                delayMs = statusDelayMs,
+            )
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stage = "session_not_running",
+                level = "info",
+                message = "Topic generation stopped because session is not running",
+                details = JSONObject().apply {
+                    put("sessionStatus", session.optString("status", "stopped"))
+                },
+            )
             ForegroundSyncService.updateWorkerStatus(
                 context = context,
                 worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
@@ -242,6 +282,24 @@ object TopicGenerationNativeExecutor {
             sessions.put(sessionIndex, session)
             repository.writeStoreJson("generatorSessions", sessions.toString())
             jobs.cancelJob(job.id)
+            syncDesiredState(
+                runtimeRepository = runtimeRepository,
+                sessionId = sessionId,
+                enabled = false,
+                delayMs = delayMs,
+            )
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stage = "session_completed",
+                level = "info",
+                message = "Topic generation session reached requested count",
+                details = JSONObject().apply {
+                    put("requestedCount", requestedCount)
+                    put("completedCount", completedCount)
+                },
+            )
             ForegroundSyncService.updateWorkerStatus(
                 context = context,
                 worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
@@ -291,6 +349,18 @@ object TopicGenerationNativeExecutor {
             progress = false,
             claimed = true,
             lastError = "",
+        )
+        appendRuntimeEvent(
+            runtimeRepository = runtimeRepository,
+            scopeId = sessionId,
+            jobId = job.id,
+            stage = "job_claimed",
+            level = "info",
+            message = "Topic generation job claimed by native executor",
+            details = JSONObject().apply {
+                put("iteration", iteration)
+                put("delayMs", delayMs)
+            },
         )
 
         try {
@@ -347,6 +417,37 @@ object TopicGenerationNativeExecutor {
 
             if (nextStatus == "completed") {
                 jobs.cancelJob(job.id)
+                syncDesiredState(
+                    runtimeRepository = runtimeRepository,
+                    sessionId = sessionId,
+                    enabled = false,
+                    delayMs = delayMs,
+                )
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stage = "iteration_completed",
+                    level = "info",
+                    message = "Topic generation iteration completed",
+                    details = JSONObject().apply {
+                        put("iteration", iteration)
+                        put("delayMs", delayMs)
+                        put("imageCount", comfyResult.imageUrls.size)
+                    },
+                )
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stage = "session_completed",
+                    level = "info",
+                    message = "Topic generation session completed",
+                    details = JSONObject().apply {
+                        put("completedCount", iteration)
+                        put("requestedCount", requestedCount)
+                    },
+                )
                 ForegroundSyncService.updateWorkerStatus(
                     context = context,
                     worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
@@ -363,6 +464,19 @@ object TopicGenerationNativeExecutor {
                     runAtMs = System.currentTimeMillis() + delayMs,
                     incrementAttempts = false,
                     lastError = null,
+                )
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stage = "iteration_completed",
+                    level = "info",
+                    message = "Topic generation iteration completed",
+                    details = JSONObject().apply {
+                        put("iteration", iteration)
+                        put("delayMs", delayMs)
+                        put("imageCount", comfyResult.imageUrls.size)
+                    },
                 )
                 ForegroundSyncService.updateWorkerStatus(
                     context = context,
@@ -381,6 +495,23 @@ object TopicGenerationNativeExecutor {
             markSessionError(sessions, sessionIndex, errorMessage)
             repository.writeStoreJson("generatorSessions", sessions.toString())
             jobs.cancelJob(job.id)
+            syncDesiredState(
+                runtimeRepository = runtimeRepository,
+                sessionId = sessionId,
+                enabled = false,
+                delayMs = delayMs,
+            )
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stage = "iteration_failed",
+                level = "error",
+                message = "Topic generation native iteration failed",
+                details = JSONObject().apply {
+                    put("error", errorMessage)
+                },
+            )
             ForegroundSyncService.updateWorkerStatus(
                 context = context,
                 worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
@@ -437,6 +568,12 @@ object TopicGenerationNativeExecutor {
             setCheckpointName(workflow, checkpointName)
         }
 
+        sanitizeWorkflowForApi(workflow)
+        if (!settings.optBoolean("saveComfyOutputs", false)) {
+            // Match web path: consume preview outputs and avoid persisting Image Saver results.
+            stripImageSaverNodes(workflow)
+        }
+
         ForegroundSyncService.updateWorkerStatus(
             context = context,
             worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
@@ -454,7 +591,16 @@ object TopicGenerationNativeExecutor {
         }
 
         val historyEntry = waitForHistory(context, sessionId, baseUrl, promptId, auth)
-        val urls = collectImageUrls(baseUrl, historyEntry)
+        val urls =
+            collectImageUrls(
+                baseUrl = baseUrl,
+                workflow = workflow,
+                historyEntry = historyEntry,
+                outputTitlePreferences = BASE_OUTPUT_TITLE_PREFERENCES,
+                preferredTitleIncludes = parseStringList(session.optJSONArray("outputNodeTitleIncludes")),
+                strictPreferredMatch = session.optBoolean("strictOutputNodeMatch", false),
+                pickLatestImageOnly = session.optBoolean("pickLatestImageOnly", false),
+            )
         return ComfyRunResult(
             imageUrls = urls,
             seed = seed,
@@ -463,6 +609,7 @@ object TopicGenerationNativeExecutor {
     }
 
     private fun queuePrompt(baseUrl: String, workflow: JSONObject, auth: JSONObject?): JSONObject {
+        val uiWorkflow = buildUiWorkflowForExtraPngInfo(workflow)
         val payload = JSONObject().apply {
             put("client_id", UUID.randomUUID().toString())
             put("prompt", workflow)
@@ -470,7 +617,7 @@ object TopicGenerationNativeExecutor {
                 "extra_data",
                 JSONObject().put(
                     "extra_pnginfo",
-                    JSONObject().put("workflow", JSONObject().put("nodes", JSONArray())),
+                    JSONObject().put("workflow", uiWorkflow),
                 ),
             )
         }
@@ -486,6 +633,35 @@ object TopicGenerationNativeExecutor {
             throw IllegalStateException("Comfy /prompt error (${response.code}): ${response.body}")
         }
         return parseJsonObject(response.body)
+    }
+
+    private fun buildUiWorkflowForExtraPngInfo(workflow: JSONObject): JSONObject {
+        val nodes = JSONArray()
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val nodeId = keys.next()
+            val node = workflow.optJSONObject(nodeId) ?: continue
+            val entry =
+                JSONObject().apply {
+                    put("id", nodeId)
+                    put("type", node.optString("class_type", ""))
+                    val title = node.optJSONObject("_meta")?.optString("title", "")
+                    if (!title.isNullOrBlank()) {
+                        put("title", title)
+                    }
+                    // Matches web behavior for Impact Pack wildcard hooks.
+                    put(
+                        "widgets_values",
+                        JSONArray().apply {
+                            put(JSONObject.NULL)
+                            put(JSONObject.NULL)
+                            put(JSONObject.NULL)
+                        },
+                    )
+                }
+            nodes.put(entry)
+        }
+        return JSONObject().put("nodes", nodes)
     }
 
     private fun waitForHistory(
@@ -528,26 +704,233 @@ object TopicGenerationNativeExecutor {
         throw IllegalStateException("Comfy history timeout for prompt_id=$promptId")
     }
 
-    private fun collectImageUrls(baseUrl: String, historyEntry: JSONObject): List<String> {
+    private fun collectImageUrls(
+        baseUrl: String,
+        workflow: JSONObject,
+        historyEntry: JSONObject,
+        outputTitlePreferences: List<String>,
+        preferredTitleIncludes: List<String>,
+        strictPreferredMatch: Boolean,
+        pickLatestImageOnly: Boolean,
+    ): List<String> {
         val outputs = historyEntry.optJSONObject("outputs") ?: return emptyList()
-        val urls = LinkedHashSet<String>()
-        val keys = outputs.keys()
-        while (keys.hasNext()) {
-            val outputKey = keys.next()
-            val output = outputs.optJSONObject(outputKey) ?: continue
-            val images = output.optJSONArray("images") ?: continue
-            for (index in 0 until images.length()) {
-                val image = images.optJSONObject(index) ?: continue
-                val filename = image.optString("filename", "").trim()
-                if (filename.isEmpty()) continue
-                val subfolder = image.optString("subfolder", "")
-                val type = image.optString("type", "output").ifEmpty { "output" }
-                val viewUrl =
-                    "$baseUrl/view?filename=${urlEncode(filename)}&subfolder=${urlEncode(subfolder)}&type=${urlEncode(type)}"
-                urls.add(viewUrl)
+        val nodeGroups = resolveOutputNodeGroups(workflow, outputTitlePreferences)
+        val preferredNodes = resolvePreferredOutputNodes(workflow, preferredTitleIncludes)
+        val preferredImages = collectImagesForNodes(outputs, preferredNodes)
+        val saverImages = collectImagesForNodes(outputs, nodeGroups.saver)
+        val previewImages = collectImagesForNodes(outputs, nodeGroups.preview)
+        val fallbackImages = collectAllImages(outputs)
+        val hasAnyImages =
+            preferredImages.isNotEmpty() ||
+                previewImages.isNotEmpty() ||
+                saverImages.isNotEmpty() ||
+                fallbackImages.isNotEmpty()
+
+        val images =
+            when {
+                preferredImages.isNotEmpty() -> preferredImages
+                previewImages.isNotEmpty() -> previewImages
+                saverImages.isNotEmpty() -> saverImages
+                else -> fallbackImages
+            }
+
+        if (strictPreferredMatch && preferredNodes.isNotEmpty() && preferredImages.isEmpty()) {
+            if (!hasAnyImages) {
+                throw IllegalStateException(
+                    "ComfyUI: no image returned from preferred preview output node",
+                )
             }
         }
+
+        val normalizedImages =
+            if (pickLatestImageOnly && images.isNotEmpty()) {
+                listOf(images.last())
+            } else {
+                images
+            }
+
+        val urls = LinkedHashSet<String>()
+        for (image in normalizedImages) {
+            val filename = image.optString("filename", "").trim()
+            if (filename.isEmpty()) continue
+            val subfolder = image.optString("subfolder", "")
+            val type = image.optString("type", "output").ifEmpty { "output" }
+            val viewUrl =
+                "$baseUrl/view?filename=${urlEncode(filename)}&subfolder=${urlEncode(subfolder)}&type=${urlEncode(type)}"
+            urls.add(viewUrl)
+        }
         return urls.toList()
+    }
+
+    private data class OutputNodeGroups(
+        val saver: List<String>,
+        val preview: List<String>,
+    )
+
+    private data class OutputNodeCandidate(
+        val nodeId: String,
+        val title: String,
+    )
+
+    private fun resolveOutputNodeGroups(
+        workflow: JSONObject,
+        outputTitlePreferences: List<String>,
+    ): OutputNodeGroups {
+        val saverNodes = mutableListOf<String>()
+        val previewCandidates = mutableListOf<OutputNodeCandidate>()
+        val titleTokens = outputTitlePreferences.map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
+
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val nodeId = keys.next()
+            val node = workflow.optJSONObject(nodeId) ?: continue
+            if (node.optString("class_type", "") == "Image Saver") {
+                saverNodes.add(nodeId)
+            }
+            val title = node.optJSONObject("_meta")?.optString("title", "")?.trim()?.lowercase(Locale.ROOT) ?: ""
+            if (title.isEmpty()) continue
+            if (titleTokens.any { token -> title.contains(token) }) {
+                previewCandidates.add(OutputNodeCandidate(nodeId, title))
+            }
+        }
+
+        val preview = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+        for (token in titleTokens) {
+            for (candidate in previewCandidates) {
+                if (!candidate.title.contains(token)) continue
+                if (!seen.add(candidate.nodeId)) continue
+                preview.add(candidate.nodeId)
+            }
+        }
+
+        return OutputNodeGroups(saver = saverNodes, preview = preview)
+    }
+
+    private fun resolvePreferredOutputNodes(
+        workflow: JSONObject,
+        preferredTitleIncludes: List<String>,
+    ): List<String> {
+        if (preferredTitleIncludes.isEmpty()) return emptyList()
+        val tokens =
+            preferredTitleIncludes
+                .map { it.trim().lowercase(Locale.ROOT) }
+                .filter { it.isNotEmpty() }
+        if (tokens.isEmpty()) return emptyList()
+
+        val candidates = mutableListOf<OutputNodeCandidate>()
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val nodeId = keys.next()
+            val node = workflow.optJSONObject(nodeId) ?: continue
+            val title = node.optJSONObject("_meta")?.optString("title", "")?.trim()?.lowercase(Locale.ROOT) ?: ""
+            if (title.isEmpty()) continue
+            if (tokens.any { token -> title.contains(token) }) {
+                candidates.add(OutputNodeCandidate(nodeId, title))
+            }
+        }
+
+        val preferred = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+        for (token in tokens) {
+            for (candidate in candidates) {
+                if (!candidate.title.contains(token)) continue
+                if (!seen.add(candidate.nodeId)) continue
+                preferred.add(candidate.nodeId)
+            }
+        }
+        return preferred
+    }
+
+    private fun collectImagesForNodes(outputs: JSONObject, nodeIds: List<String>): List<JSONObject> {
+        val images = mutableListOf<JSONObject>()
+        for (nodeId in nodeIds) {
+            val nodeOutput = outputs.optJSONObject(nodeId) ?: continue
+            val nodeImages = nodeOutput.optJSONArray("images") ?: continue
+            for (index in 0 until nodeImages.length()) {
+                val image = nodeImages.optJSONObject(index) ?: continue
+                images.add(image)
+            }
+        }
+        return images
+    }
+
+    private fun collectAllImages(outputs: JSONObject): List<JSONObject> {
+        val images = mutableListOf<JSONObject>()
+        val outputKeys = outputs.keys()
+        while (outputKeys.hasNext()) {
+            val outputKey = outputKeys.next()
+            val output = outputs.optJSONObject(outputKey) ?: continue
+            val outputImages = output.optJSONArray("images") ?: continue
+            for (index in 0 until outputImages.length()) {
+                val image = outputImages.optJSONObject(index) ?: continue
+                images.add(image)
+            }
+        }
+        return images
+    }
+
+    private fun parseStringList(array: JSONArray?): List<String> {
+        if (array == null) return emptyList()
+        val result = mutableListOf<String>()
+        for (index in 0 until array.length()) {
+            val value = array.optString(index, "").trim()
+            if (value.isNotEmpty()) {
+                result.add(value)
+            }
+        }
+        return result
+    }
+
+    private fun resolveCheckpointName(workflow: JSONObject): String {
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val node = workflow.optJSONObject(key) ?: continue
+            val inputs = node.optJSONObject("inputs") ?: continue
+            val checkpointName = inputs.optString("ckpt_name", "").trim()
+            if (checkpointName.isNotEmpty()) {
+                return checkpointName
+            }
+        }
+        return "api-model"
+    }
+
+    private fun sanitizeWorkflowForApi(workflow: JSONObject) {
+        val checkpointName = resolveCheckpointName(workflow)
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val node = workflow.optJSONObject(key) ?: continue
+            if (node.optString("class_type", "") != "Image Saver") continue
+            val inputs = node.optJSONObject("inputs") ?: continue
+            val modelname = inputs.opt("modelname")
+            val dependsOnWidgetToString =
+                modelname is JSONArray &&
+                    modelname.length() >= 1 &&
+                    modelname.opt(0)?.toString() == "282"
+            if (dependsOnWidgetToString) {
+                inputs.put("modelname", checkpointName)
+            }
+            inputs.put("extension", "webp")
+            inputs.put("lossless_webp", false)
+            inputs.put("quality_jpeg_or_webp", COMFY_WEBP_QUALITY)
+        }
+    }
+
+    private fun stripImageSaverNodes(workflow: JSONObject) {
+        val toRemove = mutableListOf<String>()
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val node = workflow.optJSONObject(key) ?: continue
+            if (node.optString("class_type", "") == "Image Saver") {
+                toRemove.add(key)
+            }
+        }
+        for (key in toRemove) {
+            workflow.remove(key)
+        }
     }
 
     private fun setCheckpointName(workflow: JSONObject, checkpointName: String) {
@@ -857,6 +1240,45 @@ object TopicGenerationNativeExecutor {
             }
         }
         return headers
+    }
+
+    private fun syncDesiredState(
+        runtimeRepository: BackgroundRuntimeRepository,
+        sessionId: String,
+        enabled: Boolean,
+        delayMs: Long,
+    ) {
+        if (sessionId.isBlank()) return
+        runtimeRepository.upsertDesiredState(
+            taskType = TOPIC_GENERATION_JOB_TYPE,
+            scopeId = sessionId.trim(),
+            enabled = enabled,
+            payloadJson =
+                JSONObject().apply {
+                    put("sessionId", sessionId.trim())
+                    put("delayMs", max(0L, delayMs))
+                }.toString(),
+        )
+    }
+
+    private fun appendRuntimeEvent(
+        runtimeRepository: BackgroundRuntimeRepository,
+        scopeId: String,
+        jobId: String?,
+        stage: String,
+        level: String,
+        message: String,
+        details: JSONObject? = null,
+    ) {
+        runtimeRepository.appendEvent(
+            taskType = TOPIC_GENERATION_JOB_TYPE,
+            scopeId = scopeId.ifBlank { "unknown" },
+            jobId = jobId,
+            stage = stage,
+            level = level,
+            message = message,
+            detailsJson = details?.toString(),
+        )
     }
 
     private fun urlEncode(value: String): String {

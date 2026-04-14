@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -12,7 +14,7 @@ function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: "inherit",
-      shell: process.platform === "win32",
+      shell: false,
       ...options,
     });
 
@@ -27,11 +29,27 @@ function run(command, args, options = {}) {
   });
 }
 
+function resolveElectronBuilderCli() {
+  const requireFromDesktop = createRequire(path.join(desktopDir, "package.json"));
+  const packageJsonPath = requireFromDesktop.resolve("electron-builder/package.json");
+  const packageJsonRaw = readFileSync(packageJsonPath, "utf8");
+  const packageJson = JSON.parse(packageJsonRaw);
+  const binValue =
+    typeof packageJson.bin === "string"
+      ? packageJson.bin
+      : packageJson.bin?.["electron-builder"];
+  if (typeof binValue !== "string" || !binValue.trim()) {
+    throw new Error("Cannot resolve electron-builder CLI binary from package metadata");
+  }
+  return path.resolve(path.dirname(packageJsonPath), binValue);
+}
+
 async function main() {
   const builderArgs = process.argv.slice(2);
+  const electronBuilderCli = resolveElectronBuilderCli();
   await run(
-    "npm",
-    ["exec", "electron-builder", "--", ...builderArgs],
+    process.execPath,
+    [electronBuilderCli, ...builderArgs],
     {
       cwd: desktopDir,
       env: {

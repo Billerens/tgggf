@@ -8,10 +8,12 @@ import {
 } from "./backgroundJobs";
 import {
   buildTopicGenerationJobId,
+  TOPIC_GENERATION_JOB_ID_PREFIX,
   TOPIC_GENERATION_JOB_TYPE,
 } from "./backgroundJobKeys";
 import { pushSystemLog } from "../system-logs/systemLogStore";
 import { updateForegroundWorkerStatus } from "./foregroundService";
+import { setBackgroundDesiredState } from "./backgroundRuntime";
 
 interface LocalApiPluginRequestInput {
   method: "GET" | "PUT";
@@ -123,6 +125,32 @@ export function useTopicGenerationBackgroundWorker({
       void cancelBackgroundJob(previousJobId).catch(() => {
         // Ignore queue mutation errors while switching sessions.
       });
+      const previousSessionId = previousJobId.startsWith(TOPIC_GENERATION_JOB_ID_PREFIX)
+        ? previousJobId.slice(TOPIC_GENERATION_JOB_ID_PREFIX.length).trim()
+        : "";
+      if (previousSessionId) {
+        void setBackgroundDesiredState({
+          taskType: TOPIC_GENERATION_JOB_TYPE,
+          scopeId: previousSessionId,
+          enabled: false,
+          payload: {
+            sessionId: previousSessionId,
+            delayMs: 0,
+          },
+        }).catch((error) => {
+          const errorMessage =
+            error instanceof Error ? error.message : "desired_state_sync_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "topic_generation.desired_state_sync_failed",
+            message: "Failed to disable desired-state for previous topic session",
+            details: {
+              sessionId: previousSessionId,
+              error: errorMessage,
+            },
+          });
+        });
+      }
     }
 
     if (!generationSession) {
@@ -143,6 +171,27 @@ export function useTopicGenerationBackgroundWorker({
 
     const syncNativeTopicJob = async () => {
       if (!sessionCanRun) {
+        void setBackgroundDesiredState({
+          taskType: TOPIC_GENERATION_JOB_TYPE,
+          scopeId: sessionId,
+          enabled: false,
+          payload: {
+            sessionId,
+            delayMs,
+          },
+        }).catch((error) => {
+          const errorMessage =
+            error instanceof Error ? error.message : "desired_state_sync_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "topic_generation.desired_state_sync_failed",
+            message: "Failed to disable topic desired-state",
+            details: {
+              sessionId,
+              error: errorMessage,
+            },
+          });
+        });
         try {
           await cancelBackgroundJob(nextJobId ?? buildTopicGenerationJobId(sessionId));
         } catch {
@@ -157,6 +206,30 @@ export function useTopicGenerationBackgroundWorker({
           // Ignore status bridge failures.
         });
         return;
+      }
+
+      try {
+        await setBackgroundDesiredState({
+          taskType: TOPIC_GENERATION_JOB_TYPE,
+          scopeId: sessionId,
+          enabled: true,
+          payload: {
+            sessionId,
+            delayMs,
+          },
+        });
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "desired_state_sync_failed";
+        pushSystemLog({
+          level: "warn",
+          eventType: "topic_generation.desired_state_sync_failed",
+          message: "Failed to enable topic desired-state",
+          details: {
+            sessionId,
+            error: errorMessage,
+          },
+        });
       }
 
       try {

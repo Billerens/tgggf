@@ -67,6 +67,7 @@ async function main() {
       `--mode=${mode}`,
     ],
     {
+      shell: false,
       env: {
         ...process.env,
         TG_BUILD_PROFILE: mode,
