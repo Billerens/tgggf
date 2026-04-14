@@ -69,7 +69,7 @@ class ForegroundSyncService : Service() {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit().putBoolean(PREF_KEEP_ALIVE_ENABLED, enabled).apply()
             if (enabled) {
-                start(context)
+                ensureStartedIfEnabled(context)
             } else {
                 stop(context)
             }
@@ -78,6 +78,7 @@ class ForegroundSyncService : Service() {
         @JvmStatic
         fun ensureStartedIfEnabled(context: Context) {
             if (isEnabled(context)) {
+                BackgroundScheduler.ensureScheduled(context, "foreground_ensure_started")
                 start(context)
             }
         }

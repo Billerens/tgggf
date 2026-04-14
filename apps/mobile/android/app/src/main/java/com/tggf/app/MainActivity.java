@@ -11,6 +11,7 @@ import android.webkit.WebView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
+import com.tggf.app.localapi.BackgroundScheduler;
 import com.tggf.app.localapi.ForegroundSyncService;
 import com.tggf.app.localapi.LocalApiBridgePlugin;
 import java.lang.ref.WeakReference;
@@ -29,6 +30,7 @@ public class MainActivity extends BridgeActivity {
         enableWebViewDebugging("onCreate");
         promoteWebViewRendererPriority("onCreate");
         requestNotificationPermissionIfNeeded();
+        BackgroundScheduler.ensureScheduled(this, "activity_on_create");
         ForegroundSyncService.ensureStartedIfEnabled(this);
     }
 
