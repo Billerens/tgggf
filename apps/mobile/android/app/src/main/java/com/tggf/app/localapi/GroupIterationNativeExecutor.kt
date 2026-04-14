@@ -473,10 +473,107 @@ object GroupIterationNativeExecutor {
         val messages = readStoreArray(repository, "groupMessages")
         val settings = parseJsonObject(repository.readSettingsJson())
         val userName = settings.optString("userName", "Пользователь").trim().ifEmpty { "Пользователь" }
-        val speakerPersonaId = selectNextSpeakerPersonaId(participants, events, roomId)
+        val deterministicSpeakerPersonaId = selectNextSpeakerPersonaId(participants, events, roomId)
+        var speakerPersonaId: String? = deterministicSpeakerPersonaId
+        val personasPlusUserMode =
+            room.optString("mode", "personas_plus_user")
+                .equals("personas_plus_user", ignoreCase = true)
+        var tickStatus = if (speakerPersonaId.isNullOrBlank()) "skipped" else "spoke"
+        var tickReason = "native_headless_tick"
+        var tickWaitForUser = !speakerPersonaId.isNullOrBlank() && personasPlusUserMode
+        var tickWaitReason: String? =
+            if (tickWaitForUser) {
+                "Ожидается ответ пользователя ($userName)"
+            } else {
+                null
+            }
+        var userContextAction = "keep"
+        var orchestrationSource = "native_headless_deterministic"
+        var orchestratorDecisionApplied = false
+
+        try {
+            val llmDecision =
+                NativeLlmClient.requestGroupOrchestratorDecision(
+                    settings = settings,
+                    room = room,
+                    participants = participants,
+                    personas = personas,
+                    messages = messages,
+                    roomId = roomId,
+                    userName = userName,
+                )
+            if (llmDecision != null) {
+                orchestratorDecisionApplied = true
+                val llmSpeakerId = llmDecision.speakerPersonaId?.trim().orEmpty()
+                val validatedSpeakerId =
+                    if (llmSpeakerId.isNotBlank() && participantHasPersona(participants, roomId, llmSpeakerId)) {
+                        llmSpeakerId
+                    } else {
+                        ""
+                    }
+                when (llmDecision.status) {
+                    "spoke" -> {
+                        if (validatedSpeakerId.isNotBlank()) {
+                            speakerPersonaId = validatedSpeakerId
+                            tickStatus = "spoke"
+                            tickReason = llmDecision.reason
+                            tickWaitForUser =
+                                if (llmDecision.waitForUser) {
+                                    true
+                                } else {
+                                    personasPlusUserMode
+                                }
+                            tickWaitReason =
+                                llmDecision.waitReason
+                                    ?: if (tickWaitForUser) {
+                                        "Ожидается ответ пользователя ($userName)"
+                                    } else {
+                                        null
+                                    }
+                            userContextAction = llmDecision.userContextAction ?: "keep"
+                            orchestrationSource = "native_llm"
+                        } else {
+                            appendRuntimeEvent(
+                                runtime = runtime,
+                                scopeId = roomId,
+                                jobId = job.id,
+                                stage = "llm_orchestrator_invalid_speaker",
+                                level = "warn",
+                                message = "LLM orchestrator returned invalid speaker, using deterministic fallback",
+                                details = JSONObject().apply {
+                                    put("llmSpeakerPersonaId", llmSpeakerId)
+                                    put("deterministicSpeakerPersonaId", deterministicSpeakerPersonaId)
+                                },
+                            )
+                        }
+                    }
+                    "waiting", "skipped" -> {
+                        speakerPersonaId = null
+                        tickStatus = llmDecision.status
+                        tickReason = llmDecision.reason
+                        tickWaitForUser = llmDecision.waitForUser || llmDecision.status == "waiting"
+                        tickWaitReason = llmDecision.waitReason
+                        userContextAction = llmDecision.userContextAction ?: "keep"
+                        orchestrationSource = "native_llm"
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = roomId,
+                jobId = job.id,
+                stage = "llm_orchestrator_failed",
+                level = "warn",
+                message = "Native LLM orchestrator failed, using deterministic fallback",
+                details = JSONObject().apply {
+                    put("error", error.message ?: "unknown_error")
+                },
+            )
+        }
+
         val turnId = UUID.randomUUID().toString()
         val nowIso = nowIsoUtc()
-        val tickStatus = if (speakerPersonaId.isNullOrBlank()) "skipped" else "spoke"
 
         events.put(
             JSONObject().apply {
@@ -489,15 +586,22 @@ object GroupIterationNativeExecutor {
                     JSONObject().apply {
                         put("roomMode", room.optString("mode", "personas_plus_user"))
                         put("model", settings.optString("groupOrchestratorModel", settings.optString("model", "")))
-                        put("source", "native_headless_deterministic")
-                        put("reason", "native_headless_tick")
+                        put("source", orchestrationSource)
+                        put("reason", tickReason)
                         put("status", tickStatus)
-                        put("userContextAction", "keep")
+                        put("waitForUser", tickWaitForUser)
+                        if (!tickWaitReason.isNullOrBlank()) {
+                            put("waitReason", tickWaitReason)
+                        }
+                        put("userContextAction", userContextAction)
                         put(
                             "debug",
                             JSONObject().apply {
                                 put("nativeHeadless", true)
                                 put("headlessVersion", "v1")
+                                put("orchestratorDecisionApplied", orchestratorDecisionApplied)
+                                put("deterministicSpeakerPersonaId", deterministicSpeakerPersonaId)
+                                put("finalSpeakerPersonaId", speakerPersonaId)
                             },
                         )
                     },
@@ -508,16 +612,61 @@ object GroupIterationNativeExecutor {
 
         var persistedMessageId: String? = null
         var speakerName = "Native Orchestrator"
+        var speechSource = "native_headless_deterministic"
+        var speechResponseId = ""
         if (!speakerPersonaId.isNullOrBlank()) {
             val speakerPersona = findObjectById(personas, speakerPersonaId)
             speakerName = speakerPersona?.optString("name", "").orEmpty().ifBlank { speakerName }
             val latestUserMessage = findLatestUserMessage(messages, roomId)
-            val speechText =
+            var speechText =
                 if (latestUserMessage != null) {
                     "Продолжаю диалог без активного UI. ($HEADLESS_FALLBACK_MESSAGE)"
                 } else {
                     "Фоновая автономная итерация выполнена. ($HEADLESS_FALLBACK_MESSAGE)"
                 }
+            if (speakerPersona != null) {
+                try {
+                    val llmSpeech =
+                        NativeLlmClient.requestGroupPersonaSpeech(
+                            settings = settings,
+                            room = room,
+                            speakerPersona = speakerPersona,
+                            messages = messages,
+                            roomId = roomId,
+                            userName = userName,
+                        )
+                    if (llmSpeech != null && llmSpeech.content.isNotBlank()) {
+                        speechText = llmSpeech.content
+                        speechSource = "native_llm"
+                        speechResponseId = llmSpeech.responseId ?: ""
+                    } else {
+                        appendRuntimeEvent(
+                            runtime = runtime,
+                            scopeId = roomId,
+                            jobId = job.id,
+                            stage = "llm_persona_empty_fallback",
+                            level = "warn",
+                            message = "Native LLM persona returned empty content, using deterministic fallback text",
+                            details = JSONObject().apply {
+                                put("speakerPersonaId", speakerPersonaId)
+                            },
+                        )
+                    }
+                } catch (error: Exception) {
+                    appendRuntimeEvent(
+                        runtime = runtime,
+                        scopeId = roomId,
+                        jobId = job.id,
+                        stage = "llm_persona_failed",
+                        level = "warn",
+                        message = "Native LLM persona generation failed, using deterministic fallback text",
+                        details = JSONObject().apply {
+                            put("speakerPersonaId", speakerPersonaId)
+                            put("error", error.message ?: "unknown_error")
+                        },
+                    )
+                }
+            }
             val messageId = UUID.randomUUID().toString()
             val nextMessage =
                 JSONObject().apply {
@@ -565,8 +714,8 @@ object GroupIterationNativeExecutor {
                         JSONObject().apply {
                             put("personaId", speakerPersonaId)
                             put("messagePreview", speechText.take(180))
-                            put("source", "native_headless_deterministic")
-                            put("responseId", "")
+                            put("source", speechSource)
+                            put("responseId", speechResponseId)
                         },
                     )
                     put("createdAt", nowIso)
@@ -574,24 +723,71 @@ object GroupIterationNativeExecutor {
             )
         }
 
+        val wasWaitingForUser = room.optBoolean("waitingForUser", false)
+        val previousWaitingReason = room.optString("waitingReason", "").trim()
         val nextRoom = JSONObject(room.toString())
         nextRoom.put("updatedAt", nowIso)
         nextRoom.put("lastTickAt", nowIso)
-        nextRoom.put("waitingForUser", false)
-        nextRoom.remove("waitingReason")
+        nextRoom.put("waitingForUser", tickWaitForUser)
+        if (tickWaitForUser) {
+            if (!tickWaitReason.isNullOrBlank()) {
+                nextRoom.put("waitingReason", tickWaitReason)
+            }
+        } else {
+            nextRoom.remove("waitingReason")
+        }
+        if (userContextAction == "clear") {
+            nextRoom.remove("orchestratorUserFocusMessageId")
+        }
         nextRoom.put(
             "state",
             JSONObject().apply {
-                put("phase", "idle")
+                put("phase", if (tickWaitForUser) "waiting_user" else "idle")
                 put("updatedAt", nowIso)
                 put("turnId", turnId)
                 if (!speakerPersonaId.isNullOrBlank()) {
                     put("speakerPersonaId", speakerPersonaId)
                 }
-                put("reason", "native_headless_tick")
+                put("reason", tickReason)
             },
         )
         upsertObjectById(rooms, roomId, nextRoom)
+
+        if (tickWaitForUser && (!wasWaitingForUser || previousWaitingReason != (tickWaitReason ?: ""))) {
+            events.put(
+                JSONObject().apply {
+                    put("id", UUID.randomUUID().toString())
+                    put("roomId", roomId)
+                    put("turnId", turnId)
+                    put("type", "room_waiting_user")
+                    put(
+                        "payload",
+                        JSONObject().apply {
+                            put("userName", userName)
+                            put("reason", tickWaitReason ?: "native_waiting")
+                        },
+                    )
+                    put("createdAt", nowIso)
+                },
+            )
+        }
+        if (!tickWaitForUser && wasWaitingForUser) {
+            events.put(
+                JSONObject().apply {
+                    put("id", UUID.randomUUID().toString())
+                    put("roomId", roomId)
+                    put("turnId", turnId)
+                    put("type", "room_resumed")
+                    put(
+                        "payload",
+                        JSONObject().apply {
+                            put("reason", tickReason.ifBlank { "native_resumed" })
+                        },
+                    )
+                    put("createdAt", nowIso)
+                },
+            )
+        }
 
         repository.writeStoreJson("groupRooms", rooms.toString())
         repository.writeStoreJson("groupEvents", events.toString())
@@ -611,14 +807,21 @@ object GroupIterationNativeExecutor {
             jobId = job.id,
             stage = "headless_iteration_completed",
             level = "info",
-            message = "Group iteration completed via native headless deterministic path",
+            message = "Group iteration completed via native headless path",
             details = JSONObject().apply {
                 put("turnId", turnId)
+                put("status", tickStatus)
+                put("reason", tickReason)
+                put("source", orchestrationSource)
+                put("speechSource", speechSource)
                 put("speakerPersonaId", speakerPersonaId)
                 put("speakerName", speakerName)
                 put("messageId", persistedMessageId)
                 put("intervalMs", intervalMs)
                 put("userName", userName)
+                put("waitForUser", tickWaitForUser)
+                put("waitReason", tickWaitReason)
+                put("userContextAction", userContextAction)
             },
         )
         ForegroundSyncService.updateWorkerStatus(
@@ -661,6 +864,21 @@ object GroupIterationNativeExecutor {
         } else {
             items.put(next)
         }
+    }
+
+    private fun participantHasPersona(
+        participants: JSONArray,
+        roomId: String,
+        personaId: String,
+    ): Boolean {
+        for (index in 0 until participants.length()) {
+            val participant = participants.optJSONObject(index) ?: continue
+            if (participant.optString("roomId", "").trim() != roomId) continue
+            if (participant.optString("personaId", "").trim() == personaId.trim()) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun selectNextSpeakerPersonaId(
