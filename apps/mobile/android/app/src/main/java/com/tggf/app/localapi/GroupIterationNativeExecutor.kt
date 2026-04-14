@@ -5,6 +5,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.time.Instant
+import java.util.UUID
 import kotlin.math.max
 
 object GroupIterationNativeExecutor {
@@ -14,6 +16,7 @@ object GroupIterationNativeExecutor {
     private const val GROUP_ITERATION_DEFAULT_INTERVAL_MS = 4_200L
     private const val GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS = 8_000L
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
+    private const val HEADLESS_FALLBACK_MESSAGE = "native_headless_v1"
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -309,6 +312,49 @@ object GroupIterationNativeExecutor {
             return
         }
 
+        val nativeHeadlessEnabled = isNativeHeadlessModeEnabled(repository)
+        if (nativeHeadlessEnabled) {
+            val headlessCompleted =
+                try {
+                    executeHeadlessIteration(
+                        context = context,
+                        repository = repository,
+                        jobs = jobs,
+                        runtime = runtime,
+                        job = job,
+                        roomId = roomId,
+                        intervalMs = intervalMs,
+                    )
+                    true
+                } catch (error: Exception) {
+                    appendRuntimeEvent(
+                        runtime = runtime,
+                        scopeId = roomId,
+                        jobId = job.id,
+                        stage = "headless_iteration_failed",
+                        level = "warn",
+                        message = "Native headless iteration failed, falling back to bridge dispatch",
+                        details = JSONObject().apply {
+                            put("error", error.message ?: "unknown_error")
+                        },
+                    )
+                    ForegroundSyncService.updateWorkerStatus(
+                        context = context,
+                        worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+                        state = "running",
+                        scopeId = roomId,
+                        detail = "headless_failed_bridge_fallback",
+                        progress = false,
+                        claimed = true,
+                        lastError = error.message ?: "headless_failed",
+                    )
+                    false
+                }
+            if (headlessCompleted) {
+                return
+            }
+        }
+
         val requestedAtMs = System.currentTimeMillis()
         LocalApiBridgePlugin.emitGroupIterationRunRequest(
             source = "native_group_executor",
@@ -374,6 +420,304 @@ object GroupIterationNativeExecutor {
             )
         }
     }
+
+    private fun isNativeHeadlessModeEnabled(repository: LocalRepository): Boolean {
+        val settings = parseJsonObject(repository.readSettingsJson())
+        return settings.optBoolean("androidNativeGroupIterationV1", false)
+    }
+
+    private fun executeHeadlessIteration(
+        context: Context,
+        repository: LocalRepository,
+        jobs: BackgroundJobRepository,
+        runtime: BackgroundRuntimeRepository,
+        job: BackgroundJobRecord,
+        roomId: String,
+        intervalMs: Long,
+    ) {
+        val rooms = readStoreArray(repository, "groupRooms")
+        val roomIndex = findObjectIndexById(rooms, roomId)
+        if (roomIndex < 0) {
+            jobs.rescheduleJob(
+                id = job.id,
+                runAtMs = System.currentTimeMillis() + CONTEXT_SYNC_RETRY_DELAY_MS,
+                incrementAttempts = false,
+                lastError = "room_missing",
+            )
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = roomId,
+                jobId = job.id,
+                stage = "headless_room_missing",
+                level = "warn",
+                message = "Headless iteration deferred because room is missing",
+                details = null,
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+                state = "running",
+                scopeId = roomId,
+                detail = "headless_awaiting_room_sync",
+                progress = false,
+                claimed = true,
+                lastError = "room_missing",
+            )
+            return
+        }
+
+        val room = rooms.optJSONObject(roomIndex) ?: JSONObject()
+        val participants = readStoreArray(repository, "groupParticipants")
+        val personas = readStoreArray(repository, "personas")
+        val events = readStoreArray(repository, "groupEvents")
+        val messages = readStoreArray(repository, "groupMessages")
+        val settings = parseJsonObject(repository.readSettingsJson())
+        val userName = settings.optString("userName", "Пользователь").trim().ifEmpty { "Пользователь" }
+        val speakerPersonaId = selectNextSpeakerPersonaId(participants, events, roomId)
+        val turnId = UUID.randomUUID().toString()
+        val nowIso = nowIsoUtc()
+        val tickStatus = if (speakerPersonaId.isNullOrBlank()) "skipped" else "spoke"
+
+        events.put(
+            JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
+                put("roomId", roomId)
+                put("turnId", turnId)
+                put("type", "orchestrator_tick_started")
+                put(
+                    "payload",
+                    JSONObject().apply {
+                        put("roomMode", room.optString("mode", "personas_plus_user"))
+                        put("model", settings.optString("groupOrchestratorModel", settings.optString("model", "")))
+                        put("source", "native_headless_deterministic")
+                        put("reason", "native_headless_tick")
+                        put("status", tickStatus)
+                        put("userContextAction", "keep")
+                        put(
+                            "debug",
+                            JSONObject().apply {
+                                put("nativeHeadless", true)
+                                put("headlessVersion", "v1")
+                            },
+                        )
+                    },
+                )
+                put("createdAt", nowIso)
+            },
+        )
+
+        var persistedMessageId: String? = null
+        var speakerName = "Native Orchestrator"
+        if (!speakerPersonaId.isNullOrBlank()) {
+            val speakerPersona = findObjectById(personas, speakerPersonaId)
+            speakerName = speakerPersona?.optString("name", "").orEmpty().ifBlank { speakerName }
+            val latestUserMessage = findLatestUserMessage(messages, roomId)
+            val speechText =
+                if (latestUserMessage != null) {
+                    "Продолжаю диалог без активного UI. ($HEADLESS_FALLBACK_MESSAGE)"
+                } else {
+                    "Фоновая автономная итерация выполнена. ($HEADLESS_FALLBACK_MESSAGE)"
+                }
+            val messageId = UUID.randomUUID().toString()
+            val nextMessage =
+                JSONObject().apply {
+                    put("id", messageId)
+                    put("roomId", roomId)
+                    put("turnId", turnId)
+                    put("authorType", "persona")
+                    put("authorPersonaId", speakerPersonaId)
+                    put("authorDisplayName", speakerName)
+                    val avatarUrl =
+                        speakerPersona?.optString("avatarUrl", "")?.trim().orEmpty()
+                    if (avatarUrl.isNotBlank()) {
+                        put("authorAvatarUrl", avatarUrl)
+                    }
+                    put("content", speechText)
+                    put("createdAt", nowIso)
+                }
+            messages.put(nextMessage)
+            persistedMessageId = messageId
+
+            events.put(
+                JSONObject().apply {
+                    put("id", UUID.randomUUID().toString())
+                    put("roomId", roomId)
+                    put("turnId", turnId)
+                    put("type", "speaker_selected")
+                    put(
+                        "payload",
+                        JSONObject().apply {
+                            put("personaId", speakerPersonaId)
+                            put("personaName", speakerName)
+                        },
+                    )
+                    put("createdAt", nowIso)
+                },
+            )
+            events.put(
+                JSONObject().apply {
+                    put("id", UUID.randomUUID().toString())
+                    put("roomId", roomId)
+                    put("turnId", turnId)
+                    put("type", "persona_spoke")
+                    put(
+                        "payload",
+                        JSONObject().apply {
+                            put("personaId", speakerPersonaId)
+                            put("messagePreview", speechText.take(180))
+                            put("source", "native_headless_deterministic")
+                            put("responseId", "")
+                        },
+                    )
+                    put("createdAt", nowIso)
+                },
+            )
+        }
+
+        val nextRoom = JSONObject(room.toString())
+        nextRoom.put("updatedAt", nowIso)
+        nextRoom.put("lastTickAt", nowIso)
+        nextRoom.put("waitingForUser", false)
+        nextRoom.remove("waitingReason")
+        nextRoom.put(
+            "state",
+            JSONObject().apply {
+                put("phase", "idle")
+                put("updatedAt", nowIso)
+                put("turnId", turnId)
+                if (!speakerPersonaId.isNullOrBlank()) {
+                    put("speakerPersonaId", speakerPersonaId)
+                }
+                put("reason", "native_headless_tick")
+            },
+        )
+        upsertObjectById(rooms, roomId, nextRoom)
+
+        repository.writeStoreJson("groupRooms", rooms.toString())
+        repository.writeStoreJson("groupEvents", events.toString())
+        if (persistedMessageId != null) {
+            repository.writeStoreJson("groupMessages", messages.toString())
+        }
+
+        jobs.rescheduleJob(
+            id = job.id,
+            runAtMs = System.currentTimeMillis() + intervalMs,
+            incrementAttempts = false,
+            lastError = null,
+        )
+        appendRuntimeEvent(
+            runtime = runtime,
+            scopeId = roomId,
+            jobId = job.id,
+            stage = "headless_iteration_completed",
+            level = "info",
+            message = "Group iteration completed via native headless deterministic path",
+            details = JSONObject().apply {
+                put("turnId", turnId)
+                put("speakerPersonaId", speakerPersonaId)
+                put("speakerName", speakerName)
+                put("messageId", persistedMessageId)
+                put("intervalMs", intervalMs)
+                put("userName", userName)
+            },
+        )
+        ForegroundSyncService.updateWorkerStatus(
+            context = context,
+            worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+            state = "running",
+            scopeId = roomId,
+            detail =
+                if (persistedMessageId == null) {
+                    "native_headless_skipped"
+                } else {
+                    "native_headless_progress"
+                },
+            progress = true,
+            claimed = true,
+            lastError = "",
+        )
+    }
+
+    private fun findObjectIndexById(items: JSONArray, targetId: String): Int {
+        for (index in 0 until items.length()) {
+            val item = items.optJSONObject(index) ?: continue
+            if (item.optString("id", "").trim() == targetId) {
+                return index
+            }
+        }
+        return -1
+    }
+
+    private fun findObjectById(items: JSONArray, targetId: String): JSONObject? {
+        val index = findObjectIndexById(items, targetId)
+        if (index < 0) return null
+        return items.optJSONObject(index)
+    }
+
+    private fun upsertObjectById(items: JSONArray, targetId: String, next: JSONObject) {
+        val index = findObjectIndexById(items, targetId)
+        if (index >= 0) {
+            items.put(index, next)
+        } else {
+            items.put(next)
+        }
+    }
+
+    private fun selectNextSpeakerPersonaId(
+        participants: JSONArray,
+        events: JSONArray,
+        roomId: String,
+    ): String? {
+        val participantIds = mutableListOf<String>()
+        for (index in 0 until participants.length()) {
+            val participant = participants.optJSONObject(index) ?: continue
+            if (participant.optString("roomId", "").trim() != roomId) continue
+            val role = participant.optString("role", "member").trim().lowercase()
+            if (role == "observer") continue
+            val personaId = participant.optString("personaId", "").trim()
+            if (personaId.isBlank()) continue
+            if (!participantIds.contains(personaId)) {
+                participantIds.add(personaId)
+            }
+        }
+        if (participantIds.isEmpty()) return null
+
+        var previousSpeakerId = ""
+        for (index in events.length() - 1 downTo 0) {
+            val event = events.optJSONObject(index) ?: continue
+            if (event.optString("roomId", "").trim() != roomId) continue
+            if (event.optString("type", "").trim() != "speaker_selected") continue
+            previousSpeakerId = event.optJSONObject("payload")?.optString("personaId", "")?.trim().orEmpty()
+            if (previousSpeakerId.isNotBlank()) break
+        }
+        if (previousSpeakerId.isBlank()) {
+            return participantIds.firstOrNull()
+        }
+        val previousIndex = participantIds.indexOf(previousSpeakerId)
+        if (previousIndex < 0) {
+            return participantIds.firstOrNull()
+        }
+        val nextIndex = (previousIndex + 1) % participantIds.size
+        return participantIds[nextIndex]
+    }
+
+    private fun findLatestUserMessage(messages: JSONArray, roomId: String): JSONObject? {
+        var latest: JSONObject? = null
+        var latestCreatedAt = ""
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("roomId", "").trim() != roomId) continue
+            if (!message.optString("authorType", "").trim().equals("user", ignoreCase = true)) continue
+            val createdAt = message.optString("createdAt", "").trim()
+            if (latest == null || createdAt > latestCreatedAt) {
+                latest = message
+                latestCreatedAt = createdAt
+            }
+        }
+        return latest
+    }
+
+    private fun nowIsoUtc(): String = Instant.now().toString()
 
     private fun readStoreArray(repository: LocalRepository, storeName: String): JSONArray {
         val raw = repository.readStoreJson(storeName)
