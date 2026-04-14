@@ -24,6 +24,10 @@ data class NativeGroupOrchestratorDecision(
 data class NativeLlmResponse(
     val content: String,
     val responseId: String?,
+    val comfyPrompt: String?,
+    val comfyPrompts: List<String>,
+    val comfyImageDescription: String?,
+    val comfyImageDescriptions: List<String>,
 )
 
 private data class HttpResult(
@@ -145,7 +149,11 @@ object NativeLlmClient {
         val systemPrompt =
             buildString {
                 appendLine("You are persona \"$personaName\" ($personaId).")
-                appendLine("Return ONLY JSON: {\"visibleText\":\"...\"}.")
+                appendLine(
+                    "Return ONLY JSON with fields: visibleText (required), " +
+                        "comfyPrompts (optional string array), " +
+                        "comfyImageDescriptions (optional string array).",
+                )
                 appendLine("No markdown, no narration, no speaker labels.")
                 appendLine("Keep response concise and conversational.")
                 if (personalityPrompt.isNotBlank()) {
@@ -183,9 +191,23 @@ object NativeLlmClient {
         val parsed = parseJsonObjectLoose(response.content)
         val visibleText = sanitizeVisibleText(parsed.optString("visibleText", ""))
         if (visibleText.isBlank()) return null
+        val comfyPrompts =
+            parseStringArrayFlexible(parsed.opt("comfyPrompts"))
+                .ifEmpty {
+                    parsed.optString("comfyPrompt", "").trim().ifEmpty { null }?.let { listOf(it) } ?: emptyList()
+                }
+        val comfyImageDescriptions =
+            parseStringArrayFlexible(parsed.opt("comfyImageDescriptions"))
+                .ifEmpty {
+                    parsed.optString("comfyImageDescription", "").trim().ifEmpty { null }?.let { listOf(it) } ?: emptyList()
+                }
         return NativeLlmResponse(
             content = visibleText,
             responseId = response.responseId,
+            comfyPrompt = comfyPrompts.firstOrNull(),
+            comfyPrompts = comfyPrompts,
+            comfyImageDescription = comfyImageDescriptions.firstOrNull(),
+            comfyImageDescriptions = comfyImageDescriptions,
         )
     }
 
@@ -315,6 +337,10 @@ object NativeLlmClient {
                     return NativeLlmResponse(
                         content = content,
                         responseId = responseId,
+                        comfyPrompt = null,
+                        comfyPrompts = emptyList(),
+                        comfyImageDescription = null,
+                        comfyImageDescriptions = emptyList(),
                     )
                 }
 
@@ -525,6 +551,30 @@ object NativeLlmClient {
                 .replace(Regex("""\n{3,}"""), "\n\n")
                 .trim()
         return clipText(text, 950)
+    }
+
+    private fun parseStringArrayFlexible(raw: Any?): List<String> {
+        val result = mutableListOf<String>()
+        when (raw) {
+            is String -> {
+                val value = raw.trim()
+                if (value.isNotEmpty()) {
+                    result.add(value)
+                }
+            }
+            is JSONArray -> {
+                for (index in 0 until raw.length()) {
+                    val item = raw.opt(index)
+                    if (item is String) {
+                        val value = item.trim()
+                        if (value.isNotEmpty()) {
+                            result.add(value)
+                        }
+                    }
+                }
+            }
+        }
+        return result
     }
 
     private fun parseJsonObjectLoose(raw: String?): JSONObject {

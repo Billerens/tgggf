@@ -58,7 +58,7 @@ object TopicGenerationNativeExecutor {
         val body: String,
     )
 
-    private data class ComfyRunResult(
+    data class ComfyRunResult(
         val imageUrls: List<String>,
         val seed: Long,
         val model: String?,
@@ -525,6 +525,42 @@ object TopicGenerationNativeExecutor {
         }
     }
 
+    @JvmStatic
+    fun generateComfyImageForGroup(
+        context: Context,
+        settings: JSONObject,
+        prompt: String,
+        checkpointName: String?,
+        seedKey: String,
+        scopeId: String,
+    ): ComfyRunResult {
+        val seed = stableSeedFromText(seedKey)
+        return runComfyGenerationInternal(
+            context = context,
+            worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+            workerScopeId = scopeId.ifBlank { "group" },
+            workerQueueDetail = "native_queue_image_prompt",
+            workerWaitDetail = "native_wait_image_history",
+            settings = settings,
+            prompt = prompt,
+            seed = seed,
+            checkpointName = checkpointName?.trim().orEmpty().ifEmpty { null },
+            preferredTitleIncludes = emptyList(),
+            strictPreferredMatch = false,
+            pickLatestImageOnly = false,
+        )
+    }
+
+    @JvmStatic
+    fun appendGeneratedImageAssets(
+        repository: LocalRepository,
+        imageUrls: List<String>,
+        meta: JSONObject,
+        createdAt: String,
+    ) {
+        appendImageAssets(repository, imageUrls, meta, createdAt)
+    }
+
     private fun runBaseComfyGeneration(
         context: Context,
         settings: JSONObject,
@@ -533,26 +569,57 @@ object TopicGenerationNativeExecutor {
         prompt: String,
         iteration: Int,
     ): ComfyRunResult {
-        val baseUrl = normalizeBaseUrl(
-            settings.optString("comfyBaseUrl", COMFY_DEFAULT_BASE_URL).ifBlank {
-                COMFY_DEFAULT_BASE_URL
-            },
+        val sessionId = session.optString("id", "")
+        val topic = session.optString("topic", "").trim()
+        val seed = stableSeedFromText("$sessionId:$iteration:$topic")
+        val checkpointName = persona.optString("imageCheckpoint", "").trim()
+        return runComfyGenerationInternal(
+            context = context,
+            worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
+            workerScopeId = sessionId,
+            workerQueueDetail = "native_queue_prompt",
+            workerWaitDetail = "native_wait_history",
+            settings = settings,
+            prompt = prompt,
+            seed = seed,
+            checkpointName = checkpointName.ifEmpty { null },
+            preferredTitleIncludes = parseStringList(session.optJSONArray("outputNodeTitleIncludes")),
+            strictPreferredMatch = session.optBoolean("strictOutputNodeMatch", false),
+            pickLatestImageOnly = session.optBoolean("pickLatestImageOnly", false),
         )
+    }
+
+    private fun runComfyGenerationInternal(
+        context: Context,
+        worker: String?,
+        workerScopeId: String,
+        workerQueueDetail: String?,
+        workerWaitDetail: String?,
+        settings: JSONObject,
+        prompt: String,
+        seed: Long,
+        checkpointName: String?,
+        preferredTitleIncludes: List<String>,
+        strictPreferredMatch: Boolean,
+        pickLatestImageOnly: Boolean,
+    ): ComfyRunResult {
+        val baseUrl =
+            normalizeBaseUrl(
+                settings.optString("comfyBaseUrl", COMFY_DEFAULT_BASE_URL).ifBlank {
+                    COMFY_DEFAULT_BASE_URL
+                },
+            )
         val auth = settings.optJSONObject("comfyAuth")
         val workflowTemplate = loadBaseWorkflowTemplate(context)
         val workflow = JSONObject(workflowTemplate)
 
-        val promptNode = workflow.optJSONObject(COMFY_PROMPT_NODE_ID)
-            ?.optJSONObject("inputs")
-            ?: throw IllegalStateException("Comfy workflow missing positive prompt node")
+        val promptNode =
+            workflow.optJSONObject(COMFY_PROMPT_NODE_ID)
+                ?.optJSONObject("inputs")
+                ?: throw IllegalStateException("Comfy workflow missing positive prompt node")
         promptNode.put("text", prompt)
-
-        val sessionId = session.optString("id", "")
-        val topic = session.optString("topic", "")
-        val seed = stableSeedFromText("$sessionId:$iteration:$topic")
         workflow.optJSONObject(COMFY_SEED_NODE_ID)?.optJSONObject("inputs")?.put("seed", seed)
 
-        // Keep default base resolution from template; if needed, this can be extended later.
         workflow.optJSONObject(COMFY_SIZE_NODE_ID)?.optJSONObject("inputs")?.let { sizeInputs ->
             if (!sizeInputs.has("Xi")) sizeInputs.put("Xi", 1024)
             if (!sizeInputs.has("Xf")) sizeInputs.put("Xf", 1024)
@@ -560,51 +627,59 @@ object TopicGenerationNativeExecutor {
             if (!sizeInputs.has("Yf")) sizeInputs.put("Yf", 1536)
         }
 
-        // Disable explicit hi-res flag in native fallback path for predictable runtime.
         workflow.optJSONObject(COMFY_HIRES_NODE_ID)?.optJSONObject("inputs")?.put("toggle", false)
-
-        val checkpointName = persona.optString("imageCheckpoint", "").trim()
-        if (checkpointName.isNotEmpty()) {
+        if (!checkpointName.isNullOrBlank()) {
             setCheckpointName(workflow, checkpointName)
         }
 
         sanitizeWorkflowForApi(workflow)
         if (!settings.optBoolean("saveComfyOutputs", false)) {
-            // Match web path: consume preview outputs and avoid persisting Image Saver results.
             stripImageSaverNodes(workflow)
         }
 
-        ForegroundSyncService.updateWorkerStatus(
-            context = context,
-            worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
-            state = "running",
-            scopeId = sessionId,
-            detail = "native_queue_prompt",
-            progress = false,
-            claimed = true,
-            lastError = "",
-        )
+        if (!worker.isNullOrBlank() && !workerQueueDetail.isNullOrBlank()) {
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = worker,
+                state = "running",
+                scopeId = workerScopeId,
+                detail = workerQueueDetail,
+                progress = false,
+                claimed = true,
+                lastError = "",
+            )
+        }
+
         val queued = queuePrompt(baseUrl, workflow, auth)
         val promptId = queued.optString("prompt_id", "").trim()
         if (promptId.isEmpty()) {
             throw IllegalStateException("Comfy /prompt did not return prompt_id")
         }
 
-        val historyEntry = waitForHistory(context, sessionId, baseUrl, promptId, auth)
+        val historyEntry =
+            waitForHistory(
+                context = context,
+                worker = worker,
+                scopeId = workerScopeId,
+                workerWaitDetail = workerWaitDetail,
+                baseUrl = baseUrl,
+                promptId = promptId,
+                auth = auth,
+            )
         val urls =
             collectImageUrls(
                 baseUrl = baseUrl,
                 workflow = workflow,
                 historyEntry = historyEntry,
                 outputTitlePreferences = BASE_OUTPUT_TITLE_PREFERENCES,
-                preferredTitleIncludes = parseStringList(session.optJSONArray("outputNodeTitleIncludes")),
-                strictPreferredMatch = session.optBoolean("strictOutputNodeMatch", false),
-                pickLatestImageOnly = session.optBoolean("pickLatestImageOnly", false),
+                preferredTitleIncludes = preferredTitleIncludes,
+                strictPreferredMatch = strictPreferredMatch,
+                pickLatestImageOnly = pickLatestImageOnly,
             )
         return ComfyRunResult(
             imageUrls = urls,
             seed = seed,
-            model = checkpointName.ifEmpty { null },
+            model = checkpointName,
         )
     }
 
@@ -666,23 +741,27 @@ object TopicGenerationNativeExecutor {
 
     private fun waitForHistory(
         context: Context,
-        sessionId: String,
+        worker: String?,
+        scopeId: String,
+        workerWaitDetail: String?,
         baseUrl: String,
         promptId: String,
         auth: JSONObject?,
     ): JSONObject {
         val deadline = System.currentTimeMillis() + COMFY_HISTORY_TIMEOUT_MS
         while (System.currentTimeMillis() <= deadline) {
-            ForegroundSyncService.updateWorkerStatus(
-                context = context,
-                worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
-                state = "running",
-                scopeId = sessionId,
-                detail = "native_wait_history",
-                progress = false,
-                claimed = true,
-                lastError = "",
-            )
+            if (!worker.isNullOrBlank() && !workerWaitDetail.isNullOrBlank()) {
+                ForegroundSyncService.updateWorkerStatus(
+                    context = context,
+                    worker = worker,
+                    state = "running",
+                    scopeId = scopeId,
+                    detail = workerWaitDetail,
+                    progress = false,
+                    claimed = true,
+                    lastError = "",
+                )
+            }
             val response = requestJson(
                 url = "$baseUrl/history/${urlEncode(promptId)}",
                 method = "GET",

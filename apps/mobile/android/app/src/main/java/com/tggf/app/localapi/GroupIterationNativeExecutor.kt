@@ -473,6 +473,8 @@ object GroupIterationNativeExecutor {
         val messages = readStoreArray(repository, "groupMessages")
         val settings = parseJsonObject(repository.readSettingsJson())
         val userName = settings.optString("userName", "Пользователь").trim().ifEmpty { "Пользователь" }
+        val nativeGroupImagesEnabled = isNativeGroupImagesEnabled(settings)
+        val pendingImageMessage = findLatestPendingImageMessage(messages, roomId)
         val deterministicSpeakerPersonaId = selectNextSpeakerPersonaId(participants, events, roomId)
         var speakerPersonaId: String? = deterministicSpeakerPersonaId
         val personasPlusUserMode =
@@ -491,85 +493,94 @@ object GroupIterationNativeExecutor {
         var orchestrationSource = "native_headless_deterministic"
         var orchestratorDecisionApplied = false
 
-        try {
-            val llmDecision =
-                NativeLlmClient.requestGroupOrchestratorDecision(
-                    settings = settings,
-                    room = room,
-                    participants = participants,
-                    personas = personas,
-                    messages = messages,
-                    roomId = roomId,
-                    userName = userName,
-                )
-            if (llmDecision != null) {
-                orchestratorDecisionApplied = true
-                val llmSpeakerId = llmDecision.speakerPersonaId?.trim().orEmpty()
-                val validatedSpeakerId =
-                    if (llmSpeakerId.isNotBlank() && participantHasPersona(participants, roomId, llmSpeakerId)) {
-                        llmSpeakerId
-                    } else {
-                        ""
-                    }
-                when (llmDecision.status) {
-                    "spoke" -> {
-                        if (validatedSpeakerId.isNotBlank()) {
-                            speakerPersonaId = validatedSpeakerId
-                            tickStatus = "spoke"
-                            tickReason = llmDecision.reason
-                            tickWaitForUser =
-                                if (llmDecision.waitForUser) {
-                                    true
-                                } else {
-                                    personasPlusUserMode
-                                }
-                            tickWaitReason =
-                                llmDecision.waitReason
-                                    ?: if (tickWaitForUser) {
-                                        "Ожидается ответ пользователя ($userName)"
+        if (pendingImageMessage != null) {
+            speakerPersonaId = null
+            tickStatus = "skipped"
+            tickReason = "pending_image_generation"
+            tickWaitForUser = false
+            tickWaitReason = null
+            orchestrationSource = "native_headless_blocked_pending_image"
+        } else {
+            try {
+                val llmDecision =
+                    NativeLlmClient.requestGroupOrchestratorDecision(
+                        settings = settings,
+                        room = room,
+                        participants = participants,
+                        personas = personas,
+                        messages = messages,
+                        roomId = roomId,
+                        userName = userName,
+                    )
+                if (llmDecision != null) {
+                    orchestratorDecisionApplied = true
+                    val llmSpeakerId = llmDecision.speakerPersonaId?.trim().orEmpty()
+                    val validatedSpeakerId =
+                        if (llmSpeakerId.isNotBlank() && participantHasPersona(participants, roomId, llmSpeakerId)) {
+                            llmSpeakerId
+                        } else {
+                            ""
+                        }
+                    when (llmDecision.status) {
+                        "spoke" -> {
+                            if (validatedSpeakerId.isNotBlank()) {
+                                speakerPersonaId = validatedSpeakerId
+                                tickStatus = "spoke"
+                                tickReason = llmDecision.reason
+                                tickWaitForUser =
+                                    if (llmDecision.waitForUser) {
+                                        true
                                     } else {
-                                        null
+                                        personasPlusUserMode
                                     }
+                                tickWaitReason =
+                                    llmDecision.waitReason
+                                        ?: if (tickWaitForUser) {
+                                            "Ожидается ответ пользователя ($userName)"
+                                        } else {
+                                            null
+                                        }
+                                userContextAction = llmDecision.userContextAction ?: "keep"
+                                orchestrationSource = "native_llm"
+                            } else {
+                                appendRuntimeEvent(
+                                    runtime = runtime,
+                                    scopeId = roomId,
+                                    jobId = job.id,
+                                    stage = "llm_orchestrator_invalid_speaker",
+                                    level = "warn",
+                                    message = "LLM orchestrator returned invalid speaker, using deterministic fallback",
+                                    details = JSONObject().apply {
+                                        put("llmSpeakerPersonaId", llmSpeakerId)
+                                        put("deterministicSpeakerPersonaId", deterministicSpeakerPersonaId)
+                                    },
+                                )
+                            }
+                        }
+                        "waiting", "skipped" -> {
+                            speakerPersonaId = null
+                            tickStatus = llmDecision.status
+                            tickReason = llmDecision.reason
+                            tickWaitForUser = llmDecision.waitForUser || llmDecision.status == "waiting"
+                            tickWaitReason = llmDecision.waitReason
                             userContextAction = llmDecision.userContextAction ?: "keep"
                             orchestrationSource = "native_llm"
-                        } else {
-                            appendRuntimeEvent(
-                                runtime = runtime,
-                                scopeId = roomId,
-                                jobId = job.id,
-                                stage = "llm_orchestrator_invalid_speaker",
-                                level = "warn",
-                                message = "LLM orchestrator returned invalid speaker, using deterministic fallback",
-                                details = JSONObject().apply {
-                                    put("llmSpeakerPersonaId", llmSpeakerId)
-                                    put("deterministicSpeakerPersonaId", deterministicSpeakerPersonaId)
-                                },
-                            )
                         }
                     }
-                    "waiting", "skipped" -> {
-                        speakerPersonaId = null
-                        tickStatus = llmDecision.status
-                        tickReason = llmDecision.reason
-                        tickWaitForUser = llmDecision.waitForUser || llmDecision.status == "waiting"
-                        tickWaitReason = llmDecision.waitReason
-                        userContextAction = llmDecision.userContextAction ?: "keep"
-                        orchestrationSource = "native_llm"
-                    }
                 }
+            } catch (error: Exception) {
+                appendRuntimeEvent(
+                    runtime = runtime,
+                    scopeId = roomId,
+                    jobId = job.id,
+                    stage = "llm_orchestrator_failed",
+                    level = "warn",
+                    message = "Native LLM orchestrator failed, using deterministic fallback",
+                    details = JSONObject().apply {
+                        put("error", error.message ?: "unknown_error")
+                    },
+                )
             }
-        } catch (error: Exception) {
-            appendRuntimeEvent(
-                runtime = runtime,
-                scopeId = roomId,
-                jobId = job.id,
-                stage = "llm_orchestrator_failed",
-                level = "warn",
-                message = "Native LLM orchestrator failed, using deterministic fallback",
-                details = JSONObject().apply {
-                    put("error", error.message ?: "unknown_error")
-                },
-            )
         }
 
         val turnId = UUID.randomUUID().toString()
@@ -602,6 +613,10 @@ object GroupIterationNativeExecutor {
                                 put("orchestratorDecisionApplied", orchestratorDecisionApplied)
                                 put("deterministicSpeakerPersonaId", deterministicSpeakerPersonaId)
                                 put("finalSpeakerPersonaId", speakerPersonaId)
+                                put("nativeGroupImagesEnabled", nativeGroupImagesEnabled)
+                                if (pendingImageMessage != null) {
+                                    put("pendingImageMessageId", pendingImageMessage.optString("id", ""))
+                                }
                             },
                         )
                     },
@@ -614,8 +629,12 @@ object GroupIterationNativeExecutor {
         var speakerName = "Native Orchestrator"
         var speechSource = "native_headless_deterministic"
         var speechResponseId = ""
+        var imageGenerationStatus = "not_requested"
+        var imageGenerationExpected = 0
+        var imageGenerationCompleted = 0
         if (!speakerPersonaId.isNullOrBlank()) {
-            val speakerPersona = findObjectById(personas, speakerPersonaId)
+            val activeSpeakerPersonaId = speakerPersonaId.trim()
+            val speakerPersona = findObjectById(personas, activeSpeakerPersonaId)
             speakerName = speakerPersona?.optString("name", "").orEmpty().ifBlank { speakerName }
             val latestUserMessage = findLatestUserMessage(messages, roomId)
             var speechText =
@@ -624,6 +643,10 @@ object GroupIterationNativeExecutor {
                 } else {
                     "Фоновая автономная итерация выполнена. ($HEADLESS_FALLBACK_MESSAGE)"
                 }
+            var speechComfyPrompt: String? = null
+            var speechComfyPrompts: List<String> = emptyList()
+            var speechComfyImageDescription: String? = null
+            var speechComfyImageDescriptions: List<String> = emptyList()
             if (speakerPersona != null) {
                 try {
                     val llmSpeech =
@@ -639,6 +662,10 @@ object GroupIterationNativeExecutor {
                         speechText = llmSpeech.content
                         speechSource = "native_llm"
                         speechResponseId = llmSpeech.responseId ?: ""
+                        speechComfyPrompt = llmSpeech.comfyPrompt
+                        speechComfyPrompts = llmSpeech.comfyPrompts
+                        speechComfyImageDescription = llmSpeech.comfyImageDescription
+                        speechComfyImageDescriptions = llmSpeech.comfyImageDescriptions
                     } else {
                         appendRuntimeEvent(
                             runtime = runtime,
@@ -667,6 +694,13 @@ object GroupIterationNativeExecutor {
                     )
                 }
             }
+            val promptsForImageGeneration =
+                resolveImagePromptsForGeneration(
+                    comfyPrompts = speechComfyPrompts,
+                    comfyPrompt = speechComfyPrompt,
+                    comfyImageDescriptions = speechComfyImageDescriptions,
+                    comfyImageDescription = speechComfyImageDescription,
+                )
             val messageId = UUID.randomUUID().toString()
             val nextMessage =
                 JSONObject().apply {
@@ -674,7 +708,7 @@ object GroupIterationNativeExecutor {
                     put("roomId", roomId)
                     put("turnId", turnId)
                     put("authorType", "persona")
-                    put("authorPersonaId", speakerPersonaId)
+                    put("authorPersonaId", activeSpeakerPersonaId)
                     put("authorDisplayName", speakerName)
                     val avatarUrl =
                         speakerPersona?.optString("avatarUrl", "")?.trim().orEmpty()
@@ -682,6 +716,43 @@ object GroupIterationNativeExecutor {
                         put("authorAvatarUrl", avatarUrl)
                     }
                     put("content", speechText)
+                    if (!speechComfyPrompt.isNullOrBlank()) {
+                        put("comfyPrompt", speechComfyPrompt)
+                    }
+                    if (speechComfyPrompts.isNotEmpty()) {
+                        put(
+                            "comfyPrompts",
+                            JSONArray().apply {
+                                for (item in speechComfyPrompts) {
+                                    put(item)
+                                }
+                            },
+                        )
+                    }
+                    if (!speechComfyImageDescription.isNullOrBlank()) {
+                        put("comfyImageDescription", speechComfyImageDescription)
+                    }
+                    if (speechComfyImageDescriptions.isNotEmpty()) {
+                        put(
+                            "comfyImageDescriptions",
+                            JSONArray().apply {
+                                for (item in speechComfyImageDescriptions) {
+                                    put(item)
+                                }
+                            },
+                        )
+                    }
+                    if (promptsForImageGeneration.isNotEmpty()) {
+                        if (nativeGroupImagesEnabled) {
+                            put("imageGenerationPending", true)
+                            put("imageGenerationExpected", promptsForImageGeneration.size)
+                            put("imageGenerationCompleted", 0)
+                        } else {
+                            put("imageGenerationPending", false)
+                            put("imageGenerationExpected", promptsForImageGeneration.size)
+                            put("imageGenerationCompleted", 0)
+                        }
+                    }
                     put("createdAt", nowIso)
                 }
             messages.put(nextMessage)
@@ -695,10 +766,10 @@ object GroupIterationNativeExecutor {
                     put("type", "speaker_selected")
                     put(
                         "payload",
-                        JSONObject().apply {
-                            put("personaId", speakerPersonaId)
-                            put("personaName", speakerName)
-                        },
+                            JSONObject().apply {
+                                put("personaId", activeSpeakerPersonaId)
+                                put("personaName", speakerName)
+                            },
                     )
                     put("createdAt", nowIso)
                 },
@@ -711,16 +782,54 @@ object GroupIterationNativeExecutor {
                     put("type", "persona_spoke")
                     put(
                         "payload",
-                        JSONObject().apply {
-                            put("personaId", speakerPersonaId)
-                            put("messagePreview", speechText.take(180))
-                            put("source", speechSource)
-                            put("responseId", speechResponseId)
+                            JSONObject().apply {
+                                put("personaId", activeSpeakerPersonaId)
+                                put("messagePreview", speechText.take(180))
+                                put("source", speechSource)
+                                put("responseId", speechResponseId)
                         },
                     )
                     put("createdAt", nowIso)
                 },
             )
+
+            if (promptsForImageGeneration.isNotEmpty()) {
+                imageGenerationExpected = promptsForImageGeneration.size
+                if (nativeGroupImagesEnabled) {
+                    val imageResult =
+                        runGroupImageGeneration(
+                            context = context,
+                            repository = repository,
+                            runtime = runtime,
+                            job = job,
+                            settings = settings,
+                            roomId = roomId,
+                            turnId = turnId,
+                            speakerPersona = speakerPersona,
+                            speakerPersonaId = activeSpeakerPersonaId,
+                            message = nextMessage,
+                            promptsForGeneration = promptsForImageGeneration,
+                            events = events,
+                        )
+                    imageGenerationStatus = imageResult.status
+                    imageGenerationExpected = imageResult.expected
+                    imageGenerationCompleted = imageResult.completed
+                } else {
+                    imageGenerationStatus = "disabled"
+                    appendRuntimeEvent(
+                        runtime = runtime,
+                        scopeId = roomId,
+                        jobId = job.id,
+                        stage = "group_image_pipeline_disabled",
+                        level = "info",
+                        message = "Native group image pipeline is disabled by settings",
+                        details = JSONObject().apply {
+                            put("messageId", messageId)
+                            put("expected", promptsForImageGeneration.size)
+                        },
+                    )
+                }
+            }
         }
 
         val wasWaitingForUser = room.optBoolean("waitingForUser", false)
@@ -822,6 +931,9 @@ object GroupIterationNativeExecutor {
                 put("waitForUser", tickWaitForUser)
                 put("waitReason", tickWaitReason)
                 put("userContextAction", userContextAction)
+                put("imageGenerationStatus", imageGenerationStatus)
+                put("imageGenerationExpected", imageGenerationExpected)
+                put("imageGenerationCompleted", imageGenerationCompleted)
             },
         )
         ForegroundSyncService.updateWorkerStatus(
@@ -933,6 +1045,268 @@ object GroupIterationNativeExecutor {
             }
         }
         return latest
+    }
+
+    private data class GroupImageGenerationResult(
+        val status: String,
+        val expected: Int,
+        val completed: Int,
+    )
+
+    private fun isNativeGroupImagesEnabled(settings: JSONObject): Boolean {
+        return settings.optBoolean(
+            "androidNativeGroupImagesV1",
+            settings.optBoolean("androidNativeGroupIterationV1", false),
+        )
+    }
+
+    private fun findLatestPendingImageMessage(messages: JSONArray, roomId: String): JSONObject? {
+        var latest: JSONObject? = null
+        var latestCreatedAt = ""
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("roomId", "").trim() != roomId) continue
+            if (!message.optBoolean("imageGenerationPending", false)) continue
+            val createdAt = message.optString("createdAt", "").trim()
+            if (latest == null || createdAt > latestCreatedAt) {
+                latest = message
+                latestCreatedAt = createdAt
+            }
+        }
+        return latest
+    }
+
+    private fun resolveImagePromptsForGeneration(
+        comfyPrompts: List<String>,
+        comfyPrompt: String?,
+        comfyImageDescriptions: List<String>,
+        comfyImageDescription: String?,
+    ): List<String> {
+        val normalizedPrompts = LinkedHashSet<String>()
+        for (prompt in comfyPrompts) {
+            val value = prompt.trim()
+            if (value.isNotBlank()) {
+                normalizedPrompts.add(value)
+            }
+        }
+        val singlePrompt = comfyPrompt?.trim().orEmpty()
+        if (singlePrompt.isNotBlank()) {
+            normalizedPrompts.add(singlePrompt)
+        }
+        if (normalizedPrompts.isNotEmpty()) {
+            return normalizedPrompts.toList()
+        }
+
+        val normalizedDescriptions = LinkedHashSet<String>()
+        for (description in comfyImageDescriptions) {
+            val value = description.trim()
+            if (value.isNotBlank()) {
+                normalizedDescriptions.add(value)
+            }
+        }
+        val singleDescription = comfyImageDescription?.trim().orEmpty()
+        if (singleDescription.isNotBlank()) {
+            normalizedDescriptions.add(singleDescription)
+        }
+        return normalizedDescriptions.toList()
+    }
+
+    private fun runGroupImageGeneration(
+        context: Context,
+        repository: LocalRepository,
+        runtime: BackgroundRuntimeRepository,
+        job: BackgroundJobRecord,
+        settings: JSONObject,
+        roomId: String,
+        turnId: String,
+        speakerPersona: JSONObject?,
+        speakerPersonaId: String,
+        message: JSONObject,
+        promptsForGeneration: List<String>,
+        events: JSONArray,
+    ): GroupImageGenerationResult {
+        if (promptsForGeneration.isEmpty()) {
+            message.put("imageGenerationPending", false)
+            message.put("imageGenerationExpected", 0)
+            message.put("imageGenerationCompleted", 0)
+            return GroupImageGenerationResult(status = "no_prompts", expected = 0, completed = 0)
+        }
+
+        val messageId = message.optString("id", "").trim()
+        val expected = promptsForGeneration.size
+        val checkpointName = speakerPersona?.optString("imageCheckpoint", "")?.trim().orEmpty()
+        val nowIsoRequested = nowIsoUtc()
+
+        events.put(
+            JSONObject().apply {
+                put("id", UUID.randomUUID().toString())
+                put("roomId", roomId)
+                put("turnId", turnId)
+                put("type", "message_image_requested")
+                put(
+                    "payload",
+                    JSONObject().apply {
+                        put("messageId", messageId)
+                        put("personaId", speakerPersonaId)
+                        put("expected", expected)
+                        put("retry", false)
+                    },
+                )
+                put("createdAt", nowIsoRequested)
+            },
+        )
+
+        val imageAttachments =
+            message.optJSONArray("imageAttachments")
+                ?: JSONArray().also { message.put("imageAttachments", it) }
+        val imageMetaByUrl =
+            message.optJSONObject("imageMetaByUrl")
+                ?: JSONObject().also { message.put("imageMetaByUrl", it) }
+
+        var completed = 0
+
+        try {
+            for (index in promptsForGeneration.indices) {
+                val prompt = promptsForGeneration[index]
+                val comfyResult =
+                    TopicGenerationNativeExecutor.generateComfyImageForGroup(
+                        context = context,
+                        settings = settings,
+                        prompt = prompt,
+                        checkpointName = checkpointName.ifEmpty { null },
+                        seedKey = "$messageId:${index + 1}:$prompt",
+                        scopeId = roomId,
+                    )
+                if (comfyResult.imageUrls.isEmpty()) {
+                    throw IllegalStateException("group_comfy_empty_images")
+                }
+                val meta =
+                    JSONObject().apply {
+                        put("seed", comfyResult.seed)
+                        put("prompt", prompt)
+                        put("flow", "base")
+                        if (!comfyResult.model.isNullOrBlank()) {
+                            put("model", comfyResult.model)
+                        }
+                    }
+                TopicGenerationNativeExecutor.appendGeneratedImageAssets(
+                    repository = repository,
+                    imageUrls = comfyResult.imageUrls,
+                    meta = meta,
+                    createdAt = nowIsoUtc(),
+                )
+                for (url in comfyResult.imageUrls) {
+                    if (!imageAttachmentExists(imageAttachments, url)) {
+                        imageAttachments.put(
+                            JSONObject().apply {
+                                put("url", url)
+                                put("meta", JSONObject(meta.toString()))
+                            },
+                        )
+                    }
+                    imageMetaByUrl.put(url, JSONObject(meta.toString()))
+                }
+                completed += 1
+                val progressStatus = if (completed >= expected) "completed" else "progress"
+
+                message.put("imageGenerationPending", completed < expected)
+                message.put("imageGenerationExpected", expected)
+                message.put("imageGenerationCompleted", completed)
+                message.put("imageAttachments", imageAttachments)
+                message.put("imageMetaByUrl", imageMetaByUrl)
+
+                events.put(
+                    JSONObject().apply {
+                        put("id", UUID.randomUUID().toString())
+                        put("roomId", roomId)
+                        put("turnId", turnId)
+                        put("type", "message_image_generated")
+                        put(
+                            "payload",
+                            JSONObject().apply {
+                                put("messageId", messageId)
+                                put("personaId", speakerPersonaId)
+                                put("status", progressStatus)
+                                put("expected", expected)
+                                put("completed", completed)
+                                put("generatedCount", comfyResult.imageUrls.size)
+                            },
+                        )
+                        put("createdAt", nowIsoUtc())
+                    },
+                )
+            }
+
+            message.put("imageGenerationPending", false)
+            message.put("imageGenerationExpected", expected)
+            message.put("imageGenerationCompleted", expected)
+            message.put("imageAttachments", imageAttachments)
+            message.put("imageMetaByUrl", imageMetaByUrl)
+
+            return GroupImageGenerationResult(status = "completed", expected = expected, completed = expected)
+        } catch (error: Exception) {
+            message.put("imageGenerationPending", false)
+            message.put("imageGenerationExpected", expected)
+            message.put("imageGenerationCompleted", completed)
+            if (imageAttachments.length() > 0) {
+                message.put("imageAttachments", imageAttachments)
+                message.put("imageMetaByUrl", imageMetaByUrl)
+            }
+
+            events.put(
+                JSONObject().apply {
+                    put("id", UUID.randomUUID().toString())
+                    put("roomId", roomId)
+                    put("turnId", turnId)
+                    put("type", "message_image_generated")
+                    put(
+                        "payload",
+                        JSONObject().apply {
+                            put("messageId", messageId)
+                            put("personaId", speakerPersonaId)
+                            put("status", "generation_failed")
+                            put("expected", expected)
+                            put("completed", completed)
+                        },
+                    )
+                    put("createdAt", nowIsoUtc())
+                },
+            )
+
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = roomId,
+                jobId = job.id,
+                stage = "group_image_generation_failed",
+                level = "warn",
+                message = "Native group image generation failed",
+                details = JSONObject().apply {
+                    put("messageId", messageId)
+                    put("personaId", speakerPersonaId)
+                    put("expected", expected)
+                    put("completed", completed)
+                    put("error", error.message ?: "unknown_error")
+                },
+            )
+
+            return GroupImageGenerationResult(
+                status = "generation_failed",
+                expected = expected,
+                completed = completed,
+            )
+        }
+    }
+
+    private fun imageAttachmentExists(attachments: JSONArray, targetUrl: String): Boolean {
+        val normalizedUrl = targetUrl.trim()
+        if (normalizedUrl.isEmpty()) return false
+        for (index in 0 until attachments.length()) {
+            val item = attachments.optJSONObject(index) ?: continue
+            if (item.optString("url", "").trim() == normalizedUrl) {
+                return true
+            }
+        }
+        return false
     }
 
     private fun nowIsoUtc(): String = Instant.now().toString()
