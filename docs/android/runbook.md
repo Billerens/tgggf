@@ -93,6 +93,8 @@
 - Gate 2: No sustained `native degraded` (> 15 minutes) in acceptance run.
 - Gate 3: No unrecoverable stale leased jobs after restart/reboot scenario.
 - Gate 4: Rollback path validated by toggling `androidNativeGroupIterationV1=false`.
+- Full staged rollout checklist with SLO/stop criteria:
+  - `docs/android/release-checklist.md`
 
 Rollback trigger examples:
 - Repeated worker errors with same root cause across retries.

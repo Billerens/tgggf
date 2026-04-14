@@ -223,6 +223,14 @@ const FOREGROUND_HEALTH_LABEL: Record<ForegroundServiceHealth, string> = {
   degraded: "native degraded",
   fallback: "bridge fallback",
 };
+const ANDROID_ROLLOUT_STAGE_OPTIONS: Array<{
+  value: AppSettings["androidNativeRolloutStage"];
+  label: string;
+}> = [
+  { value: "internal", label: "Internal" },
+  { value: "beta", label: "Beta" },
+  { value: "prod", label: "Prod" },
+];
 
 function formatToolCapabilityCheckedAt(value: string | undefined) {
   if (!value) return "—";
@@ -445,6 +453,50 @@ export function SettingsModal({
     runtimeMode !== "android" || !settingsDraft.androidNativeGroupIterationV1
       ? "fallback"
       : foregroundServiceHealth;
+  const applyAndroidRolloutPreset = (
+    stage: AppSettings["androidNativeRolloutStage"],
+  ) => {
+    setSettingsDraft((prev) => {
+      if (stage === "internal") {
+        return {
+          ...prev,
+          androidNativeRolloutStage: stage,
+          androidNativeGroupIterationV1: true,
+          androidNativeGroupImagesV1: false,
+          androidNativeGroupStructuredStorageV1: true,
+          androidNativeGroupStructuredStorageDualWrite: true,
+        };
+      }
+      if (stage === "beta") {
+        return {
+          ...prev,
+          androidNativeRolloutStage: stage,
+          androidNativeGroupIterationV1: true,
+          androidNativeGroupImagesV1: true,
+          androidNativeGroupStructuredStorageV1: true,
+          androidNativeGroupStructuredStorageDualWrite: true,
+        };
+      }
+      return {
+        ...prev,
+        androidNativeRolloutStage: stage,
+        androidNativeGroupIterationV1: true,
+        androidNativeGroupImagesV1: true,
+        androidNativeGroupStructuredStorageV1: true,
+        androidNativeGroupStructuredStorageDualWrite: false,
+      };
+    });
+  };
+  const rollbackAndroidNativeToFallback = () => {
+    setSettingsDraft((prev) => ({
+      ...prev,
+      androidNativeRolloutStage: "internal",
+      androidNativeGroupIterationV1: false,
+      androidNativeGroupImagesV1: false,
+      androidNativeGroupStructuredStorageV1: true,
+      androidNativeGroupStructuredStorageDualWrite: true,
+    }));
+  };
   const updateDetailStrengthValue = (
     level: AppSettings["enhanceDetailLevelAll"],
     key: DetailStrengthColumnKey,
@@ -856,6 +908,41 @@ export function SettingsModal({
                     ) : null}
                     <div className="android-rollout-controls">
                       <strong>Staged rollout controls</strong>
+                      <label>
+                        Текущий этап rollout
+                        <Dropdown
+                          value={settingsDraft.androidNativeRolloutStage}
+                          options={ANDROID_ROLLOUT_STAGE_OPTIONS}
+                          onChange={(nextStage) =>
+                            applyAndroidRolloutPreset(
+                              nextStage as AppSettings["androidNativeRolloutStage"],
+                            )
+                          }
+                        />
+                      </label>
+                      <div className="inline-row">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            applyAndroidRolloutPreset(
+                              settingsDraft.androidNativeRolloutStage,
+                            )
+                          }
+                        >
+                          Применить preset этапа
+                        </button>
+                        <button
+                          type="button"
+                          className="danger-ghost-button"
+                          onClick={rollbackAndroidNativeToFallback}
+                        >
+                          Rollback в fallback
+                        </button>
+                      </div>
+                      <small style={{ color: "var(--text-secondary)" }}>
+                        Internal: только native iteration. Beta: +native images. Prod: отключает
+                        dual-write после стабильного окна.
+                      </small>
                       <label className="checkbox-row">
                         <input
                           type="checkbox"

@@ -25,3 +25,14 @@
 - Critical path: Task 2 -> Task 3 -> Task 4 -> Task 6 -> Task 7.
 - Parallelizable: Task 9 можно делать параллельно с Task 7/8.
 - Первичный риск: расхождение логики web/native; смягчается общим доменным ядром и контрактными тестами.
+
+## Status Update (2026-04-14)
+- Task 9 implementation status: done in code/docs.
+  - Settings now shows `native active / native degraded / bridge fallback`.
+  - Runtime metrics surfaced: queue depth, stale jobs, stale workers, active scopes, lastError.
+  - Runbook expanded with diagnostics and recovery flow.
+- Task 10 implementation status: done in code/docs.
+  - Added staged rollout controls in Settings (stage presets + explicit rollback action).
+  - Added release checklist with SLO targets, stop criteria, and rollback-no-data-loss procedure:
+    - `docs/android/release-checklist.md`
+- Manual on-device verification remains pending (smoke + promotion evidence), by design.

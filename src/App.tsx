@@ -353,11 +353,13 @@ export default function App() {
       eventType: "group_iteration.flag_state",
       message:
         "android flags: " +
+        `rolloutStage=${settings.androidNativeRolloutStage}, ` +
         `iterationV1=${settings.androidNativeGroupIterationV1}, ` +
         `imagesV1=${settings.androidNativeGroupImagesV1}, ` +
         `structuredStorageV1=${settings.androidNativeGroupStructuredStorageV1}, ` +
         `dualWrite=${settings.androidNativeGroupStructuredStorageDualWrite}`,
       details: {
+        androidNativeRolloutStage: settings.androidNativeRolloutStage,
         androidNativeGroupIterationV1: settings.androidNativeGroupIterationV1,
         androidNativeGroupImagesV1: settings.androidNativeGroupImagesV1,
         androidNativeGroupStructuredStorageV1:
@@ -368,6 +370,7 @@ export default function App() {
     });
   }, [
     isAndroidRuntime,
+    settings.androidNativeRolloutStage,
     settings.androidNativeGroupIterationV1,
     settings.androidNativeGroupImagesV1,
     settings.androidNativeGroupStructuredStorageV1,

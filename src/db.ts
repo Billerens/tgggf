@@ -528,6 +528,10 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   }
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
+  const allowedRolloutStages = ["internal", "beta", "prod"] as const;
+  if (!allowedRolloutStages.includes(merged.androidNativeRolloutStage)) {
+    merged.androidNativeRolloutStage = DEFAULT_SETTINGS.androidNativeRolloutStage;
+  }
   merged.androidNativeGroupIterationV1 = Boolean(merged.androidNativeGroupIterationV1);
   const hasNativeGroupImagesOverride = Boolean(
     current &&
@@ -719,6 +723,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   userGender: "unspecified",
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
+  androidNativeRolloutStage: "internal",
   androidNativeGroupIterationV1: false,
   androidNativeGroupImagesV1: false,
   androidNativeGroupStructuredStorageV1: true,

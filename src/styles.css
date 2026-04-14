@@ -1719,6 +1719,15 @@ select:focus,
   color: var(--text-primary);
   font-size: 12px;
 }
+.danger-ghost-button {
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  color: #fecaca;
+  background: rgba(220, 38, 38, 0.14);
+}
+.danger-ghost-button:hover {
+  border-color: rgba(252, 165, 165, 0.75);
+  background: rgba(220, 38, 38, 0.2);
+}
 .settings-log-filters {
   margin-top: 10px;
   display: grid;
