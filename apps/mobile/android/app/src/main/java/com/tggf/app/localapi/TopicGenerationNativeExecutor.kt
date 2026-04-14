@@ -704,7 +704,8 @@ object TopicGenerationNativeExecutor {
             payload = payload.toString(),
             auth = auth,
             connectTimeoutMs = 15_000,
-            readTimeoutMs = 120_000,
+            // Match web semantics: no hard read timeout for prompt queue request.
+            readTimeoutMs = 0,
         )
         if (response.code !in 200..299) {
             throw IllegalStateException("Comfy /prompt error (${response.code}): ${response.body}")
@@ -772,7 +773,9 @@ object TopicGenerationNativeExecutor {
                         payload = null,
                         auth = auth,
                         connectTimeoutMs = 10_000,
-                        readTimeoutMs = 120_000,
+                        // Match web polling semantics: no hard read timeout for long-running generations.
+                        readTimeoutMs = 0,
+                        cacheNoStore = true,
                     )
                 } catch (error: Exception) {
                     if (isTransientComfyNetworkError(error)) {
@@ -1277,18 +1280,19 @@ object TopicGenerationNativeExecutor {
         auth: JSONObject?,
         connectTimeoutMs: Int,
         readTimeoutMs: Int,
+        cacheNoStore: Boolean = false,
     ): HttpResult {
         val connection = URI(url).toURL().openConnection() as HttpURLConnection
         connection.requestMethod = method
         connection.instanceFollowRedirects = true
         connection.connectTimeout = connectTimeoutMs
-        connection.readTimeout = readTimeoutMs
+        connection.readTimeout = if (readTimeoutMs <= 0) 0 else readTimeoutMs
         connection.useCaches = false
         connection.setRequestProperty("Accept", "application/json")
-        connection.setRequestProperty("Cache-Control", "no-store")
-        connection.setRequestProperty("Pragma", "no-cache")
-        // Avoid reusing stale keep-alive sockets with long history polling.
-        connection.setRequestProperty("Connection", "close")
+        if (cacheNoStore) {
+            connection.setRequestProperty("Cache-Control", "no-store")
+            connection.setRequestProperty("Pragma", "no-cache")
+        }
         val authHeaders = buildAuthHeaders(auth)
         for ((name, value) in authHeaders) {
             connection.setRequestProperty(name, value)
