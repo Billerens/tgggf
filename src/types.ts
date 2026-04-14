@@ -479,6 +479,7 @@ export interface AppSettings {
   userGender: UserGender;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
+  androidNativeGroupIterationV1: boolean;
   enhanceDetailLevelAll: EnhanceDetailLevel;
   enhanceDetailLevelPart: EnhanceDetailLevel;
   enhanceDetailStrengthTable: EnhanceDetailStrengthTable;

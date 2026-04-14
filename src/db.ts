@@ -528,6 +528,7 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   }
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
+  merged.androidNativeGroupIterationV1 = Boolean(merged.androidNativeGroupIterationV1);
   if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelAll)) {
     merged.enhanceDetailLevelAll = DEFAULT_SETTINGS.enhanceDetailLevelAll;
   }
@@ -705,6 +706,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   userGender: "unspecified",
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
+  androidNativeGroupIterationV1: false,
   enhanceDetailLevelAll: "medium",
   enhanceDetailLevelPart: "strong",
   enhanceDetailStrengthTable: normalizeEnhanceDetailStrengthTable(undefined),

@@ -48,6 +48,7 @@ interface CapacitorLikeScope {
 interface UseGroupIterationBackgroundWorkerParams {
   activeGroupRoom: GroupRoom | null;
   isAndroidRuntime: boolean;
+  androidNativeGroupIterationV1: boolean;
   personas: Persona[];
   settings: AppSettings;
   runActiveGroupIteration: (
@@ -55,6 +56,21 @@ interface UseGroupIterationBackgroundWorkerParams {
     settings: AppSettings,
     userName: string,
   ) => Promise<void> | void;
+}
+
+type GroupIterationExecutionMode =
+  | "web_interval"
+  | "android_bridge_legacy"
+  | "android_bridge_v1";
+
+function resolveGroupIterationExecutionMode(
+  isAndroidRuntime: boolean,
+  androidNativeGroupIterationV1: boolean,
+): GroupIterationExecutionMode {
+  if (!isAndroidRuntime) return "web_interval";
+  return androidNativeGroupIterationV1
+    ? "android_bridge_v1"
+    : "android_bridge_legacy";
 }
 
 function canRunRoom(room: GroupRoom | null) {
@@ -144,6 +160,7 @@ async function syncGroupContextToNative(roomId: string) {
 export function useGroupIterationBackgroundWorker({
   activeGroupRoom,
   isAndroidRuntime,
+  androidNativeGroupIterationV1,
   personas,
   settings,
   runActiveGroupIteration,
@@ -157,11 +174,46 @@ export function useGroupIterationBackgroundWorker({
   const desiredStatePendingFingerprintRef = useRef<string>("");
   const lastNativeSyncAtRef = useRef<number>(0);
   const syncInFlightRef = useRef<boolean>(false);
+  const executionModeLogFingerprintRef = useRef<string>("");
 
   useEffect(() => {
     const previousRoomId = previousRoomIdRef.current;
     const nextRoomId = activeGroupRoom?.id ?? null;
+    const executionMode = resolveGroupIterationExecutionMode(
+      isAndroidRuntime,
+      androidNativeGroupIterationV1,
+    );
     previousRoomIdRef.current = nextRoomId;
+    const executionModeScopeId = nextRoomId ?? "none";
+    const executionModeFingerprint = `${executionModeScopeId}|${executionMode}`;
+    if (executionModeLogFingerprintRef.current !== executionModeFingerprint) {
+      executionModeLogFingerprintRef.current = executionModeFingerprint;
+      pushSystemLog({
+        level: "info",
+        eventType: "group_iteration.execution_mode",
+        message: `Group iteration mode: ${executionMode}`,
+        details: {
+          roomId: nextRoomId,
+          executionMode,
+          androidNativeGroupIterationV1,
+        },
+      });
+      if (isAndroidRuntime && nextRoomId) {
+        void appendBackgroundRuntimeEvent({
+          taskType: GROUP_ITERATION_JOB_TYPE,
+          scopeId: nextRoomId,
+          stage: "worker_mode_selected",
+          level: "info",
+          message: "Group iteration execution mode selected",
+          details: {
+            executionMode,
+            androidNativeGroupIterationV1,
+          },
+        }).catch(() => {
+          // Ignore runtime event logging errors.
+        });
+      }
+    }
 
     const syncDesiredState = (roomId: string, enabled: boolean) => {
       if (!isAndroidRuntime) return;
@@ -384,6 +436,7 @@ export function useGroupIterationBackgroundWorker({
           message: "Failed to ensure native-dispatched group iteration job",
           details: {
             roomId,
+            executionMode,
             error: errorMessage,
           },
         });
@@ -423,6 +476,7 @@ export function useGroupIterationBackgroundWorker({
           details: {
             reason: "room_blocked",
             intervalMs: payload.intervalMs,
+            executionMode,
           },
         }).catch(() => {
           // Ignore runtime event logging errors.
@@ -475,6 +529,7 @@ export function useGroupIterationBackgroundWorker({
           message: "Deferred group iteration because previous iteration is still running",
           details: {
             reason: "bridge_busy",
+            executionMode,
           },
         }).catch(() => {
           // Ignore runtime event logging errors.
@@ -517,6 +572,7 @@ export function useGroupIterationBackgroundWorker({
             details: {
               intervalMs: payload.intervalMs,
               requestedAtMs: payload.requestedAtMs,
+              executionMode,
             },
           }).catch(() => {
             // Ignore runtime event logging errors.
@@ -541,6 +597,7 @@ export function useGroupIterationBackgroundWorker({
             details: {
               roomId,
               jobId: payload.jobId,
+              executionMode,
               error: errorMessage,
             },
           });
@@ -552,6 +609,7 @@ export function useGroupIterationBackgroundWorker({
             level: "error",
             message: "Group iteration failed in background",
             details: {
+              executionMode,
               error: errorMessage,
             },
           }).catch(() => {
@@ -595,6 +653,7 @@ export function useGroupIterationBackgroundWorker({
     activeGroupRoom?.id,
     activeGroupRoom?.status,
     isAndroidRuntime,
+    androidNativeGroupIterationV1,
   ]);
 }
 

@@ -1086,6 +1086,19 @@ export function SettingsModal({
                 />
                 Отображать детали изменения статуса
               </label>
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={settingsDraft.androidNativeGroupIterationV1}
+                  onChange={(e) =>
+                    setSettingsDraft((v) => ({
+                      ...v,
+                      androidNativeGroupIterationV1: e.target.checked,
+                    }))
+                  }
+                />
+                Android: использовать diagnostic-режим native group iteration V1
+              </label>
             </>
           ) : null}
 

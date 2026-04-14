@@ -312,6 +312,18 @@ export default function App() {
     setSettingsDraft(settings);
   }, [settings]);
 
+  useEffect(() => {
+    if (!isAndroidRuntime) return;
+    pushSystemLog({
+      level: "info",
+      eventType: "group_iteration.flag_state",
+      message: `androidNativeGroupIterationV1=${settings.androidNativeGroupIterationV1}`,
+      details: {
+        androidNativeGroupIterationV1: settings.androidNativeGroupIterationV1,
+      },
+    });
+  }, [isAndroidRuntime, settings.androidNativeGroupIterationV1]);
+
   const { pwaInstallStatus, onInstallPwa } = useAppInstallPrompt();
   const windowsArtifactUrl =
     (typeof import.meta.env.VITE_WINDOWS_ARTIFACT_URL === "string"
@@ -427,6 +439,7 @@ export default function App() {
   useGroupIterationBackgroundWorker({
     activeGroupRoom,
     isAndroidRuntime,
+    androidNativeGroupIterationV1: settings.androidNativeGroupIterationV1,
     personas,
     settings,
     runActiveGroupIteration,
