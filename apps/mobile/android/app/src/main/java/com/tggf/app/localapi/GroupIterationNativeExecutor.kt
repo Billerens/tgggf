@@ -12,7 +12,7 @@ object GroupIterationNativeExecutor {
     private const val GROUP_ITERATION_JOB_PREFIX = "group_iteration:"
     private const val GROUP_ITERATION_LEASE_MS = 120_000L
     private const val GROUP_ITERATION_DEFAULT_INTERVAL_MS = 4_200L
-    private const val GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS = 30_000L
+    private const val GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS = 8_000L
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
 
     private val inFlight = AtomicBoolean(false)
@@ -80,6 +80,12 @@ object GroupIterationNativeExecutor {
             }
         val hasEnabledRoom = enabledStates.isNotEmpty()
         val scopeId = enabledStates.firstOrNull()?.scopeId?.trim().orEmpty()
+        val enabledScopeIds = enabledStates.map { row -> row.scopeId.trim() }.filter { it.isNotEmpty() }.toSet()
+        recoverLeasedJobsWithoutBridgeAck(
+            runtime = runtime,
+            jobs = jobs,
+            enabledScopeIds = enabledScopeIds,
+        )
         val room =
             if (scopeId.isBlank()) {
                 null
@@ -120,6 +126,61 @@ object GroupIterationNativeExecutor {
             claimed = false,
             lastError = "",
         )
+    }
+
+    private fun recoverLeasedJobsWithoutBridgeAck(
+        runtime: BackgroundRuntimeRepository,
+        jobs: BackgroundJobRepository,
+        enabledScopeIds: Set<String>,
+    ) {
+        val leasedJobs =
+            jobs.listJobs(status = BackgroundJobRepository.STATUS_LEASED, limit = 120).filter { row ->
+                row.type == GROUP_ITERATION_JOB_TYPE
+            }
+        if (leasedJobs.isEmpty()) return
+
+        val retryAtMs = System.currentTimeMillis() + GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS
+        for (job in leasedJobs) {
+            val roomId =
+                parseRoomIdFromJobId(job.id).ifBlank {
+                    parseJsonObject(job.payloadJson).optString("roomId", "").trim()
+                }
+            if (roomId.isBlank() || !enabledScopeIds.contains(roomId)) {
+                jobs.cancelJob(job.id)
+                appendRuntimeEvent(
+                    runtime = runtime,
+                    scopeId = roomId.ifBlank { "unknown" },
+                    jobId = job.id,
+                    stage = "bridge_ack_cancelled",
+                    level = "info",
+                    message = "Cancelled leased group job because desired-state is disabled",
+                    details = null,
+                )
+                continue
+            }
+
+            val released =
+                jobs.rescheduleJob(
+                    id = job.id,
+                    runAtMs = retryAtMs,
+                    incrementAttempts = false,
+                    lastError = null,
+                )
+            if (released) {
+                appendRuntimeEvent(
+                    runtime = runtime,
+                    scopeId = roomId,
+                    jobId = job.id,
+                    stage = "bridge_ack_released",
+                    level = "info",
+                    message = "Released leased group job without bridge ACK",
+                    details = JSONObject().apply {
+                        put("retryAtMs", retryAtMs)
+                        put("ackTimeoutMs", GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS)
+                    },
+                )
+            }
+        }
     }
 
     private fun processClaimedJob(
