@@ -27,11 +27,36 @@ export interface ForegroundServiceStatus {
   ok: boolean;
   enabled: boolean;
   running: boolean;
+  workers?: ForegroundWorkerStatusSnapshot[];
 }
 
 export interface ForegroundServiceRequestOptions {
   scope?: CapacitorLikeScope;
   fetchImpl?: typeof fetch;
+}
+
+export type ForegroundWorkerType = "topic_generation" | "group_iteration";
+
+export interface ForegroundWorkerStatusSnapshot {
+  worker: ForegroundWorkerType | string;
+  state: string;
+  scopeId: string | null;
+  detail: string | null;
+  heartbeatAtMs: number;
+  progressAtMs: number | null;
+  claimAtMs: number | null;
+  lastError: string | null;
+  stale: boolean;
+}
+
+export interface ForegroundWorkerStatusUpdate {
+  worker: ForegroundWorkerType;
+  state: "idle" | "running" | "blocked" | "error";
+  scopeId?: string;
+  detail?: string;
+  progress?: boolean;
+  claimed?: boolean;
+  lastError?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -40,10 +65,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseStatusPayload(payload: unknown): ForegroundServiceStatus {
   const source = isRecord(payload) ? payload : {};
+  const workersRaw = Array.isArray(source.workers) ? source.workers : [];
+  const workers: ForegroundWorkerStatusSnapshot[] = [];
+  for (const value of workersRaw) {
+    if (!isRecord(value)) continue;
+    workers.push({
+      worker: typeof value.worker === "string" ? value.worker : "unknown",
+      state: typeof value.state === "string" ? value.state : "idle",
+      scopeId: typeof value.scopeId === "string" ? value.scopeId : null,
+      detail: typeof value.detail === "string" ? value.detail : null,
+      heartbeatAtMs:
+        typeof value.heartbeatAtMs === "number" && Number.isFinite(value.heartbeatAtMs)
+          ? value.heartbeatAtMs
+          : 0,
+      progressAtMs:
+        typeof value.progressAtMs === "number" && Number.isFinite(value.progressAtMs)
+          ? value.progressAtMs
+          : null,
+      claimAtMs:
+        typeof value.claimAtMs === "number" && Number.isFinite(value.claimAtMs)
+          ? value.claimAtMs
+          : null,
+      lastError: typeof value.lastError === "string" ? value.lastError : null,
+      stale: Boolean(value.stale),
+    });
+  }
   return {
     ok: source.ok !== false,
     enabled: typeof source.enabled === "boolean" ? source.enabled : true,
     running: typeof source.running === "boolean" ? source.running : false,
+    workers,
   };
 }
 
@@ -129,6 +180,27 @@ export async function setForegroundServiceEnabled(
     "PUT",
     "/api/foreground-service",
     { enabled },
+    options,
+  );
+  return parseStatusPayload(payload);
+}
+
+export async function updateForegroundWorkerStatus(
+  update: ForegroundWorkerStatusUpdate,
+  options: ForegroundServiceRequestOptions = {},
+) {
+  const payload = await requestForegroundService(
+    "PUT",
+    "/api/foreground-service/worker-status",
+    {
+      worker: update.worker,
+      state: update.state,
+      scopeId: update.scopeId ?? "",
+      detail: update.detail ?? "",
+      progress: Boolean(update.progress),
+      claimed: Boolean(update.claimed),
+      lastError: update.lastError ?? "",
+    },
     options,
   );
   return parseStatusPayload(payload);

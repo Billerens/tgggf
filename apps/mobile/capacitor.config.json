@@ -5,6 +5,11 @@
   "android": {
     "path": "android"
   },
+  "cordova": {
+    "preferences": {
+      "KeepRunning": "true"
+    }
+  },
   "plugins": {
     "CapacitorHttp": {
       "enabled": true

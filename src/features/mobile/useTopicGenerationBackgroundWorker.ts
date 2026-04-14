@@ -1,21 +1,40 @@
 import { useEffect, useRef } from "react";
 import type { GeneratorSession } from "../../types";
 import type { TopicGenerationStepResult } from "../generator/useTopicGenerator";
+import { dbApi } from "../../db";
 import {
   cancelBackgroundJob,
-  claimBackgroundJobs,
   ensureRecurringBackgroundJob,
-  rescheduleBackgroundJob,
 } from "./backgroundJobs";
-import { subscribeBackgroundTick } from "./backgroundTick";
 import {
   buildTopicGenerationJobId,
-  readTopicGenerationSessionId,
   TOPIC_GENERATION_JOB_TYPE,
-  TOPIC_GENERATION_LEASE_MS,
-  TOPIC_GENERATION_MIN_TRIGGER_GAP_MS,
 } from "./backgroundJobKeys";
 import { pushSystemLog } from "../system-logs/systemLogStore";
+import { updateForegroundWorkerStatus } from "./foregroundService";
+
+interface LocalApiPluginRequestInput {
+  method: "GET" | "PUT";
+  path: string;
+  body?: unknown;
+}
+
+interface LocalApiPluginRequestOutput {
+  status: number;
+  body: unknown;
+}
+
+interface LocalApiPlugin {
+  request(input: LocalApiPluginRequestInput): Promise<LocalApiPluginRequestOutput>;
+}
+
+interface CapacitorLikeScope {
+  Capacitor?: {
+    Plugins?: {
+      LocalApi?: LocalApiPlugin;
+    };
+  };
+}
 
 interface UseTopicGenerationBackgroundWorkerParams {
   isAndroidRuntime: boolean;
@@ -24,16 +43,72 @@ interface UseTopicGenerationBackgroundWorkerParams {
   onError?: (message: string) => void;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null {
+  const plugin = scope.Capacitor?.Plugins?.LocalApi;
+  if (!plugin || typeof plugin.request !== "function") return null;
+  return plugin;
+}
+
+async function syncTopicGenerationContextToNative(sessionId: string) {
+  const scope = globalThis as unknown as CapacitorLikeScope;
+  const plugin = resolveLocalApiPlugin(scope);
+  if (!plugin) return;
+
+  const [settings, personas, generatorSessions] = await Promise.all([
+    dbApi.getSettings(),
+    dbApi.getPersonas(),
+    dbApi.getAllGeneratorSessions(),
+  ]);
+
+  const response = await plugin.request({
+    method: "PUT",
+    path: "/api/raw-snapshot",
+    body: {
+      mode: "merge",
+      stores: {
+        settings,
+        personas,
+        generatorSessions,
+      },
+    },
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`native_context_sync_http_${response.status}`);
+  }
+
+  if (isRecord(response.body) && response.body.ok === false) {
+    const error = typeof response.body.error === "string" ? response.body.error : "";
+    throw new Error(error || "native_context_sync_failed");
+  }
+
+  const hasSession = generatorSessions.some((session) => session.id === sessionId);
+  if (!hasSession) {
+    throw new Error("native_context_sync_session_missing");
+  }
+}
+
 export function useTopicGenerationBackgroundWorker({
   isAndroidRuntime,
   generationSession,
-  runGenerationStep,
-  onError,
+  runGenerationStep: _runGenerationStep,
+  onError: _onError,
 }: UseTopicGenerationBackgroundWorkerParams) {
   const topicGenerationJobIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isAndroidRuntime) {
+      const previousJobId = topicGenerationJobIdRef.current;
+      topicGenerationJobIdRef.current = null;
+      if (previousJobId) {
+        void cancelBackgroundJob(previousJobId).catch(() => {
+          // Ignore queue mutation errors while switching runtimes.
+        });
+      }
       topicGenerationJobIdRef.current = null;
       return;
     }
@@ -50,111 +125,69 @@ export function useTopicGenerationBackgroundWorker({
       });
     }
 
-    if (!generationSession) return;
+    if (!generationSession) {
+      void updateForegroundWorkerStatus({
+        worker: "topic_generation",
+        state: "idle",
+        scopeId: "",
+        detail: "no_session",
+      }).catch(() => {
+        // Ignore status bridge failures.
+      });
+      return;
+    }
 
     const sessionId = generationSession.id;
-    const delayMs = Math.max(
-      0,
-      Math.floor((generationSession.delaySeconds || 0) * 1000),
-    );
-    const runIntervalMs = Math.max(
-      TOPIC_GENERATION_MIN_TRIGGER_GAP_MS,
-      Math.min(Math.max(delayMs, TOPIC_GENERATION_MIN_TRIGGER_GAP_MS), 5000),
-    );
+    const delayMs = Math.max(0, Math.floor((generationSession.delaySeconds || 0) * 1000));
     const sessionCanRun = generationSession.status === "running";
-    const jobId = buildTopicGenerationJobId(sessionId);
 
-    let disposed = false;
-    let claimInFlight = false;
-    let lastTriggeredAt = 0;
-
-    const processClaimedJobs = async () => {
-      if (disposed || !sessionCanRun || claimInFlight) return;
-      const now = Date.now();
-      if (now - lastTriggeredAt < TOPIC_GENERATION_MIN_TRIGGER_GAP_MS) return;
-      claimInFlight = true;
-      lastTriggeredAt = now;
+    const syncNativeTopicJob = async () => {
+      if (!sessionCanRun) {
+        try {
+          await cancelBackgroundJob(nextJobId ?? buildTopicGenerationJobId(sessionId));
+        } catch {
+          // Ignore queue mutation errors when session is not running.
+        }
+        void updateForegroundWorkerStatus({
+          worker: "topic_generation",
+          state: "idle",
+          scopeId: sessionId,
+          detail: `session_${generationSession.status}`,
+        }).catch(() => {
+          // Ignore status bridge failures.
+        });
+        return;
+      }
 
       try {
-        const claimedJobs = await claimBackgroundJobs(
-          1,
-          TOPIC_GENERATION_LEASE_MS,
-          TOPIC_GENERATION_JOB_TYPE,
-        );
-        for (const job of claimedJobs) {
-          if (disposed) break;
-
-          const jobSessionId = readTopicGenerationSessionId(job);
-          if (!jobSessionId || jobSessionId !== sessionId || !sessionCanRun) {
-            try {
-              await cancelBackgroundJob(job.id);
-            } catch {
-              // Ignore queue mutation errors; worker will retry on next pump.
-            }
-            continue;
-          }
-
-          try {
-            const result = await runGenerationStep();
-            if (result === "progress") {
-              await rescheduleBackgroundJob({
-                id: job.id,
-                runAtMs: Date.now() + delayMs,
-                incrementAttempts: false,
-              });
-            } else {
-              await cancelBackgroundJob(job.id);
-            }
-          } catch (error) {
-            const errorMessage =
-              error instanceof Error ? error.message : "topic_generation_failed";
-            onError?.(errorMessage);
-            pushSystemLog({
-              level: "warn",
-              eventType: "topic_generation.job_failed",
-              message: `Topic generation job failed for session ${jobSessionId}`,
-              details: {
-                sessionId: jobSessionId,
-                error: errorMessage,
-              },
-            });
-            try {
-              await cancelBackgroundJob(job.id);
-            } catch {
-              // Ignore queue mutation errors; worker will retry on next pump.
-            }
-          }
-        }
+        await syncTopicGenerationContextToNative(sessionId);
       } catch (error) {
         const errorMessage =
-          error instanceof Error ? error.message : "background_job_claim_failed";
+          error instanceof Error ? error.message : "native_context_sync_failed";
         pushSystemLog({
           level: "warn",
-          eventType: "topic_generation.claim_failed",
-          message: "Failed to claim background jobs for topic generation",
+          eventType: "topic_generation.native_context_sync_failed",
+          message: "Failed to sync topic generation context to native store",
           details: {
             sessionId,
             error: errorMessage,
           },
         });
-      } finally {
-        claimInFlight = false;
-      }
-    };
-
-    void (async () => {
-      if (!sessionCanRun) {
-        try {
-          await cancelBackgroundJob(jobId);
-        } catch {
-          // Ignore queue mutation errors when session is not running.
-        }
+        void updateForegroundWorkerStatus({
+          worker: "topic_generation",
+          state: "blocked",
+          scopeId: sessionId,
+          detail: "native_context_sync_failed",
+          lastError: errorMessage,
+        }).catch(() => {
+          // Ignore status bridge failures.
+        });
         return;
       }
 
       try {
         await ensureRecurringBackgroundJob({
-          id: jobId,
+          id: nextJobId ?? buildTopicGenerationJobId(sessionId),
           type: TOPIC_GENERATION_JOB_TYPE,
           payload: {
             sessionId,
@@ -169,37 +202,39 @@ export function useTopicGenerationBackgroundWorker({
         pushSystemLog({
           level: "warn",
           eventType: "topic_generation.ensure_failed",
-          message: "Failed to ensure recurring topic generation job",
+          message: "Failed to ensure recurring topic generation job (native delegate)",
           details: {
             sessionId,
             error: errorMessage,
           },
         });
+        void updateForegroundWorkerStatus({
+          worker: "topic_generation",
+          state: "blocked",
+          scopeId: sessionId,
+          detail: "queue_ensure_failed",
+          lastError: errorMessage,
+        }).catch(() => {
+          // Ignore status bridge failures.
+        });
+        return;
       }
 
-      await processClaimedJobs();
-    })();
-
-    const timerId = window.setInterval(() => {
-      void processClaimedJobs();
-    }, runIntervalMs);
-
-    const unsubscribeBackgroundTick = subscribeBackgroundTick((payload) => {
-      if (!payload.enabled || !payload.running) return;
-      void processClaimedJobs();
-    });
-
-    return () => {
-      disposed = true;
-      window.clearInterval(timerId);
-      unsubscribeBackgroundTick();
+      void updateForegroundWorkerStatus({
+        worker: "topic_generation",
+        state: "running",
+        scopeId: sessionId,
+        detail: "native_delegate",
+      }).catch(() => {
+        // Ignore status bridge failures.
+      });
     };
+
+    void syncNativeTopicJob();
   }, [
     generationSession?.delaySeconds,
     generationSession?.id,
     generationSession?.status,
     isAndroidRuntime,
-    onError,
-    runGenerationStep,
   ]);
 }

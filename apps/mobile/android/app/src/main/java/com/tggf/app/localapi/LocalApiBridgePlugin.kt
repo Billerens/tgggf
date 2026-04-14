@@ -352,6 +352,27 @@ class LocalApiBridgePlugin : Plugin() {
         val (path, query) = splitPathAndQuery(normalizedPath)
 
         if (method == "GET" && path == "/api/foreground-service") {
+            val workerStatuses = JSONArray().apply {
+                for (snapshot in ForegroundSyncService.getWorkerStatusSnapshots()) {
+                    val stale = ForegroundSyncService.isWorkerSnapshotStale(
+                        snapshot = snapshot,
+                        nowMs = System.currentTimeMillis(),
+                    )
+                    put(
+                        JSObject().apply {
+                            put("worker", snapshot.worker)
+                            put("state", snapshot.state)
+                            put("scopeId", snapshot.scopeId)
+                            put("detail", snapshot.detail)
+                            put("heartbeatAtMs", snapshot.heartbeatAtMs)
+                            put("progressAtMs", snapshot.progressAtMs)
+                            put("claimAtMs", snapshot.claimAtMs)
+                            put("lastError", snapshot.lastError)
+                            put("stale", stale)
+                        },
+                    )
+                }
+            }
             respond(
                 call,
                 200,
@@ -360,6 +381,7 @@ class LocalApiBridgePlugin : Plugin() {
                     put("enabled", ForegroundSyncService.isEnabled(context))
                     put("running", ForegroundSyncService.isRunning())
                     put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
+                    put("workers", workerStatuses)
                 },
             )
             return
@@ -388,6 +410,81 @@ class LocalApiBridgePlugin : Plugin() {
                     put("enabled", enabled)
                     put("running", ForegroundSyncService.isRunning())
                     put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/foreground-service/worker-status") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Worker status payload must be an object")
+                    },
+                )
+                return
+            }
+
+            val worker = body.optString("worker", "").trim()
+            val state = body.optString("state", "").trim()
+            if (worker.isEmpty() || state.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Worker status payload requires worker and state")
+                    },
+                )
+                return
+            }
+
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = worker,
+                state = state,
+                scopeId = body.optString("scopeId", "").trim(),
+                detail = body.optString("detail", "").trim(),
+                progress = body.optBoolean("progress", false),
+                claimed = body.optBoolean("claimed", false),
+                lastError = body.optString("lastError", "").trim(),
+            )
+
+            val workerStatuses = JSONArray().apply {
+                for (snapshot in ForegroundSyncService.getWorkerStatusSnapshots()) {
+                    val stale = ForegroundSyncService.isWorkerSnapshotStale(
+                        snapshot = snapshot,
+                        nowMs = System.currentTimeMillis(),
+                    )
+                    put(
+                        JSObject().apply {
+                            put("worker", snapshot.worker)
+                            put("state", snapshot.state)
+                            put("scopeId", snapshot.scopeId)
+                            put("detail", snapshot.detail)
+                            put("heartbeatAtMs", snapshot.heartbeatAtMs)
+                            put("progressAtMs", snapshot.progressAtMs)
+                            put("claimAtMs", snapshot.claimAtMs)
+                            put("lastError", snapshot.lastError)
+                            put("stale", stale)
+                        },
+                    )
+                }
+            }
+
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("enabled", ForegroundSyncService.isEnabled(context))
+                    put("running", ForegroundSyncService.isRunning())
+                    put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
+                    put("workers", workerStatuses)
                 },
             )
             return
