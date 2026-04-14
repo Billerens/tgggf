@@ -529,6 +529,19 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
   merged.androidNativeGroupIterationV1 = Boolean(merged.androidNativeGroupIterationV1);
+  const hasNativeGroupImagesOverride = Boolean(
+    current &&
+      Object.prototype.hasOwnProperty.call(current, "androidNativeGroupImagesV1"),
+  );
+  merged.androidNativeGroupImagesV1 = hasNativeGroupImagesOverride
+    ? Boolean(merged.androidNativeGroupImagesV1)
+    : merged.androidNativeGroupIterationV1;
+  merged.androidNativeGroupStructuredStorageV1 = Boolean(
+    merged.androidNativeGroupStructuredStorageV1,
+  );
+  merged.androidNativeGroupStructuredStorageDualWrite = Boolean(
+    merged.androidNativeGroupStructuredStorageDualWrite,
+  );
   if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelAll)) {
     merged.enhanceDetailLevelAll = DEFAULT_SETTINGS.enhanceDetailLevelAll;
   }
@@ -707,6 +720,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
   androidNativeGroupIterationV1: false,
+  androidNativeGroupImagesV1: false,
+  androidNativeGroupStructuredStorageV1: true,
+  androidNativeGroupStructuredStorageDualWrite: true,
   enhanceDetailLevelAll: "medium",
   enhanceDetailLevelPart: "strong",
   enhanceDetailStrengthTable: normalizeEnhanceDetailStrengthTable(undefined),

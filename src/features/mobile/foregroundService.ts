@@ -27,7 +27,15 @@ export interface ForegroundServiceStatus {
   ok: boolean;
   enabled: boolean;
   running: boolean;
-  workers?: ForegroundWorkerStatusSnapshot[];
+  health: ForegroundServiceHealth;
+  staleWorkers: number;
+  staleJobs: number;
+  hasWorkerErrors: boolean;
+  lastError: string | null;
+  collectedAtMs: number;
+  queue: ForegroundQueueMetrics;
+  activeScopes: ForegroundActiveScopeMetrics;
+  workers: ForegroundWorkerStatusSnapshot[];
 }
 
 export interface ForegroundServiceRequestOptions {
@@ -36,6 +44,21 @@ export interface ForegroundServiceRequestOptions {
 }
 
 export type ForegroundWorkerType = "topic_generation" | "group_iteration";
+
+export type ForegroundServiceHealth = "active" | "degraded" | "fallback";
+
+export interface ForegroundQueueMetrics {
+  pending: number;
+  leased: number;
+  staleLeased: number;
+  totalDepth: number;
+}
+
+export interface ForegroundActiveScopeMetrics {
+  topicGeneration: number;
+  groupIteration: number;
+  total: number;
+}
 
 export interface ForegroundWorkerStatusSnapshot {
   worker: ForegroundWorkerType | string;
@@ -61,6 +84,32 @@ export interface ForegroundWorkerStatusUpdate {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function readFiniteNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readHealth(value: unknown): ForegroundServiceHealth | null {
+  if (value === "active" || value === "degraded" || value === "fallback") {
+    return value;
+  }
+  return null;
+}
+
+function resolveFallbackHealth(params: {
+  enabled: boolean;
+  running: boolean;
+  staleWorkers: number;
+  staleJobs: number;
+  hasWorkerErrors: boolean;
+}): ForegroundServiceHealth {
+  if (!params.enabled) return "fallback";
+  if (!params.running) return "degraded";
+  if (params.staleWorkers > 0) return "degraded";
+  if (params.staleJobs > 0) return "degraded";
+  if (params.hasWorkerErrors) return "degraded";
+  return "active";
 }
 
 function parseStatusPayload(payload: unknown): ForegroundServiceStatus {
@@ -90,10 +139,67 @@ function parseStatusPayload(payload: unknown): ForegroundServiceStatus {
       stale: Boolean(value.stale),
     });
   }
+  const queueSource = isRecord(source.queue) ? source.queue : {};
+  const queuePending = readFiniteNumber(queueSource.pending, 0);
+  const queueLeased = readFiniteNumber(queueSource.leased, 0);
+  const queueStaleLeased = readFiniteNumber(queueSource.staleLeased, 0);
+  const queueTotalDepth = readFiniteNumber(
+    queueSource.totalDepth,
+    queuePending + queueLeased,
+  );
+  const activeScopesSource = isRecord(source.activeScopes) ? source.activeScopes : {};
+  const activeTopicGeneration = readFiniteNumber(activeScopesSource.topicGeneration, 0);
+  const activeGroupIteration = readFiniteNumber(activeScopesSource.groupIteration, 0);
+  const activeTotal = readFiniteNumber(
+    activeScopesSource.total,
+    activeTopicGeneration + activeGroupIteration,
+  );
+  const staleWorkers = readFiniteNumber(source.staleWorkers, 0);
+  const staleJobs = readFiniteNumber(source.staleJobs, queueStaleLeased);
+  const lastError =
+    typeof source.lastError === "string" && source.lastError.trim()
+      ? source.lastError.trim()
+      : null;
+  const hasWorkerErrors =
+    typeof source.hasWorkerErrors === "boolean"
+      ? source.hasWorkerErrors
+      : workers.some(
+          (worker) =>
+            worker.state.toLowerCase() === "error" ||
+            (typeof worker.lastError === "string" && worker.lastError.trim().length > 0),
+        );
+  const enabled = typeof source.enabled === "boolean" ? source.enabled : true;
+  const running = typeof source.running === "boolean" ? source.running : false;
+  const health =
+    readHealth(source.health) ??
+    resolveFallbackHealth({
+      enabled,
+      running,
+      staleWorkers,
+      staleJobs,
+      hasWorkerErrors,
+    });
   return {
     ok: source.ok !== false,
-    enabled: typeof source.enabled === "boolean" ? source.enabled : true,
-    running: typeof source.running === "boolean" ? source.running : false,
+    enabled,
+    running,
+    health,
+    staleWorkers,
+    staleJobs,
+    hasWorkerErrors,
+    lastError,
+    collectedAtMs: readFiniteNumber(source.collectedAtMs, 0),
+    queue: {
+      pending: queuePending,
+      leased: queueLeased,
+      staleLeased: queueStaleLeased,
+      totalDepth: queueTotalDepth,
+    },
+    activeScopes: {
+      topicGeneration: activeTopicGeneration,
+      groupIteration: activeGroupIteration,
+      total: activeTotal,
+    },
     workers,
   };
 }

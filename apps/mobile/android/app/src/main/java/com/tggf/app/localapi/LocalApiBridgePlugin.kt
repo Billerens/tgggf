@@ -201,6 +201,93 @@ class LocalApiBridgePlugin : Plugin() {
         call.resolve(payload)
     }
 
+    private fun foregroundWorkerSnapshotToJsObject(
+        snapshot: ForegroundSyncService.Companion.WorkerStatusSnapshot,
+        nowMs: Long,
+    ): JSObject {
+        val stale = ForegroundSyncService.isWorkerSnapshotStale(
+            snapshot = snapshot,
+            nowMs = nowMs,
+        )
+        return JSObject().apply {
+            put("worker", snapshot.worker)
+            put("state", snapshot.state)
+            put("scopeId", snapshot.scopeId)
+            put("detail", snapshot.detail)
+            put("heartbeatAtMs", snapshot.heartbeatAtMs)
+            put("progressAtMs", snapshot.progressAtMs)
+            put("claimAtMs", snapshot.claimAtMs)
+            put("lastError", snapshot.lastError)
+            put("stale", stale)
+        }
+    }
+
+    private fun buildForegroundWorkerStatuses(nowMs: Long): JSONArray {
+        return JSONArray().apply {
+            for (snapshot in ForegroundSyncService.getWorkerStatusSnapshots()) {
+                put(foregroundWorkerSnapshotToJsObject(snapshot, nowMs))
+            }
+        }
+    }
+
+    private fun resolveForegroundHealth(
+        enabled: Boolean,
+        running: Boolean,
+        diagnostics: ForegroundSyncService.Companion.RuntimeDiagnostics,
+    ): String {
+        if (!enabled) return "fallback"
+        if (!running) return "degraded"
+        if (diagnostics.staleWorkerCount > 0) return "degraded"
+        if (diagnostics.queueStaleLeasedCount > 0) return "degraded"
+        if (diagnostics.hasWorkerErrors) return "degraded"
+        return "active"
+    }
+
+    private fun buildForegroundServiceStatusPayload(enabledOverride: Boolean? = null): JSObject {
+        val nowMs = System.currentTimeMillis()
+        val enabled = enabledOverride ?: ForegroundSyncService.isEnabled(context)
+        val running = ForegroundSyncService.isRunning()
+        val workerStatuses = buildForegroundWorkerStatuses(nowMs)
+        val diagnostics = ForegroundSyncService.collectRuntimeDiagnostics(context, nowMs)
+        return JSObject().apply {
+            put("ok", true)
+            put("enabled", enabled)
+            put("running", running)
+            put(
+                "health",
+                resolveForegroundHealth(
+                    enabled = enabled,
+                    running = running,
+                    diagnostics = diagnostics,
+                ),
+            )
+            put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
+            put("workers", workerStatuses)
+            put("staleWorkers", diagnostics.staleWorkerCount)
+            put("hasWorkerErrors", diagnostics.hasWorkerErrors)
+            put("lastError", diagnostics.lastError.ifBlank { null })
+            put("staleJobs", diagnostics.queueStaleLeasedCount)
+            put("collectedAtMs", diagnostics.collectedAtMs)
+            put(
+                "queue",
+                JSObject().apply {
+                    put("pending", diagnostics.queuePendingCount)
+                    put("leased", diagnostics.queueLeasedCount)
+                    put("staleLeased", diagnostics.queueStaleLeasedCount)
+                    put("totalDepth", diagnostics.queueDepth)
+                },
+            )
+            put(
+                "activeScopes",
+                JSObject().apply {
+                    put("topicGeneration", diagnostics.topicActiveScopes)
+                    put("groupIteration", diagnostics.groupActiveScopes)
+                    put("total", diagnostics.topicActiveScopes + diagnostics.groupActiveScopes)
+                },
+            )
+        }
+    }
+
     private fun readStoreArray(storeName: String): JSONArray {
         if (storeName == "settings") {
             val settingsJson = repository.readSettingsJson()
@@ -402,38 +489,7 @@ class LocalApiBridgePlugin : Plugin() {
         val (path, query) = splitPathAndQuery(normalizedPath)
 
         if (method == "GET" && path == "/api/foreground-service") {
-            val workerStatuses = JSONArray().apply {
-                for (snapshot in ForegroundSyncService.getWorkerStatusSnapshots()) {
-                    val stale = ForegroundSyncService.isWorkerSnapshotStale(
-                        snapshot = snapshot,
-                        nowMs = System.currentTimeMillis(),
-                    )
-                    put(
-                        JSObject().apply {
-                            put("worker", snapshot.worker)
-                            put("state", snapshot.state)
-                            put("scopeId", snapshot.scopeId)
-                            put("detail", snapshot.detail)
-                            put("heartbeatAtMs", snapshot.heartbeatAtMs)
-                            put("progressAtMs", snapshot.progressAtMs)
-                            put("claimAtMs", snapshot.claimAtMs)
-                            put("lastError", snapshot.lastError)
-                            put("stale", stale)
-                        },
-                    )
-                }
-            }
-            respond(
-                call,
-                200,
-                JSObject().apply {
-                    put("ok", true)
-                    put("enabled", ForegroundSyncService.isEnabled(context))
-                    put("running", ForegroundSyncService.isRunning())
-                    put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
-                    put("workers", workerStatuses)
-                },
-            )
+            respond(call, 200, buildForegroundServiceStatusPayload())
             return
         }
 
@@ -452,16 +508,7 @@ class LocalApiBridgePlugin : Plugin() {
             }
             val enabled = body.optBoolean("enabled", true)
             ForegroundSyncService.setEnabled(context, enabled)
-            respond(
-                call,
-                200,
-                JSObject().apply {
-                    put("ok", true)
-                    put("enabled", enabled)
-                    put("running", ForegroundSyncService.isRunning())
-                    put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
-                },
-            )
+            respond(call, 200, buildForegroundServiceStatusPayload(enabled))
             return
         }
 
@@ -503,40 +550,7 @@ class LocalApiBridgePlugin : Plugin() {
                 claimed = body.optBoolean("claimed", false),
                 lastError = body.optString("lastError", "").trim(),
             )
-
-            val workerStatuses = JSONArray().apply {
-                for (snapshot in ForegroundSyncService.getWorkerStatusSnapshots()) {
-                    val stale = ForegroundSyncService.isWorkerSnapshotStale(
-                        snapshot = snapshot,
-                        nowMs = System.currentTimeMillis(),
-                    )
-                    put(
-                        JSObject().apply {
-                            put("worker", snapshot.worker)
-                            put("state", snapshot.state)
-                            put("scopeId", snapshot.scopeId)
-                            put("detail", snapshot.detail)
-                            put("heartbeatAtMs", snapshot.heartbeatAtMs)
-                            put("progressAtMs", snapshot.progressAtMs)
-                            put("claimAtMs", snapshot.claimAtMs)
-                            put("lastError", snapshot.lastError)
-                            put("stale", stale)
-                        },
-                    )
-                }
-            }
-
-            respond(
-                call,
-                200,
-                JSObject().apply {
-                    put("ok", true)
-                    put("enabled", ForegroundSyncService.isEnabled(context))
-                    put("running", ForegroundSyncService.isRunning())
-                    put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
-                    put("workers", workerStatuses)
-                },
-            )
+            respond(call, 200, buildForegroundServiceStatusPayload())
             return
         }
 

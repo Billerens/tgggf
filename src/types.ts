@@ -480,6 +480,9 @@ export interface AppSettings {
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
   androidNativeGroupIterationV1: boolean;
+  androidNativeGroupImagesV1: boolean;
+  androidNativeGroupStructuredStorageV1: boolean;
+  androidNativeGroupStructuredStorageDualWrite: boolean;
   enhanceDetailLevelAll: EnhanceDetailLevel;
   enhanceDetailLevelPart: EnhanceDetailLevel;
   enhanceDetailStrengthTable: EnhanceDetailStrengthTable;

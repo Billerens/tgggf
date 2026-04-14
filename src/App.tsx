@@ -52,6 +52,8 @@ import { useModelCheckpointCatalog } from "./features/settings/useModelCheckpoin
 import {
   getForegroundServiceStatus,
   setForegroundServiceEnabled,
+  type ForegroundServiceHealth,
+  type ForegroundServiceStatus,
 } from "./features/mobile/foregroundService";
 import { useGroupIterationBackgroundWorker } from "./features/mobile/useGroupIterationBackgroundWorker";
 import { useTopicGenerationBackgroundWorker } from "./features/mobile/useTopicGenerationBackgroundWorker";
@@ -111,7 +113,32 @@ interface ForegroundServiceUiState {
   loading: boolean;
   enabled: boolean;
   running: boolean;
+  health: ForegroundServiceHealth;
+  queueDepth: number;
+  staleJobs: number;
+  staleWorkers: number;
+  activeTopicScopes: number;
+  activeGroupScopes: number;
+  lastError: string | null;
   error: string | null;
+}
+
+function buildForegroundServiceUiState(
+  status: ForegroundServiceStatus,
+): ForegroundServiceUiState {
+  return {
+    loading: false,
+    enabled: status.enabled,
+    running: status.running,
+    health: status.health,
+    queueDepth: status.queue.totalDepth,
+    staleJobs: status.staleJobs,
+    staleWorkers: status.staleWorkers,
+    activeTopicScopes: status.activeScopes.topicGeneration,
+    activeGroupScopes: status.activeScopes.groupIteration,
+    lastError: status.lastError,
+    error: null,
+  };
 }
 
 const DEFAULT_WINDOWS_ARTIFACT_URL =
@@ -240,6 +267,13 @@ export default function App() {
       loading: false,
       enabled: true,
       running: false,
+      health: "fallback",
+      queueDepth: 0,
+      staleJobs: 0,
+      staleWorkers: 0,
+      activeTopicScopes: 0,
+      activeGroupScopes: 0,
+      lastError: null,
       error: null,
     });
   const [readyExportFile, setReadyExportFile] = useState<{
@@ -317,12 +351,28 @@ export default function App() {
     pushSystemLog({
       level: "info",
       eventType: "group_iteration.flag_state",
-      message: `androidNativeGroupIterationV1=${settings.androidNativeGroupIterationV1}`,
+      message:
+        "android flags: " +
+        `iterationV1=${settings.androidNativeGroupIterationV1}, ` +
+        `imagesV1=${settings.androidNativeGroupImagesV1}, ` +
+        `structuredStorageV1=${settings.androidNativeGroupStructuredStorageV1}, ` +
+        `dualWrite=${settings.androidNativeGroupStructuredStorageDualWrite}`,
       details: {
         androidNativeGroupIterationV1: settings.androidNativeGroupIterationV1,
+        androidNativeGroupImagesV1: settings.androidNativeGroupImagesV1,
+        androidNativeGroupStructuredStorageV1:
+          settings.androidNativeGroupStructuredStorageV1,
+        androidNativeGroupStructuredStorageDualWrite:
+          settings.androidNativeGroupStructuredStorageDualWrite,
       },
     });
-  }, [isAndroidRuntime, settings.androidNativeGroupIterationV1]);
+  }, [
+    isAndroidRuntime,
+    settings.androidNativeGroupIterationV1,
+    settings.androidNativeGroupImagesV1,
+    settings.androidNativeGroupStructuredStorageV1,
+    settings.androidNativeGroupStructuredStorageDualWrite,
+  ]);
 
   const { pwaInstallStatus, onInstallPwa } = useAppInstallPrompt();
   const windowsArtifactUrl =
@@ -347,15 +397,13 @@ export default function App() {
       pushSystemLog({
         level: "info",
         eventType: "foreground_service.status",
-        message: `Foreground service status: enabled=${status.enabled}, running=${status.running}`,
+        message:
+          "Foreground service status: " +
+          `enabled=${status.enabled}, running=${status.running}, health=${status.health}, ` +
+          `queueDepth=${status.queue.totalDepth}, staleJobs=${status.staleJobs}, staleWorkers=${status.staleWorkers}`,
         details: status,
       });
-      setForegroundServiceState({
-        loading: false,
-        enabled: status.enabled,
-        running: status.running,
-        error: null,
-      });
+      setForegroundServiceState(buildForegroundServiceUiState(status));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       pushSystemLog({
@@ -383,15 +431,13 @@ export default function App() {
         pushSystemLog({
           level: "info",
           eventType: "foreground_service.toggled",
-          message: `Foreground service toggled: enabled=${status.enabled}, running=${status.running}`,
+          message:
+            "Foreground service toggled: " +
+            `enabled=${status.enabled}, running=${status.running}, health=${status.health}, ` +
+            `queueDepth=${status.queue.totalDepth}`,
           details: status,
         });
-        setForegroundServiceState({
-          loading: false,
-          enabled: status.enabled,
-          running: status.running,
-          error: null,
-        });
+        setForegroundServiceState(buildForegroundServiceUiState(status));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         pushSystemLog({
@@ -1140,6 +1186,13 @@ export default function App() {
           foregroundServiceLoading={foregroundServiceState.loading}
           foregroundServiceEnabled={foregroundServiceState.enabled}
           foregroundServiceRunning={foregroundServiceState.running}
+          foregroundServiceHealth={foregroundServiceState.health}
+          foregroundServiceQueueDepth={foregroundServiceState.queueDepth}
+          foregroundServiceStaleJobs={foregroundServiceState.staleJobs}
+          foregroundServiceStaleWorkers={foregroundServiceState.staleWorkers}
+          foregroundServiceActiveTopicScopes={foregroundServiceState.activeTopicScopes}
+          foregroundServiceActiveGroupScopes={foregroundServiceState.activeGroupScopes}
+          foregroundServiceLastError={foregroundServiceState.lastError}
           foregroundServiceError={foregroundServiceState.error}
           availableModelsByProvider={availableModelsByProvider}
           modelsLoadingByProvider={modelsLoadingByProvider}

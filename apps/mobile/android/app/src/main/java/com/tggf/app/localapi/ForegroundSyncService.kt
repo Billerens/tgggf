@@ -52,6 +52,21 @@ class ForegroundSyncService : Service() {
             val lastError: String,
         )
 
+        data class RuntimeDiagnostics(
+            val queuePendingCount: Int,
+            val queueLeasedCount: Int,
+            val queueStaleLeasedCount: Int,
+            val topicActiveScopes: Int,
+            val groupActiveScopes: Int,
+            val staleWorkerCount: Int,
+            val hasWorkerErrors: Boolean,
+            val lastError: String,
+            val collectedAtMs: Long,
+        ) {
+            val queueDepth: Int
+                get() = queuePendingCount + queueLeasedCount
+        }
+
         @Volatile
         private var running = false
 
@@ -169,6 +184,62 @@ class ForegroundSyncService : Service() {
                 heartbeatAtMs = snapshot.heartbeatAtMs,
                 nowMs = nowMs,
             )
+        }
+
+        @JvmStatic
+        fun collectRuntimeDiagnostics(
+            context: Context,
+            nowMs: Long = System.currentTimeMillis(),
+        ): RuntimeDiagnostics {
+            val snapshots = getWorkerStatusSnapshots()
+            val staleWorkerCount = snapshots.count { snapshot ->
+                isWorkerSnapshotStale(snapshot, nowMs)
+            }
+            val hasWorkerErrors = snapshots.any { snapshot ->
+                snapshot.state.equals("error", ignoreCase = true) ||
+                    snapshot.lastError.isNotBlank()
+            }
+            val lastError = snapshots
+                .filter { snapshot -> snapshot.lastError.isNotBlank() }
+                .maxByOrNull { snapshot -> snapshot.heartbeatAtMs }
+                ?.lastError
+                .orEmpty()
+
+            return try {
+                val runtime = BackgroundRuntimeRepository(context)
+                val jobs = BackgroundJobRepository(context)
+                RuntimeDiagnostics(
+                    queuePendingCount = jobs.countJobs(status = BackgroundJobRepository.STATUS_PENDING),
+                    queueLeasedCount = jobs.countJobs(status = BackgroundJobRepository.STATUS_LEASED),
+                    queueStaleLeasedCount = jobs.countStaleLeasedJobs(nowMs),
+                    topicActiveScopes =
+                        runtime.countDesiredStates(
+                            taskType = WORKER_TOPIC_GENERATION,
+                            enabledOnly = true,
+                        ),
+                    groupActiveScopes =
+                        runtime.countDesiredStates(
+                            taskType = WORKER_GROUP_ITERATION,
+                            enabledOnly = true,
+                        ),
+                    staleWorkerCount = staleWorkerCount,
+                    hasWorkerErrors = hasWorkerErrors,
+                    lastError = lastError,
+                    collectedAtMs = nowMs,
+                )
+            } catch (_: Exception) {
+                RuntimeDiagnostics(
+                    queuePendingCount = 0,
+                    queueLeasedCount = 0,
+                    queueStaleLeasedCount = 0,
+                    topicActiveScopes = 0,
+                    groupActiveScopes = 0,
+                    staleWorkerCount = staleWorkerCount,
+                    hasWorkerErrors = hasWorkerErrors,
+                    lastError = lastError,
+                    collectedAtMs = nowMs,
+                )
+            }
         }
     }
 

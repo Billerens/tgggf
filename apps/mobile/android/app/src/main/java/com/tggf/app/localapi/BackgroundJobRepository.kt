@@ -307,6 +307,31 @@ class BackgroundJobRepository(
         }
     }
 
+    fun countStaleLeasedJobs(nowMs: Long = System.currentTimeMillis(), type: String? = null): Int {
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        clauses.add("$COL_STATUS = ?")
+        args.add(STATUS_LEASED)
+        clauses.add("($COL_LEASE_UNTIL_MS IS NULL OR $COL_LEASE_UNTIL_MS <= ?)")
+        args.add(nowMs.toString())
+        val normalizedType = type?.trim()?.ifEmpty { null }
+        if (normalizedType != null) {
+            clauses.add("$COL_TYPE = ?")
+            args.add(normalizedType)
+        }
+        val selection = clauses.joinToString(" AND ")
+        return readableDatabase.rawQuery(
+            """
+            SELECT COUNT(1)
+            FROM $TABLE_JOBS
+            WHERE $selection
+            """.trimIndent(),
+            args.toTypedArray(),
+        ).use { cursor ->
+            if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+
     private fun insertJobInternal(
         db: SQLiteDatabase,
         id: String,

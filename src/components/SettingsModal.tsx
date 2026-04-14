@@ -36,6 +36,7 @@ type ToolCapabilityMatrixStatus =
   | "idle"
   | "checking"
   | ToolCallingCapabilityStatus;
+type ForegroundServiceHealth = "active" | "degraded" | "fallback";
 
 interface SettingsModalProps {
   open: boolean;
@@ -47,6 +48,13 @@ interface SettingsModalProps {
   foregroundServiceLoading: boolean;
   foregroundServiceEnabled: boolean;
   foregroundServiceRunning: boolean;
+  foregroundServiceHealth: ForegroundServiceHealth;
+  foregroundServiceQueueDepth: number;
+  foregroundServiceStaleJobs: number;
+  foregroundServiceStaleWorkers: number;
+  foregroundServiceActiveTopicScopes: number;
+  foregroundServiceActiveGroupScopes: number;
+  foregroundServiceLastError: string | null;
   foregroundServiceError: string | null;
   availableModelsByProvider: Record<LlmProvider, string[]>;
   modelsLoadingByProvider: Record<LlmProvider, boolean>;
@@ -210,6 +218,11 @@ const TOOL_CAPABILITY_STATUS_LABEL: Record<ToolCapabilityMatrixStatus, string> =
   unsupported: "Не поддерживается",
   unknown: "Неизвестно",
 };
+const FOREGROUND_HEALTH_LABEL: Record<ForegroundServiceHealth, string> = {
+  active: "native active",
+  degraded: "native degraded",
+  fallback: "bridge fallback",
+};
 
 function formatToolCapabilityCheckedAt(value: string | undefined) {
   if (!value) return "—";
@@ -327,6 +340,13 @@ export function SettingsModal({
   foregroundServiceLoading,
   foregroundServiceEnabled,
   foregroundServiceRunning,
+  foregroundServiceHealth,
+  foregroundServiceQueueDepth,
+  foregroundServiceStaleJobs,
+  foregroundServiceStaleWorkers,
+  foregroundServiceActiveTopicScopes,
+  foregroundServiceActiveGroupScopes,
+  foregroundServiceLastError,
   foregroundServiceError,
   availableModelsByProvider,
   modelsLoadingByProvider,
@@ -421,6 +441,10 @@ export function SettingsModal({
         ),
     [systemLogs, logLevelFilter, logTypeFilter],
   );
+  const nativeRuntimeHealth: ForegroundServiceHealth =
+    runtimeMode !== "android" || !settingsDraft.androidNativeGroupIterationV1
+      ? "fallback"
+      : foregroundServiceHealth;
   const updateDetailStrengthValue = (
     level: AppSettings["enhanceDetailLevelAll"],
     key: DetailStrengthColumnKey,
@@ -780,15 +804,111 @@ export function SettingsModal({
                         Обновить статус
                       </button>
                       <small style={{ color: "var(--text-secondary)" }}>
-                        Статус:{" "}
-                        {foregroundServiceRunning ? "сервис запущен" : "сервис остановлен"}
+                        Сервис: {foregroundServiceRunning ? "запущен" : "остановлен"}
                       </small>
                     </div>
+                    <div className="settings-health-overview">
+                      <div className="settings-health-row">
+                        <span>Состояние runtime</span>
+                        <span
+                          className={`settings-health-badge settings-health-${nativeRuntimeHealth}`}
+                        >
+                          {FOREGROUND_HEALTH_LABEL[nativeRuntimeHealth]}
+                        </span>
+                      </div>
+                      <div className="settings-health-grid">
+                        <div>
+                          <span>Queue depth</span>
+                          <strong>{foregroundServiceQueueDepth}</strong>
+                        </div>
+                        <div>
+                          <span>Stale jobs</span>
+                          <strong>{foregroundServiceStaleJobs}</strong>
+                        </div>
+                        <div>
+                          <span>Stale workers</span>
+                          <strong>{foregroundServiceStaleWorkers}</strong>
+                        </div>
+                        <div>
+                          <span>Active group rooms</span>
+                          <strong>{foregroundServiceActiveGroupScopes}</strong>
+                        </div>
+                        <div>
+                          <span>Active topic rooms</span>
+                          <strong>{foregroundServiceActiveTopicScopes}</strong>
+                        </div>
+                      </div>
+                    </div>
+                    {!settingsDraft.androidNativeGroupIterationV1 ? (
+                      <small style={{ color: "var(--text-secondary)" }}>
+                        Native group iteration выключен, используется bridge fallback.
+                      </small>
+                    ) : null}
                     {foregroundServiceError ? (
                       <small style={{ color: "var(--danger)" }}>
                         {foregroundServiceError}
                       </small>
                     ) : null}
+                    {!foregroundServiceError && foregroundServiceLastError ? (
+                      <small style={{ color: "#fbbf24" }}>
+                        Последняя ошибка worker: {foregroundServiceLastError}
+                      </small>
+                    ) : null}
+                    <div className="android-rollout-controls">
+                      <strong>Staged rollout controls</strong>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={settingsDraft.androidNativeGroupIterationV1}
+                          onChange={(event) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              androidNativeGroupIterationV1: event.target.checked,
+                            }))
+                          }
+                        />
+                        Android: native group iteration v1
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={settingsDraft.androidNativeGroupImagesV1}
+                          onChange={(event) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              androidNativeGroupImagesV1: event.target.checked,
+                            }))
+                          }
+                        />
+                        Android: native group images v1
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={settingsDraft.androidNativeGroupStructuredStorageV1}
+                          onChange={(event) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              androidNativeGroupStructuredStorageV1: event.target.checked,
+                            }))
+                          }
+                        />
+                        Android: structured group storage v1 (SQLite)
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={settingsDraft.androidNativeGroupStructuredStorageDualWrite}
+                          onChange={(event) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              androidNativeGroupStructuredStorageDualWrite: event.target.checked,
+                            }))
+                          }
+                        />
+                        Android: structured storage dual-write compatibility
+                      </label>
+                    </div>
                     <div className="android-battery-hints">
                       <strong>Подсказки по отключению ограничений батареи:</strong>
                       <ol>
@@ -1085,19 +1205,6 @@ export function SettingsModal({
                   }
                 />
                 Отображать детали изменения статуса
-              </label>
-              <label className="checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={settingsDraft.androidNativeGroupIterationV1}
-                  onChange={(e) =>
-                    setSettingsDraft((v) => ({
-                      ...v,
-                      androidNativeGroupIterationV1: e.target.checked,
-                    }))
-                  }
-                />
-                Android: использовать diagnostic-режим native group iteration V1
               </label>
             </>
           ) : null}
