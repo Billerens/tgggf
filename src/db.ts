@@ -125,6 +125,8 @@ const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
 const LLM_PROVIDERS: LlmProvider[] = ["lmstudio", "openrouter", "huggingface"];
 const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = ["soft", "medium", "strong"];
+const IMAGE_ASSET_STORAGE_VERSION = 2;
+const IMAGE_ASSET_DATA_URL_PREFIX = "data:";
 const ALL_KNOWN_STORE_NAMES = [
   "personas",
   "chats",
@@ -179,6 +181,191 @@ const DEFAULT_ENHANCE_DETAIL_STRENGTH_TABLE: EnhanceDetailStrengthTable = {
     vagina: 0.28,
   },
 };
+
+type StoredImageAsset = Omit<ImageAsset, "dataUrl"> & {
+  dataUrl?: string;
+  blob?: Blob;
+};
+
+const imageAssetDataUrlCache = new Map<string, string>();
+let imageAssetMigrationPromise: Promise<void> | null = null;
+
+function isDataUrl(value: string) {
+  return value.startsWith(IMAGE_ASSET_DATA_URL_PREFIX);
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  if (typeof FileReader === "undefined") return Promise.resolve("");
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      resolve(result);
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("blob_to_data_url_failed"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function dataUrlToBlob(dataUrl: string) {
+  if (!isDataUrl(dataUrl)) return null;
+  try {
+    const response = await fetch(dataUrl);
+    return await response.blob();
+  } catch {
+    return null;
+  }
+}
+
+function toStoredImageAssetRecord(asset: ImageAsset | StoredImageAsset): StoredImageAsset {
+  return {
+    id: toTrimmedString(asset.id),
+    dataUrl: toTrimmedString(asset.dataUrl),
+    blob: asset.blob instanceof Blob ? asset.blob : undefined,
+    mimeType: toTrimmedString(asset.mimeType),
+    byteSize:
+      typeof asset.byteSize === "number" && Number.isFinite(asset.byteSize)
+        ? Math.max(0, Math.floor(asset.byteSize))
+        : undefined,
+    storageVersion:
+      typeof asset.storageVersion === "number" && Number.isFinite(asset.storageVersion)
+        ? Math.max(1, Math.floor(asset.storageVersion))
+        : undefined,
+    meta: asset.meta,
+    createdAt: toTrimmedString(asset.createdAt) || new Date().toISOString(),
+  };
+}
+
+async function toBlobStoredImageAsset(asset: ImageAsset | StoredImageAsset): Promise<StoredImageAsset> {
+  const normalized = toStoredImageAssetRecord(asset);
+  const normalizedDataUrl = normalized.dataUrl ?? "";
+  if (!normalized.id) {
+    return {
+      ...normalized,
+      id: crypto.randomUUID(),
+      dataUrl: normalizedDataUrl,
+    };
+  }
+
+  if (normalized.blob instanceof Blob) {
+    return {
+      ...normalized,
+      dataUrl: "",
+      mimeType: normalized.mimeType || normalized.blob.type || undefined,
+      byteSize: normalized.byteSize ?? normalized.blob.size,
+      storageVersion: IMAGE_ASSET_STORAGE_VERSION,
+    };
+  }
+
+  if (!normalizedDataUrl || !isDataUrl(normalizedDataUrl)) {
+    return {
+      ...normalized,
+      dataUrl: normalizedDataUrl,
+    };
+  }
+
+  const blob = await dataUrlToBlob(normalizedDataUrl);
+  if (!(blob instanceof Blob)) {
+    return {
+      ...normalized,
+      dataUrl: normalizedDataUrl,
+    };
+  }
+
+  return {
+    ...normalized,
+    dataUrl: "",
+    blob,
+    mimeType: normalized.mimeType || blob.type || undefined,
+    byteSize: normalized.byteSize ?? blob.size,
+    storageVersion: IMAGE_ASSET_STORAGE_VERSION,
+  };
+}
+
+async function hydrateImageAssetRecord(asset: ImageAsset | StoredImageAsset): Promise<ImageAsset | null> {
+  const normalized = toStoredImageAssetRecord(asset);
+  if (!normalized.id) return null;
+
+  let dataUrl = normalized.dataUrl ?? "";
+  if (!dataUrl) {
+    const cached = imageAssetDataUrlCache.get(normalized.id);
+    if (cached) {
+      dataUrl = cached;
+    }
+  }
+
+  if (!dataUrl && normalized.blob instanceof Blob) {
+    dataUrl = await blobToDataUrl(normalized.blob).catch(() => "");
+  }
+
+  if (dataUrl) {
+    imageAssetDataUrlCache.set(normalized.id, dataUrl);
+  } else {
+    imageAssetDataUrlCache.delete(normalized.id);
+  }
+
+  return {
+    id: normalized.id,
+    dataUrl,
+    mimeType: normalized.mimeType,
+    byteSize: normalized.byteSize,
+    storageVersion: normalized.storageVersion,
+    meta: normalized.meta,
+    createdAt: normalized.createdAt,
+  };
+}
+
+async function serializeRawImageAssetRecord(asset: unknown): Promise<unknown> {
+  if (!asset || typeof asset !== "object") return asset;
+  const normalized = toStoredImageAssetRecord(asset as StoredImageAsset);
+  const blob = normalized.blob;
+  if (!(blob instanceof Blob)) {
+    return {
+      ...normalized,
+      blob: undefined,
+    };
+  }
+
+  const cached = imageAssetDataUrlCache.get(normalized.id) ?? "";
+  const dataUrl = cached || (await blobToDataUrl(blob).catch(() => ""));
+  return {
+    id: normalized.id,
+    dataUrl,
+    mimeType: normalized.mimeType || blob.type || undefined,
+    byteSize: normalized.byteSize ?? blob.size,
+    storageVersion: normalized.storageVersion ?? IMAGE_ASSET_STORAGE_VERSION,
+    meta: normalized.meta,
+    createdAt: normalized.createdAt,
+  };
+}
+
+async function migrateImageAssetsToBlobStorage(db: IDBPDatabase<TgGfDb>) {
+  if (!db.objectStoreNames.contains("imageAssets")) return;
+
+  const scanTx = db.transaction("imageAssets", "readonly");
+  const rows = await scanTx.store.getAll();
+  await scanTx.done;
+
+  for (const row of rows) {
+    const normalized = toStoredImageAssetRecord(row as StoredImageAsset);
+    const dataUrl = normalized.dataUrl ?? "";
+    if (!dataUrl || !isDataUrl(dataUrl)) continue;
+    if (normalized.blob instanceof Blob && normalized.storageVersion === IMAGE_ASSET_STORAGE_VERSION) {
+      continue;
+    }
+    const blob = await dataUrlToBlob(dataUrl);
+    if (!(blob instanceof Blob)) continue;
+    await db.put("imageAssets", {
+      ...normalized,
+      dataUrl: "",
+      blob,
+      mimeType: normalized.mimeType || blob.type || undefined,
+      byteSize: normalized.byteSize ?? blob.size,
+      storageVersion: IMAGE_ASSET_STORAGE_VERSION,
+    });
+    imageAssetDataUrlCache.set(normalized.id, dataUrl);
+  }
+}
 
 function toTrimmedString(value: unknown): string {
   if (typeof value === "string") return value.trim();
@@ -653,7 +840,17 @@ function getDb() {
     });
   }
 
-  return dbPromise;
+  return dbPromise.then(async (db) => {
+    if (!imageAssetMigrationPromise) {
+      imageAssetMigrationPromise = migrateImageAssetsToBlobStorage(db);
+    }
+    try {
+      await imageAssetMigrationPromise;
+    } catch {
+      // Non-fatal: keep app operational and continue with lazy hydration.
+    }
+    return db;
+  });
 }
 
 export const dbApi = {
@@ -678,6 +875,8 @@ export const dbApi = {
         await tx.objectStore(storeName as never).clear();
       }
       await tx.done;
+      imageAssetDataUrlCache.clear();
+      imageAssetMigrationPromise = null;
     } catch (error) {
       const baseMessage =
         error instanceof Error ? error.message : String(error);
@@ -951,7 +1150,9 @@ export const dbApi = {
 
   async getImageAsset(imageId: string) {
     const db = await getDb();
-    return db.get("imageAssets", imageId);
+    const row = await db.get("imageAssets", imageId);
+    if (!row) return null;
+    return hydrateImageAssetRecord(row as StoredImageAsset);
   },
 
   async getImageAssets(imageIds: string[]) {
@@ -965,18 +1166,35 @@ export const dbApi = {
     if (uniqueIds.length === 0) return [];
     const db = await getDb();
     const rows = await Promise.all(uniqueIds.map((imageId) => db.get("imageAssets", imageId)));
-    return rows.filter((row): row is ImageAsset => Boolean(row));
+    const hydrated = await Promise.all(
+      rows
+        .filter((row): row is ImageAsset => Boolean(row))
+        .map((row) => hydrateImageAssetRecord(row as StoredImageAsset)),
+    );
+    return hydrated.filter((row): row is ImageAsset => Boolean(row));
   },
 
   async getAllImageAssets() {
     const db = await getDb();
     const rows = await db.getAll("imageAssets");
-    return rows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const hydrated = await Promise.all(
+      rows.map((row) => hydrateImageAssetRecord(row as StoredImageAsset)),
+    );
+    return hydrated
+      .filter((row): row is ImageAsset => Boolean(row))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
   async saveImageAsset(asset: ImageAsset) {
     const db = await getDb();
-    await db.put("imageAssets", asset);
+    const stored = await toBlobStoredImageAsset(asset);
+    await db.put("imageAssets", stored as ImageAsset);
+    const cachedDataUrl = toTrimmedString(asset.dataUrl);
+    if (cachedDataUrl) {
+      imageAssetDataUrlCache.set(stored.id, cachedDataUrl);
+    } else {
+      imageAssetDataUrlCache.delete(stored.id);
+    }
   },
 
   async deleteImageAssets(imageIds: string[]) {
@@ -992,6 +1210,7 @@ export const dbApi = {
     const tx = db.transaction("imageAssets", "readwrite");
     for (const imageId of uniqueIds) {
       await tx.store.delete(imageId);
+      imageAssetDataUrlCache.delete(imageId);
     }
     await tx.done;
   },
@@ -1235,9 +1454,13 @@ export const dbApi = {
       const tx = db.transaction(storeName as never, "readonly");
       const store = tx.store;
       const [keys, values] = await Promise.all([store.getAllKeys(), store.getAll()]);
-      snapshot[storeName] = values.map((value, index) => ({
+      const serializedValues =
+        storeName === "imageAssets"
+          ? await Promise.all(values.map((value) => serializeRawImageAssetRecord(value)))
+          : values;
+      snapshot[storeName] = values.map((_, index) => ({
         key: keys[index],
-        value,
+        value: serializedValues[index],
       }));
       await tx.done;
     }
@@ -1288,6 +1511,8 @@ export const dbApi = {
       }
       await tx.done;
     }
+
+    await migrateImageAssetsToBlobStorage(db);
   },
 
   async getStoreNames() {

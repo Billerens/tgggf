@@ -1,6 +1,7 @@
 import { type ComfyGenerationItem, type ComfyImageGenerationMeta } from "../../comfy";
 import { dbApi } from "../../db";
 import { generatePersonaLookPrompts } from "../../lmstudio";
+import { subscribeBackgroundTick } from "../mobile/backgroundTick";
 import type { AppSettings, Persona, PersonaLookPromptCache } from "../../types";
 import type { LookEnhanceTarget } from "../../ui/types";
 
@@ -67,7 +68,22 @@ export function toLookPromptBundle(cache: PersonaLookPromptCache): PersonaLookPr
 export function waitMs(ms: number) {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve) => {
-    window.setTimeout(resolve, ms);
+    const deadline = Date.now() + ms;
+    let settled = false;
+    let unsubscribeTick = () => {};
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timerId);
+      unsubscribeTick();
+      resolve();
+    };
+    const timerId = window.setTimeout(finish, ms);
+    unsubscribeTick = subscribeBackgroundTick(() => {
+      if (Date.now() >= deadline) {
+        finish();
+      }
+    });
   });
 }
 

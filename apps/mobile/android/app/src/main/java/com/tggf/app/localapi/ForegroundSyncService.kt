@@ -9,7 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.tggf.app.MainActivity
@@ -24,6 +27,7 @@ class ForegroundSyncService : Service() {
 
         const val CHANNEL_ID = "tg_gf_foreground_sync"
         const val NOTIFICATION_ID = 7001
+        const val HEARTBEAT_INTERVAL_MS = 2_000L
 
         @Volatile
         private var running = false
@@ -72,16 +76,24 @@ class ForegroundSyncService : Service() {
         }
     }
 
+    private val heartbeatHandler = Handler(Looper.getMainLooper())
+    private var heartbeatRunnable: Runnable? = null
+    private var heartbeatSequence = 0L
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
         running = true
+        acquireWakeLock()
+        startHeartbeatLoop()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            stopHeartbeatLoop()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
             } else {
@@ -106,6 +118,8 @@ class ForegroundSyncService : Service() {
     }
 
     override fun onDestroy() {
+        stopHeartbeatLoop()
+        releaseWakeLock()
         running = false
         super.onDestroy()
     }
@@ -164,5 +178,50 @@ class ForegroundSyncService : Service() {
         return builder.build().apply {
             flags = flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
         }
+    }
+
+    private fun startHeartbeatLoop() {
+        if (heartbeatRunnable != null) return
+        heartbeatRunnable = object : Runnable {
+            override fun run() {
+                if (!running) return
+                heartbeatSequence += 1
+                LocalApiBridgePlugin.emitBackgroundTick(
+                    source = "foreground_service",
+                    sequence = heartbeatSequence,
+                    intervalMs = HEARTBEAT_INTERVAL_MS,
+                    enabled = isEnabled(applicationContext),
+                    running = isRunning(),
+                )
+                heartbeatHandler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
+            }
+        }
+        heartbeatHandler.post(heartbeatRunnable!!)
+    }
+
+    private fun stopHeartbeatLoop() {
+        val runnable = heartbeatRunnable ?: return
+        heartbeatHandler.removeCallbacks(runnable)
+        heartbeatRunnable = null
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        val manager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+        wakeLock = manager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "tg-gf:foreground-sync",
+        ).apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWakeLock() {
+        val lock = wakeLock ?: return
+        if (lock.isHeld) {
+            lock.release()
+        }
+        wakeLock = null
     }
 }

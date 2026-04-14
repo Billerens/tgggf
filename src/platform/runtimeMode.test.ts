@@ -33,4 +33,16 @@ describe("detectRuntimeMode", () => {
       }),
     ).toBe("web");
   });
+
+  it("returns android when LocalApi plugin is available", () => {
+    expect(
+      detectRuntimeMode({
+        Capacitor: {
+          Plugins: {
+            LocalApi: {},
+          },
+        },
+      }),
+    ).toBe("android");
+  });
 });

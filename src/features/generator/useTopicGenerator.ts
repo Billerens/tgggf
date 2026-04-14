@@ -9,6 +9,7 @@ import type { AppSettings, GeneratorSession, Persona } from "../../types";
 import { waitMs, stableSeedFromText } from "../look/lookHelpers";
 
 interface UseTopicGeneratorParams {
+  isAndroidRuntime: boolean;
   settings: AppSettings;
   personas: Persona[];
   generationPersonaId: string;
@@ -27,7 +28,14 @@ interface UseTopicGeneratorParams {
   setGenerationCompletedCount: Dispatch<SetStateAction<number>>;
 }
 
+export type TopicGenerationStepResult =
+  | "idle"
+  | "progress"
+  | "completed"
+  | "stopped";
+
 export function useTopicGenerator({
+  isAndroidRuntime,
   settings,
   personas,
   generationPersonaId,
@@ -68,6 +76,174 @@ export function useTopicGenerator({
     setGenerationIsRunning,
     setGenerationPendingImageCount,
     setGenerationSessions,
+  ]);
+
+  const runGenerationStep = useCallback(async (): Promise<TopicGenerationStepResult> => {
+    if (!generationSession) return "idle";
+    if (generationSession.status !== "running") {
+      return generationSession.status === "completed" ? "completed" : "stopped";
+    }
+
+    const markSessionAsError = async (message: string) => {
+      const erroredSession: GeneratorSession = {
+        ...generationSession,
+        status: "error",
+        updatedAt: new Date().toISOString(),
+      };
+      await dbApi.saveGeneratorSession(erroredSession);
+      setGenerationSessions((prev) =>
+        prev.map((session) =>
+          session.id === erroredSession.id ? erroredSession : session,
+        ),
+      );
+      setGenerationIsRunning(false);
+      return message;
+    };
+
+    const persona = personas.find((item) => item.id === generationSession.personaId);
+    if (!persona) {
+      throw new Error(
+        await markSessionAsError("Персона для активной сессии генерации не найдена."),
+      );
+    }
+
+    const topic = generationSession.topic.trim();
+    if (!topic) {
+      throw new Error(await markSessionAsError("Укажите тематику генерации."));
+    }
+
+    const total = generationSession.isInfinite
+      ? null
+      : typeof generationSession.requestedCount === "number" &&
+          Number.isFinite(generationSession.requestedCount)
+        ? Math.max(1, Math.floor(generationSession.requestedCount))
+        : null;
+    if (total !== null && generationSession.completedCount >= total) {
+      const completedSession: GeneratorSession = {
+        ...generationSession,
+        status: "completed",
+        updatedAt: new Date().toISOString(),
+      };
+      await dbApi.saveGeneratorSession(completedSession);
+      setGenerationSessions((prev) =>
+        prev.map((session) =>
+          session.id === completedSession.id ? completedSession : session,
+        ),
+      );
+      setGenerationIsRunning(false);
+      return "completed";
+    }
+
+    try {
+      const iteration = generationSession.completedCount + 1;
+      const prompt = await generateThemedComfyPrompt(
+        settings,
+        persona,
+        topic,
+        iteration,
+      );
+      setGenerationPendingImageCount((prev) => prev + 1);
+      let localized: string[] = [];
+      let localizedMetaByUrl: Record<string, ComfyImageGenerationMeta> = {};
+      try {
+        const seed = stableSeedFromText(
+          `${generationSession.id}:${iteration}:${topic}`,
+        );
+        const styleReferenceImage =
+          persona.avatarUrl.trim() || persona.fullBodyUrl.trim() || undefined;
+        const generationItem = {
+          flow: "base" as const,
+          prompt,
+          checkpointName: persona.imageCheckpoint || undefined,
+          seed,
+          styleReferenceImage,
+          styleStrength: styleReferenceImage
+            ? settings.chatStyleStrength
+            : undefined,
+          compositionStrength: 0,
+          saveComfyOutputs: settings.saveComfyOutputs,
+        };
+        const imageUrls = await generateComfyImages(
+          [generationItem],
+          settings.comfyBaseUrl,
+          settings.comfyAuth,
+        );
+        const extractedMeta = imageUrls[0]
+          ? await readComfyImageGenerationMeta(
+              imageUrls[0],
+              settings.comfyBaseUrl,
+              settings.comfyAuth,
+            )
+          : null;
+        localized = await localizeImageUrls(imageUrls);
+        const meta: ComfyImageGenerationMeta = {
+          prompt: extractedMeta?.prompt ?? generationItem.prompt,
+          seed: extractedMeta?.seed ?? generationItem.seed,
+          model: extractedMeta?.model ?? generationItem.checkpointName,
+          flow: extractedMeta?.flow ?? generationItem.flow,
+        };
+        await Promise.all(
+          localized.map((url) =>
+            dbApi.saveImageAsset({
+              id: crypto.randomUUID(),
+              dataUrl: url,
+              meta,
+              createdAt: new Date().toISOString(),
+            }),
+          ),
+        );
+        localizedMetaByUrl = Object.fromEntries(
+          localized.map((url) => [url, meta]),
+        );
+      } finally {
+        setGenerationPendingImageCount((prev) => Math.max(0, prev - 1));
+      }
+
+      const entry = {
+        id: crypto.randomUUID(),
+        iteration,
+        prompt,
+        imageUrls: localized,
+        imageMetaByUrl: localizedMetaByUrl,
+        createdAt: new Date().toISOString(),
+      };
+      const completedCount = iteration;
+      const nextStatus =
+        total !== null && completedCount >= total ? "completed" : "running";
+      const nextSession: GeneratorSession = {
+        ...generationSession,
+        completedCount,
+        entries: [...generationSession.entries, entry],
+        status: nextStatus,
+        updatedAt: new Date().toISOString(),
+      };
+      await dbApi.saveGeneratorSession(nextSession);
+      setGenerationCompletedCount(completedCount);
+      setGenerationSessions((prev) =>
+        prev.map((session) =>
+          session.id === nextSession.id ? nextSession : session,
+        ),
+      );
+      if (nextStatus === "completed") {
+        setGenerationIsRunning(false);
+        return "completed";
+      }
+      return "progress";
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : "Ошибка генерации изображения";
+      throw new Error(await markSessionAsError(message));
+    }
+  }, [
+    generationSession,
+    personas,
+    setGenerationCompletedCount,
+    setGenerationIsRunning,
+    setGenerationPendingImageCount,
+    setGenerationSessions,
+    settings,
   ]);
 
   const startGeneration = useCallback(async () => {
@@ -126,6 +302,10 @@ export function useTopicGenerator({
     setGenerationCompletedCount(session.completedCount);
     setGenerationIsRunning(true);
     setGenerationPendingImageCount(0);
+
+    if (isAndroidRuntime) {
+      return;
+    }
 
     let completed = session.completedCount;
     let mutableSession = session;
@@ -257,6 +437,7 @@ export function useTopicGenerator({
     generationCountLimit,
     generationDelaySeconds,
     generationInfinite,
+    isAndroidRuntime,
     generationPersonaId,
     generationRunRef,
     generationSessionId,
@@ -272,6 +453,7 @@ export function useTopicGenerator({
   ]);
 
   return {
+    runGenerationStep,
     startGeneration,
     stopGeneration,
   };

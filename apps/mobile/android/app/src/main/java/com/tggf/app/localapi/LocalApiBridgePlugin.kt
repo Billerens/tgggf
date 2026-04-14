@@ -10,14 +10,50 @@ import org.json.JSONObject
 import org.json.JSONArray
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.lang.ref.WeakReference
 
 @CapacitorPlugin(name = "LocalApi")
 class LocalApiBridgePlugin : Plugin() {
+    companion object {
+        @Volatile
+        private var activePluginRef: WeakReference<LocalApiBridgePlugin>? = null
+
+        @JvmStatic
+        fun emitBackgroundTick(
+            source: String,
+            sequence: Long,
+            intervalMs: Long,
+            enabled: Boolean,
+            running: Boolean,
+        ) {
+            val plugin = activePluginRef?.get() ?: return
+            val payload = JSObject().apply {
+                put("ok", true)
+                put("source", source)
+                put("sequence", sequence)
+                put("intervalMs", intervalMs)
+                put("enabled", enabled)
+                put("running", running)
+                put("timestamp", System.currentTimeMillis())
+            }
+            plugin.notifyListeners("backgroundTick", payload)
+        }
+    }
+
     private val repository by lazy { LocalRepository(context) }
+    private val backgroundJobs by lazy { BackgroundJobRepository(context) }
 
     override fun load() {
         super.load()
+        activePluginRef = WeakReference(this)
         ForegroundSyncService.ensureStartedIfEnabled(context)
+    }
+
+    override fun handleOnDestroy() {
+        if (activePluginRef?.get() === this) {
+            activePluginRef = null
+        }
+        super.handleOnDestroy()
     }
 
     private fun normalizePath(path: String): String {
@@ -48,6 +84,64 @@ class LocalApiBridgePlugin : Plugin() {
             }
         }
         return null
+    }
+
+    private fun readIntQueryParam(query: String?, name: String, fallback: Int): Int {
+        val raw = readQueryParam(query, name) ?: return fallback
+        return raw.toIntOrNull() ?: fallback
+    }
+
+    private fun readLongQueryParam(query: String?, name: String, fallback: Long): Long {
+        val raw = readQueryParam(query, name) ?: return fallback
+        return raw.toLongOrNull() ?: fallback
+    }
+
+    private fun parsePayloadJson(raw: Any?): String {
+        return when (raw) {
+            is JSONObject -> raw.toString()
+            is JSONArray -> raw.toString()
+            is String -> {
+                val text = raw.trim()
+                if (text.isEmpty()) "{}" else text
+            }
+            null -> "{}"
+            else -> JSONObject.wrap(raw)?.toString() ?: "{}"
+        }
+    }
+
+    private fun parsePayloadToAny(raw: String): Any {
+        val normalized = raw.trim()
+        if (normalized.startsWith("{")) {
+            return try {
+                JSObject(normalized)
+            } catch (_: Exception) {
+                normalized
+            }
+        }
+        if (normalized.startsWith("[")) {
+            return try {
+                JSONArray(normalized)
+            } catch (_: Exception) {
+                normalized
+            }
+        }
+        return normalized
+    }
+
+    private fun backgroundJobToJsObject(job: BackgroundJobRecord): JSObject {
+        return JSObject().apply {
+            put("id", job.id)
+            put("type", job.type)
+            put("payload", parsePayloadToAny(job.payloadJson))
+            put("status", job.status)
+            put("runAtMs", job.runAtMs)
+            put("leaseUntilMs", job.leaseUntilMs)
+            put("attempts", job.attempts)
+            put("maxAttempts", job.maxAttempts)
+            put("lastError", job.lastError)
+            put("createdAtMs", job.createdAtMs)
+            put("updatedAtMs", job.updatedAtMs)
+        }
     }
 
     private fun respond(call: PluginCall, status: Int, body: Any?) {
@@ -265,6 +359,7 @@ class LocalApiBridgePlugin : Plugin() {
                     put("ok", true)
                     put("enabled", ForegroundSyncService.isEnabled(context))
                     put("running", ForegroundSyncService.isRunning())
+                    put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
                 },
             )
             return
@@ -292,6 +387,197 @@ class LocalApiBridgePlugin : Plugin() {
                     put("ok", true)
                     put("enabled", enabled)
                     put("running", ForegroundSyncService.isRunning())
+                    put("heartbeatIntervalMs", ForegroundSyncService.HEARTBEAT_INTERVAL_MS)
+                },
+            )
+            return
+        }
+
+        if (method == "GET" && path == "/api/background-jobs/claim") {
+            val limit = readIntQueryParam(query, "limit", 4)
+            val leaseMs = readLongQueryParam(query, "leaseMs", 12_000L)
+            val type = readQueryParam(query, "type")
+            val claimed = backgroundJobs.claimDueJobs(limit, leaseMs, type)
+            val jobs = JSONArray().apply {
+                for (job in claimed) {
+                    put(backgroundJobToJsObject(job))
+                }
+            }
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("jobs", jobs)
+                },
+            )
+            return
+        }
+
+        if (method == "GET" && path == "/api/background-jobs") {
+            val status = readQueryParam(query, "status")
+            val limit = readIntQueryParam(query, "limit", 50)
+            val rows = backgroundJobs.listJobs(status, limit)
+            val jobs = JSONArray().apply {
+                for (job in rows) {
+                    put(backgroundJobToJsObject(job))
+                }
+            }
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("jobs", jobs)
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-jobs/ensure-recurring") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Background job payload must be an object")
+                    },
+                )
+                return
+            }
+
+            val id = body.optString("id", "").trim()
+            val type = body.optString("type", "").trim()
+            val runAtMs = body.optLong("runAtMs", System.currentTimeMillis())
+            val maxAttempts = body.optInt("maxAttempts", 0)
+            val payloadJson = parsePayloadJson(body.opt("payload"))
+
+            if (id.isEmpty() || type.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Background job requires id and type")
+                    },
+                )
+                return
+            }
+
+            val ensured = backgroundJobs.ensureRecurringJob(
+                id = id,
+                type = type,
+                payloadJson = payloadJson,
+                runAtMs = runAtMs,
+                maxAttempts = maxAttempts,
+            )
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("job", backgroundJobToJsObject(ensured))
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-jobs/reschedule") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Background job reschedule payload must be an object")
+                    },
+                )
+                return
+            }
+
+            val id = body.optString("id", "").trim()
+            if (id.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Background job id is required")
+                    },
+                )
+                return
+            }
+            val runAtMs = body.optLong("runAtMs", System.currentTimeMillis())
+            val incrementAttempts = body.optBoolean("incrementAttempts", false)
+            val lastError = body.optString("lastError", "").trim().ifEmpty { null }
+            val updated = backgroundJobs.rescheduleJob(id, runAtMs, incrementAttempts, lastError)
+            respond(
+                call,
+                if (updated) 200 else 404,
+                JSObject().apply {
+                    put("ok", updated)
+                    if (!updated) {
+                        put("error", "Background job not found")
+                    }
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-jobs/complete") {
+            val body = call.getObject("body")
+            val id = body?.optString("id", "")?.trim() ?: ""
+            if (id.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Background job id is required")
+                    },
+                )
+                return
+            }
+            val updated = backgroundJobs.completeJob(id)
+            respond(
+                call,
+                if (updated) 200 else 404,
+                JSObject().apply {
+                    put("ok", updated)
+                    if (!updated) {
+                        put("error", "Background job not found")
+                    }
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-jobs/cancel") {
+            val body = call.getObject("body")
+            val id = body?.optString("id", "")?.trim() ?: ""
+            if (id.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Background job id is required")
+                    },
+                )
+                return
+            }
+            val updated = backgroundJobs.cancelJob(id)
+            respond(
+                call,
+                if (updated) 200 else 404,
+                JSObject().apply {
+                    put("ok", updated)
+                    if (!updated) {
+                        put("error", "Background job not found")
+                    }
                 },
             )
             return

@@ -474,11 +474,6 @@ export function PersonaModal({
     } catch {
       // no-op
     }
-    try {
-      console.debug("[tg-gf][preview][persona-modal]", snapshot);
-    } catch {
-      // no-op
-    }
   };
 
   const openPreview = async (

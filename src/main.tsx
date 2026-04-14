@@ -4,6 +4,7 @@ import App from "./App";
 import { setRuntimeContext } from "./platform/runtimeContext";
 import { getWrapperBridge } from "./platform/wrapperContract";
 import { getWrapperInfo } from "./platform/wrapperBridge";
+import { installSystemLogCapture } from "./features/system-logs/installSystemLogCapture";
 import "./styles.css";
 
 const runtimeScope = globalThis as unknown as Record<string, unknown>;
@@ -14,6 +15,7 @@ const wrapperInfo = getWrapperInfo(
     : "",
 );
 setRuntimeContext(wrapperInfo);
+installSystemLogCapture(globalThis as unknown as Record<string, unknown>);
 
 const wrapperBridge = getWrapperBridge(runtimeScope);
 if (wrapperInfo.mode !== "web" && wrapperBridge?.health) {

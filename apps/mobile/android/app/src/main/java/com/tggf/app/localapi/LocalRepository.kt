@@ -48,7 +48,7 @@ class LocalRepository(
         return mapOf(
             "ok" to true,
             "service" to "android-local-api",
-            "storage" to "room",
+            "storage" to "shared_preferences_json",
             "dbPath" to dbPath
         )
     }

@@ -26,6 +26,10 @@ import type {
   BackupExportScope,
 } from "../features/backup/dataTransfer";
 import type { GoogleDriveFileMeta } from "../features/backup/googleDriveSync";
+import type {
+  SystemLogEntry,
+  SystemLogLevel,
+} from "../features/system-logs/systemLogStore";
 
 type PwaInstallStatus = "installed" | "available" | "unavailable";
 type ToolCapabilityMatrixStatus =
@@ -70,8 +74,10 @@ interface SettingsModalProps {
   driveBackupName: string;
   setDriveBackupName: (name: string) => void;
   dataTransferMessage: string | null;
+  systemLogs: SystemLogEntry[];
   exportDownloadUrl: string | null;
   exportDownloadFileName: string | null;
+  onClearSystemLogs: () => void;
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
   onInstallPwa: () => void;
   onRefreshForegroundService: () => void;
@@ -94,7 +100,16 @@ interface SettingsModalProps {
   onSubmit: (event: FormEvent) => void;
 }
 
-type SettingsTab = "system" | "models" | "personal" | "chat" | "data";
+type SettingsTab = "system" | "models" | "personal" | "chat" | "data" | "logs";
+type LogLevelFilter = "all" | SystemLogLevel;
+
+const LOG_LEVEL_OPTIONS: Array<{ value: LogLevelFilter; label: string }> = [
+  { value: "all", label: "Все уровни" },
+  { value: "debug", label: "Debug" },
+  { value: "info", label: "Info" },
+  { value: "warn", label: "Warn" },
+  { value: "error", label: "Error" },
+];
 
 const AUTH_MODE_LABELS: Array<{ value: AuthMode; label: string }> = [
   { value: "none", label: "Без auth" },
@@ -198,6 +213,19 @@ const TOOL_CAPABILITY_STATUS_LABEL: Record<ToolCapabilityMatrixStatus, string> =
 
 function formatToolCapabilityCheckedAt(value: string | undefined) {
   if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("ru-RU", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatSystemLogTimestamp(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleString("ru-RU", {
@@ -317,8 +345,10 @@ export function SettingsModal({
   driveBackupName,
   setDriveBackupName,
   dataTransferMessage,
+  systemLogs,
   exportDownloadUrl,
   exportDownloadFileName,
+  onClearSystemLogs,
   setSettingsDraft,
   onInstallPwa,
   onRefreshForegroundService,
@@ -342,6 +372,8 @@ export function SettingsModal({
   const [exportChatId, setExportChatId] = useState("");
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importMode, setImportMode] = useState<BackupImportMode>("merge");
+  const [logLevelFilter, setLogLevelFilter] = useState<LogLevelFilter>("all");
+  const [logTypeFilter, setLogTypeFilter] = useState<string>("all");
   const googleDriveBackupOptions = useMemo(() => {
     if (googleDriveBackups.length === 0) {
       return [{ value: "", label: "Бэкапы в Drive не найдены" }];
@@ -363,6 +395,31 @@ export function SettingsModal({
       googleDriveBackups.find((backup) => backup.id === selectedGoogleDriveBackupId) ??
       null,
     [googleDriveBackups, selectedGoogleDriveBackupId],
+  );
+  const logTypeOptions = useMemo(() => {
+    const typeSet = new Set<string>();
+    for (const entry of systemLogs) {
+      if (entry.eventType.trim()) {
+        typeSet.add(entry.eventType.trim());
+      }
+    }
+    const sorted = Array.from(typeSet).sort((a, b) => a.localeCompare(b));
+    return [
+      { value: "all", label: "Все типы" },
+      ...sorted.map((eventType) => ({ value: eventType, label: eventType })),
+    ];
+  }, [systemLogs]);
+  const filteredSystemLogs = useMemo(
+    () =>
+      [...systemLogs]
+        .reverse()
+        .filter((entry) =>
+          logLevelFilter === "all" ? true : entry.level === logLevelFilter,
+        )
+        .filter((entry) =>
+          logTypeFilter === "all" ? true : entry.eventType === logTypeFilter,
+        ),
+    [systemLogs, logLevelFilter, logTypeFilter],
   );
   const updateDetailStrengthValue = (
     level: AppSettings["enhanceDetailLevelAll"],
@@ -392,6 +449,8 @@ export function SettingsModal({
       setExportChatId(exportableChats[0]?.id ?? "");
       setImportFile(null);
       setImportMode("merge");
+      setLogLevelFilter("all");
+      setLogTypeFilter("all");
     }
   }, [open, exportableChats]);
 
@@ -521,6 +580,13 @@ export function SettingsModal({
             onClick={() => setActiveTab("data")}
           >
             Данные
+          </button>
+          <button
+            type="button"
+            className={activeTab === "logs" ? "active" : ""}
+            onClick={() => setActiveTab("logs")}
+          >
+            Логи
           </button>
         </div>
         <form className="form" onSubmit={onSubmit}>
@@ -1279,6 +1345,77 @@ export function SettingsModal({
                   {dataTransferMessage}
                 </small>
               ) : null}
+            </>
+          ) : activeTab === "logs" ? (
+            <>
+              <div className="persona-section">
+                <h5>Системные логи</h5>
+                <small style={{ color: "var(--text-secondary)" }}>
+                  Общий поток событий приложения: console, ошибки окна, telemetry и системные операции.
+                </small>
+                <div className="settings-log-filters">
+                  <label>
+                    Уровень
+                    <Dropdown
+                      value={logLevelFilter}
+                      options={LOG_LEVEL_OPTIONS}
+                      onChange={(nextValue) =>
+                        setLogLevelFilter(nextValue as LogLevelFilter)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Тип события
+                    <Dropdown
+                      value={logTypeFilter}
+                      options={logTypeOptions}
+                      onChange={(nextValue) => setLogTypeFilter(nextValue)}
+                    />
+                  </label>
+                </div>
+                <div className="inline-row" style={{ marginTop: 8 }}>
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    Показано: {filteredSystemLogs.length} из {systemLogs.length}
+                  </small>
+                  <button
+                    type="button"
+                    onClick={onClearSystemLogs}
+                    disabled={systemLogs.length === 0}
+                  >
+                    Очистить логи
+                  </button>
+                </div>
+              </div>
+              <div className="settings-log-list">
+                {filteredSystemLogs.length === 0 ? (
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    Нет логов для выбранных фильтров.
+                  </small>
+                ) : (
+                  filteredSystemLogs.map((entry) => (
+                    <article className="settings-log-entry" key={entry.id}>
+                      <header className="settings-log-entry-head">
+                        <span
+                          className={`settings-log-level settings-log-level-${entry.level}`}
+                        >
+                          {entry.level.toUpperCase()}
+                        </span>
+                        <code className="settings-log-type">{entry.eventType}</code>
+                        <small className="settings-log-time">
+                          {formatSystemLogTimestamp(entry.timestamp)}
+                        </small>
+                      </header>
+                      <p className="settings-log-message">{entry.message}</p>
+                      {entry.details ? (
+                        <details className="settings-log-details">
+                          <summary>Показать детали</summary>
+                          <pre>{entry.details}</pre>
+                        </details>
+                      ) : null}
+                    </article>
+                  ))
+                )}
+              </div>
             </>
           ) : (
             <button type="submit" className="primary">

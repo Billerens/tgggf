@@ -387,6 +387,10 @@ export interface ImageGenerationMeta {
 export interface ImageAsset {
   id: string;
   dataUrl: string;
+  blob?: Blob;
+  mimeType?: string;
+  byteSize?: number;
+  storageVersion?: number;
   meta?: ImageGenerationMeta;
   createdAt: string;
 }

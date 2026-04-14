@@ -7,6 +7,7 @@ function detectCapacitorAndroid(env: Record<string, unknown>): boolean {
   const capacitor = maybeCapacitor as {
     getPlatform?: () => string;
     platform?: string;
+    Plugins?: Record<string, unknown>;
   };
 
   if (typeof capacitor.getPlatform === "function") {
@@ -15,6 +16,14 @@ function detectCapacitorAndroid(env: Record<string, unknown>): boolean {
     } catch {
       return false;
     }
+  }
+
+  const hasLocalApiPlugin =
+    Boolean(capacitor.Plugins) &&
+    typeof capacitor.Plugins === "object" &&
+    "LocalApi" in capacitor.Plugins;
+  if (hasLocalApiPlugin) {
+    return true;
   }
 
   return capacitor.platform === "android";

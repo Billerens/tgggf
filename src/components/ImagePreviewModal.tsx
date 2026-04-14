@@ -193,16 +193,6 @@ export function ImagePreviewModal({
 
   if (!src) return null;
 
-  try {
-    console.debug("[tg-gf][preview][image-modal]", {
-      src,
-      hasMeta: Boolean(meta),
-      meta: meta ?? null,
-    });
-  } catch {
-    // no-op
-  }
-
   const updateScale = (nextScale: number | ((prev: number) => number)) => {
     setScale((prev) => {
       const candidate = typeof nextScale === "function" ? nextScale(prev) : nextScale;

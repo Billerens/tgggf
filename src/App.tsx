@@ -53,6 +53,8 @@ import {
   getForegroundServiceStatus,
   setForegroundServiceEnabled,
 } from "./features/mobile/foregroundService";
+import { useGroupIterationBackgroundWorker } from "./features/mobile/useGroupIterationBackgroundWorker";
+import { useTopicGenerationBackgroundWorker } from "./features/mobile/useTopicGenerationBackgroundWorker";
 import { useGroupStore } from "./groupStore";
 import {
   buildBackupPayload,
@@ -64,6 +66,10 @@ import {
   parseBackupFile,
 } from "./features/backup/dataTransfer";
 import { useGoogleDriveBackupSync } from "./features/backup/useGoogleDriveBackupSync";
+import {
+  pushSystemLog,
+  useSystemLogStore,
+} from "./features/system-logs/systemLogStore";
 import { getRuntimeContext } from "./platform/runtimeContext";
 import type { ChatSession, LlmProvider } from "./types";
 
@@ -225,6 +231,8 @@ export default function App() {
   const [dataTransferMessage, setDataTransferMessage] = useState<string | null>(
     null,
   );
+  const systemLogs = useSystemLogStore((state) => state.entries);
+  const clearSystemLogs = useSystemLogStore((state) => state.clear);
   const runtimeMode = getRuntimeContext().mode;
   const isAndroidRuntime = runtimeMode === "android";
   const [foregroundServiceState, setForegroundServiceState] =
@@ -324,6 +332,12 @@ export default function App() {
     }));
     try {
       const status = await getForegroundServiceStatus();
+      pushSystemLog({
+        level: "info",
+        eventType: "foreground_service.status",
+        message: `Foreground service status: enabled=${status.enabled}, running=${status.running}`,
+        details: status,
+      });
       setForegroundServiceState({
         loading: false,
         enabled: status.enabled,
@@ -332,6 +346,11 @@ export default function App() {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      pushSystemLog({
+        level: "error",
+        eventType: "foreground_service.status_error",
+        message,
+      });
       setForegroundServiceState((prev) => ({
         ...prev,
         loading: false,
@@ -349,6 +368,12 @@ export default function App() {
       }));
       try {
         const status = await setForegroundServiceEnabled(enabled);
+        pushSystemLog({
+          level: "info",
+          eventType: "foreground_service.toggled",
+          message: `Foreground service toggled: enabled=${status.enabled}, running=${status.running}`,
+          details: status,
+        });
         setForegroundServiceState({
           loading: false,
           enabled: status.enabled,
@@ -357,6 +382,11 @@ export default function App() {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        pushSystemLog({
+          level: "error",
+          eventType: "foreground_service.toggle_error",
+          message,
+        });
         setForegroundServiceState((prev) => ({
           ...prev,
           loading: false,
@@ -394,30 +424,13 @@ export default function App() {
     () => groupRooms.find((room) => room.id === activeGroupRoomId) ?? null,
     [groupRooms, activeGroupRoomId],
   );
-
-  useEffect(() => {
-    if (!activeGroupRoom) return;
-    if (activeGroupRoom.status !== "active") return;
-    if (
-      activeGroupRoom.mode === "personas_plus_user" &&
-      activeGroupRoom.waitingForUser
-    ) {
-      return;
-    }
-
-    const timerId = window.setInterval(() => {
-      void runActiveGroupIteration(personas, settings, settings.userName);
-    }, 4200);
-
-    return () => window.clearInterval(timerId);
-  }, [
-    activeGroupRoom?.id,
-    activeGroupRoom?.status,
-    activeGroupRoom?.waitingForUser,
+  useGroupIterationBackgroundWorker({
+    activeGroupRoom,
+    isAndroidRuntime,
     personas,
-    runActiveGroupIteration,
     settings,
-  ]);
+    runActiveGroupIteration,
+  });
 
   const {
     generationPersonaId,
@@ -494,7 +507,8 @@ export default function App() {
     chatImageMetaByUrl,
     setGenerationSessions,
   });
-  const { startGeneration, stopGeneration } = useTopicGenerator({
+  const { runGenerationStep, startGeneration, stopGeneration } = useTopicGenerator({
+    isAndroidRuntime,
     settings,
     personas,
     generationPersonaId,
@@ -511,6 +525,14 @@ export default function App() {
     setGenerationSessions,
     setGenerationSessionId,
     setGenerationCompletedCount,
+  });
+  useTopicGenerationBackgroundWorker({
+    isAndroidRuntime,
+    generationSession,
+    runGenerationStep,
+    onError: (message) => {
+      useAppStore.setState({ error: message });
+    },
   });
 
   const {
@@ -1123,8 +1145,10 @@ export default function App() {
           driveBackupName={driveBackupName}
           setDriveBackupName={setDriveBackupName}
           dataTransferMessage={dataTransferMessage}
+          systemLogs={systemLogs}
           exportDownloadUrl={readyExportFile?.url ?? null}
           exportDownloadFileName={readyExportFile?.fileName ?? null}
+          onClearSystemLogs={clearSystemLogs}
           setSettingsDraft={setSettingsDraft}
           onInstallPwa={() => void onInstallPwa()}
           onRefreshForegroundService={() => {

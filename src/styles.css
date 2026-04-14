@@ -1639,6 +1639,104 @@ select:focus,
 .android-battery-hints li span {
   color: var(--text-primary);
 }
+.settings-log-filters {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.settings-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.settings-log-entry {
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 10px 12px;
+}
+.settings-log-entry-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settings-log-level {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  min-width: 58px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.settings-log-level-debug {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.16);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+.settings-log-level-info {
+  color: #bfdbfe;
+  background: rgba(59, 130, 246, 0.16);
+  border-color: rgba(96, 165, 250, 0.42);
+}
+.settings-log-level-warn {
+  color: #fde68a;
+  background: rgba(217, 119, 6, 0.16);
+  border-color: rgba(251, 191, 36, 0.42);
+}
+.settings-log-level-error {
+  color: #fecaca;
+  background: rgba(220, 38, 38, 0.16);
+  border-color: rgba(248, 113, 113, 0.44);
+}
+.settings-log-type {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+.settings-log-time {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.settings-log-message {
+  margin: 8px 0 0;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+}
+.settings-log-details {
+  margin-top: 8px;
+}
+.settings-log-details summary {
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.settings-log-details pre {
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+  background: rgba(0, 0, 0, 0.25);
+  color: #dbeafe;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 .settings-table-scroll {
   width: 100%;
   overflow-x: auto;
