@@ -4,10 +4,22 @@ import { generateComfyPromptsFromImageDescription } from "./lmstudio";
 import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
 import { localizeImageUrls } from "./imageStorage";
 import {
-  applyGroupRelationDynamics,
   reconcilePrivateGroupMemories,
   reconcileSharedGroupMemories,
 } from "./groupDynamics";
+import {
+  buildSpeakerSelectedEvent,
+  buildTickStartedEvent,
+  buildWaitingTransitionEvents,
+} from "./features/group-iteration/domain/patchBuilders";
+import { evaluateRoomBlocking } from "./features/group-iteration/domain/roomBlocking";
+import { mergeSpeakerDecision } from "./features/group-iteration/domain/speakerSelection";
+import {
+  buildRelationDynamicsAfterSpeech,
+  buildSpeechMemoryCandidates,
+  buildUpdatedParticipantsAfterSpeech,
+  buildUpdatedPersonaStatesAfterSpeech,
+} from "./features/group-iteration/domain/stateTransitions";
 import {
   requestLlmOrchestratorDecision,
   requestLlmPersonaMessage,
@@ -416,10 +428,6 @@ function buildMentionResolvedEvent(
     },
     createdAt: nowIso(),
   };
-}
-
-function hasWaitingReasonChanged(room: GroupRoom, nextReason: string | undefined) {
-  return (room.waitingReason || "") !== (nextReason || "");
 }
 
 function ensureRoomState(room: GroupRoom): GroupRoom {
@@ -1841,27 +1849,17 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         settings,
         userName,
       });
-      let decision = deterministicDecision;
-      let orchestrationSource: "llm" | "deterministic" = "deterministic";
-      let llmDecisionStatus: string | undefined;
-      const isStrictWaitingLock =
-        room.mode === "personas_plus_user" &&
-        room.waitingForUser &&
-        deterministicDecision.status === "waiting" &&
-        deterministicDecision.waitForUser;
-      const isDeterministicHardBlock =
-        deterministicDecision.status !== "spoke" &&
-        [
-          "room_not_active",
-          "waiting_for_user",
-          "no_active_participants",
-          "typing_delay",
-          "pending_image_generation",
-        ].includes(deterministicDecision.reason);
+      const { isStrictWaitingLock, isDeterministicHardBlock } =
+        evaluateRoomBlocking({
+          roomMode: room.mode,
+          roomWaitingForUser: room.waitingForUser,
+          deterministicDecision,
+        });
+      let llmDecision: Partial<typeof deterministicDecision> | null = null;
 
       if (!isStrictWaitingLock && !isDeterministicHardBlock) {
         try {
-          const llmDecision = await requestLlmOrchestratorDecision({
+          const resolvedLlmDecision = await requestLlmOrchestratorDecision({
             room,
             participants,
             messages,
@@ -1871,147 +1869,51 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
             settings,
             userName,
           });
-          if (llmDecision) {
-            llmDecisionStatus = llmDecision.status;
-            decision = {
-              ...deterministicDecision,
-              ...llmDecision,
-              debug: {
-                ...deterministicDecision.debug,
-                llmDecision: llmDecision,
-              },
-            };
-            orchestrationSource = "llm";
+          if (resolvedLlmDecision) {
+            llmDecision = resolvedLlmDecision;
           }
         } catch {
-          orchestrationSource = "deterministic";
+          llmDecision = null;
         }
       } else {
-        decision = {
-          ...deterministicDecision,
-          debug: {
-            ...deterministicDecision.debug,
-            waitingLock: true,
-          },
-        };
+        llmDecision = null;
       }
 
-      const forceDeterministicSpeaker =
-        deterministicDecision.status === "spoke" &&
-        Boolean(deterministicDecision.speakerPersonaId) &&
-        (decision.status !== "spoke" || !decision.speakerPersonaId);
-      if (forceDeterministicSpeaker) {
-        decision = {
-          ...deterministicDecision,
-          debug: {
-            ...deterministicDecision.debug,
-            llmDecisionStatus,
-            llmOverriddenByDeterministic: true,
-          },
-        };
-        orchestrationSource = "deterministic";
-      }
-
-      const mentionDrivenPersonaId =
-        typeof deterministicDecision.debug?.mentionDrivenPersonaId === "string"
-          ? deterministicDecision.debug.mentionDrivenPersonaId
-          : "";
-      if (
-        decision.status === "spoke" &&
-        decision.speakerPersonaId &&
-        deterministicDecision.status === "spoke" &&
-        deterministicDecision.speakerPersonaId &&
-        decision.speakerPersonaId !== deterministicDecision.speakerPersonaId &&
-        (!mentionDrivenPersonaId ||
-          mentionDrivenPersonaId !== decision.speakerPersonaId)
-      ) {
-        const recentSpeakerIds = events
-          .filter((event) => event.type === "speaker_selected")
-          .map((event) =>
-            typeof event.payload?.personaId === "string"
-              ? event.payload.personaId
-              : "",
-          )
-          .filter(Boolean)
-          .slice(-Math.max(8, participants.length * 3));
-        const countRecentSpeaks = (personaId: string) =>
-          recentSpeakerIds.filter((id) => id === personaId).length;
-        const llmCount = countRecentSpeaks(decision.speakerPersonaId);
-        const deterministicCount = countRecentSpeaks(
-          deterministicDecision.speakerPersonaId,
-        );
-        const dominantCountThreshold = Math.max(
-          3,
-          Math.ceil(recentSpeakerIds.length * 0.45),
-        );
-        if (
-          recentSpeakerIds.length >= 6 &&
-          llmCount >= dominantCountThreshold &&
-          deterministicCount < llmCount
-        ) {
-          decision = {
-            ...deterministicDecision,
-            debug: {
-              ...deterministicDecision.debug,
-              llmDecisionStatus,
-              llmOverriddenByDiversity: true,
-              llmSpeakerPersonaId: decision.speakerPersonaId,
-              llmRecentCount: llmCount,
-              deterministicRecentCount: deterministicCount,
-              dominantCountThreshold,
-            },
-          };
-          orchestrationSource = "deterministic";
-        }
-      }
-
-      if (room.mode === "personas_only") {
-        const originalStatus = decision.status;
-        const normalizedStatus =
-          originalStatus === "waiting"
-            ? deterministicDecision.status === "spoke" &&
-              deterministicDecision.speakerPersonaId
-              ? "spoke"
-              : "skipped"
-            : originalStatus;
-        decision = {
-          ...decision,
-          status: normalizedStatus,
-          speakerPersonaId:
-            normalizedStatus === "spoke"
-              ? decision.speakerPersonaId ||
-                deterministicDecision.speakerPersonaId
-              : undefined,
-          waitForUser: false,
-          waitReason: undefined,
-          debug: {
-            ...decision.debug,
-            personasOnlyGuard: true,
-            originalStatus,
-          },
-        };
-      }
+      const effectiveDeterministicDecision =
+        isStrictWaitingLock || isDeterministicHardBlock
+          ? {
+              ...deterministicDecision,
+              debug: {
+                ...deterministicDecision.debug,
+                waitingLock: true,
+              },
+            }
+          : deterministicDecision;
+      const mergedDecision = mergeSpeakerDecision({
+        deterministicDecision: effectiveDeterministicDecision,
+        llmDecision,
+        roomMode: room.mode,
+        events,
+        participants,
+      });
+      const decision = mergedDecision.decision;
+      const orchestrationSource = mergedDecision.orchestrationSource;
 
       const userContextAction =
         decision.userContextAction === "clear" ? "clear" : "keep";
       const now = nowIso();
       const turnId = newId();
-      const tickStartedEvent: GroupEvent = {
-        id: newId(),
+      const tickStartedEvent = buildTickStartedEvent({
+        idFactory: newId,
+        createdAt: now,
         roomId,
         turnId,
-        type: "orchestrator_tick_started",
-        payload: {
-          roomMode: room.mode,
-          model: settings.model,
-          source: orchestrationSource,
-          reason: decision.reason,
-          status: decision.status,
-          userContextAction,
-          debug: decision.debug,
-        },
-        createdAt: now,
-      };
+        roomMode: room.mode,
+        model: settings.model,
+        source: orchestrationSource,
+        decision,
+        userContextAction,
+      });
       await dbApi.saveGroupEvent(tickStartedEvent);
       set((state) => ({
         groupEvents:
@@ -2055,37 +1957,19 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         };
         await dbApi.saveGroupRoom(nextRoom);
 
-        const waitingEvents: GroupEvent[] = [];
-        if (
-          roomIsActive &&
-          decision.waitForUser &&
-          (!latestRoom.waitingForUser ||
-            hasWaitingReasonChanged(latestRoom, decision.waitReason))
-        ) {
-          waitingEvents.push({
-            id: newId(),
-            roomId,
-            turnId,
-            type: "room_waiting_user",
-            payload: {
-              userName,
-              reason: decision.waitReason,
-            },
-            createdAt: nowIso(),
-          });
-        }
-        if (roomIsActive && !decision.waitForUser && latestRoom.waitingForUser) {
-          waitingEvents.push({
-            id: newId(),
-            roomId,
-            turnId,
-            type: "room_resumed",
-            payload: {
-              reason: decision.reason || "orchestrator_resumed",
-            },
-            createdAt: nowIso(),
-          });
-        }
+        const waitingEvents = buildWaitingTransitionEvents({
+          idFactory: newId,
+          createdAtFactory: nowIso,
+          roomId,
+          turnId,
+          roomIsActive,
+          latestWaitingForUser: latestRoom.waitingForUser,
+          latestWaitingReason: latestRoom.waitingReason,
+          decisionWaitForUser: decision.waitForUser,
+          decisionWaitReason: decision.waitReason,
+          userName,
+          resumeReason: decision.reason || "orchestrator_resumed",
+        });
         if (waitingEvents.length > 0) {
           await dbApi.appendGroupEvents(waitingEvents);
         }
@@ -2437,17 +2321,14 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         return;
       }
 
-      const speakerSelectedEvent: GroupEvent = {
-        id: newId(),
+      const speakerSelectedEvent = buildSpeakerSelectedEvent({
+        idFactory: newId,
+        createdAt: nowIso(),
         roomId,
         turnId,
-        type: "speaker_selected",
-        payload: {
-          personaId: speaker.id,
-          personaName: speaker.name,
-        },
-        createdAt: nowIso(),
-      };
+        personaId: speaker.id,
+        personaName: speaker.name,
+      });
       await dbApi.saveGroupEvent(speakerSelectedEvent);
       set((state) => ({
         groupEvents:
@@ -2507,23 +2388,10 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       if (!personaMessage) return;
 
       const participantUpdateNow = nowIso();
-      const updatedParticipants = participants.map((participant) => {
-        if (participant.personaId === speaker.id) {
-          return {
-            ...participant,
-            aliveScore: clamp(participant.aliveScore - 2),
-            muteUntil: new Date(
-              Date.now() + Math.max(0, participant.talkCooldownMs || 0),
-            ).toISOString(),
-            updatedAt: participantUpdateNow,
-          };
-        }
-        const dormantBoost = participant.aliveScore < 40 ? 2 : 1;
-        return {
-          ...participant,
-          aliveScore: clamp(participant.aliveScore + dormantBoost),
-          updatedAt: participantUpdateNow,
-        };
+      const updatedParticipants = buildUpdatedParticipantsAfterSpeech({
+        participants,
+        speakerPersonaId: speaker.id,
+        updatedAt: participantUpdateNow,
       });
       await dbApi.saveGroupParticipants(updatedParticipants);
 
@@ -2742,17 +2610,16 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         })();
       }
       const speechNow = nowIso();
-      const speechMemory: GroupMemoryPrivate = {
-        id: newId(),
-        roomId,
-        personaId: speaker.id,
-        layer: "short_term",
-        kind: "event",
-        content: speechText.slice(0, 240),
-        salience: 52,
-        createdAt: speechNow,
-        updatedAt: speechNow,
-      };
+      const { privateMemory: speechMemory, sharedMemory: speechSharedMemory } =
+        buildSpeechMemoryCandidates({
+          idFactory: newId,
+          roomId,
+          speakerPersonaId: speaker.id,
+          speakerName: speaker.name,
+          speechText,
+          mentionPersonaIds,
+          nowIso: speechNow,
+        });
       const privateMemoriesInRoom = get().groupPrivateMemories.filter(
         (memory) => memory.roomId === roomId,
       );
@@ -2768,19 +2635,6 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         privateReconcile.kept.find((memory) => memory.id === speechMemory.id) ||
         speechMemory;
 
-      const speechSharedMemory: GroupMemoryShared | null =
-        speechText.length >= 80 || mentionPersonaIds.length > 0
-          ? {
-              id: newId(),
-              roomId,
-              layer: "short_term",
-              kind: "event",
-              content: `${speaker.name}: ${speechText.slice(0, 220)}`,
-              salience: mentionPersonaIds.length > 0 ? 58 : 50,
-              createdAt: speechNow,
-              updatedAt: speechNow,
-            }
-          : null;
       const sharedMemoriesInRoom = get().groupSharedMemories.filter(
         (memory) => memory.roomId === roomId,
       );
@@ -2816,22 +2670,10 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       const currentStates = get().groupPersonaStates.filter(
         (state) => state.roomId === roomId,
       );
-      const updatedStates = currentStates.map((state) => {
-        if (state.personaId === speaker.id) {
-          return {
-            ...state,
-            energy: clamp(state.energy - 2),
-            engagement: clamp(state.engagement + 3),
-            initiative: clamp(state.initiative + 1),
-            aliveScore: clamp(state.aliveScore + 1),
-            updatedAt: nowIso(),
-          };
-        }
-        return {
-          ...state,
-          engagement: clamp(state.engagement + 1),
-          updatedAt: nowIso(),
-        };
+      const updatedStates = buildUpdatedPersonaStatesAfterSpeech({
+        states: currentStates,
+        speakerPersonaId: speaker.id,
+        updatedAt: nowIso(),
       });
       if (updatedStates.length > 0) {
         await dbApi.saveGroupPersonaStates(updatedStates);
@@ -2840,7 +2682,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       const currentEdges = get().groupRelationEdges.filter(
         (edge) => edge.roomId === roomId,
       );
-      const relationDynamics = applyGroupRelationDynamics({
+      const relationDynamics = buildRelationDynamicsAfterSpeech({
         edges: currentEdges,
         speakerPersonaId: speaker.id,
         mentionedPersonaIds: mentionPersonaIds,
@@ -2917,34 +2759,21 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       const latestRoomBeforeFinalize =
         get().groupRooms.find((item) => item.id === roomId) || room;
       const roomIsStillActive = latestRoomBeforeFinalize.status === "active";
-      if (roomIsStillActive && decision.waitForUser) {
-        if (
-          !latestRoomBeforeFinalize.waitingForUser ||
-          hasWaitingReasonChanged(latestRoomBeforeFinalize, decision.waitReason)
-        ) {
-          postEvents.push({
-            id: newId(),
-            roomId,
-            turnId,
-            type: "room_waiting_user",
-            payload: {
-              userName,
-              reason: decision.waitReason,
-            },
-            createdAt: nowIso(),
-          });
-        }
-      } else if (roomIsStillActive && latestRoomBeforeFinalize.waitingForUser) {
-        postEvents.push({
-          id: newId(),
-          roomId,
-          turnId,
-          type: "room_resumed",
-          payload: {
-            reason: "orchestrator_resumed",
-          },
-          createdAt: nowIso(),
-        });
+      const finalWaitingEvents = buildWaitingTransitionEvents({
+        idFactory: newId,
+        createdAtFactory: nowIso,
+        roomId,
+        turnId,
+        roomIsActive: roomIsStillActive,
+        latestWaitingForUser: latestRoomBeforeFinalize.waitingForUser,
+        latestWaitingReason: latestRoomBeforeFinalize.waitingReason,
+        decisionWaitForUser: decision.waitForUser,
+        decisionWaitReason: decision.waitReason,
+        userName,
+        resumeReason: "orchestrator_resumed",
+      });
+      if (finalWaitingEvents.length > 0) {
+        postEvents.push(...finalWaitingEvents);
       }
       await dbApi.appendGroupEvents(postEvents);
 
