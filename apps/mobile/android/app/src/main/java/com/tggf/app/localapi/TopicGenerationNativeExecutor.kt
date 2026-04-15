@@ -1075,7 +1075,8 @@ object TopicGenerationNativeExecutor {
             val key = keys.next()
             val node = workflow.optJSONObject(key) ?: continue
             val inputs = node.optJSONObject("inputs") ?: continue
-            val checkpointName = inputs.optString("ckpt_name", "").trim()
+            val checkpointRaw = inputs.opt("ckpt_name")
+            val checkpointName = (checkpointRaw as? String)?.trim().orEmpty()
             if (checkpointName.isNotEmpty()) {
                 return checkpointName
             }
@@ -1126,7 +1127,7 @@ object TopicGenerationNativeExecutor {
             val key = keys.next()
             val node = workflow.optJSONObject(key) ?: continue
             val inputs = node.optJSONObject("inputs") ?: continue
-            if (inputs.has("ckpt_name")) {
+            if (inputs.opt("ckpt_name") is String) {
                 inputs.put("ckpt_name", checkpointName)
             }
         }
