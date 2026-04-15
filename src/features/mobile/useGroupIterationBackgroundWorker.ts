@@ -98,6 +98,33 @@ function shouldEnableDesiredState(room: GroupRoom | null) {
   return room.status === "active";
 }
 
+function parseIsoMs(value: string | undefined) {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function shouldApplyIncomingRoomUpdate(params: {
+  current: GroupRoom | undefined;
+  incoming: GroupRoom;
+}) {
+  const { current, incoming } = params;
+  if (!current) return true;
+  if (current.status === "paused" && incoming.status === "active") {
+    return false;
+  }
+  const currentUpdatedAtMs = parseIsoMs(current.updatedAt);
+  const incomingUpdatedAtMs = parseIsoMs(incoming.updatedAt);
+  if (
+    currentUpdatedAtMs !== null &&
+    incomingUpdatedAtMs !== null &&
+    incomingUpdatedAtMs < currentUpdatedAtMs
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -131,6 +158,37 @@ function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null
   return plugin;
 }
 
+function parseIdbImageAssetId(value: string | undefined | null) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
+
+function collectPersonaImageAssetIds(personas: Persona[]) {
+  const ids = new Set<string>();
+  const addDirectId = (value: string | undefined | null) => {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (normalized) ids.add(normalized);
+  };
+  const addFromUrl = (value: string | undefined | null) => {
+    const id = parseIdbImageAssetId(value);
+    if (id) ids.add(id);
+  };
+
+  for (const persona of personas) {
+    addDirectId(persona.avatarImageId);
+    addDirectId(persona.fullBodyImageId);
+    addDirectId(persona.fullBodySideImageId);
+    addDirectId(persona.fullBodyBackImageId);
+    addFromUrl(persona.avatarUrl);
+    addFromUrl(persona.fullBodyUrl);
+    addFromUrl(persona.fullBodySideUrl);
+    addFromUrl(persona.fullBodyBackUrl);
+  }
+
+  return Array.from(ids);
+}
+
 async function syncGroupContextToNative(roomId: string) {
   const scope = globalThis as unknown as CapacitorLikeScope;
   const plugin = resolveLocalApiPlugin(scope);
@@ -162,6 +220,19 @@ async function syncGroupContextToNative(roomId: string) {
     dbApi.getGroupSnapshots(roomId),
   ]);
 
+  const participantPersonaIds = new Set(
+    groupParticipants
+      .map((participant) => participant.personaId.trim())
+      .filter(Boolean),
+  );
+  const personasForImageSync =
+    participantPersonaIds.size > 0
+      ? personas.filter((persona) => participantPersonaIds.has(persona.id.trim()))
+      : personas;
+  const imageAssetIds = collectPersonaImageAssetIds(personasForImageSync);
+  const imageAssets =
+    imageAssetIds.length > 0 ? await dbApi.getImageAssets(imageAssetIds) : [];
+
   const response = await plugin.request({
     method: "PUT",
     path: "/api/raw-snapshot",
@@ -179,6 +250,7 @@ async function syncGroupContextToNative(roomId: string) {
         groupSharedMemories,
         groupPrivateMemories,
         groupSnapshots,
+        imageAssets,
       },
     },
   });
@@ -315,12 +387,28 @@ export function useGroupIterationBackgroundWorker({
           }
           const body = isRecord(response.body) ? response.body : {};
           const stores = isRecord(body.stores) ? body.stores : {};
+          const existingRooms = await dbApi.getGroupRooms();
+          const existingRoomById = new Map(existingRooms.map((room) => [room.id, room]));
 
           const rooms = castStoreRows<GroupRoom>(
             readStoreRows(stores, "groupRooms").filter(hasEntityId),
           );
           for (const room of rooms) {
+            const currentRoom = existingRoomById.get(room.id);
+            if (!shouldApplyIncomingRoomUpdate({ current: currentRoom, incoming: room })) {
+              continue;
+            }
             await dbApi.saveGroupRoom(room);
+            existingRoomById.set(room.id, room);
+          }
+
+          const requestedRoom =
+            roomId && roomId.trim().length > 0
+              ? existingRoomById.get(roomId) || null
+              : null;
+          if (requestedRoom && requestedRoom.status === "paused") {
+            await syncGroupStateFromDb(roomId);
+            return;
           }
 
           const participants = castStoreRows<GroupParticipant>(

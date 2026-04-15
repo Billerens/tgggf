@@ -42,53 +42,58 @@ object BackgroundRuntimeEngine {
     private fun processTick(context: Context) {
         val runtimeRepository = BackgroundRuntimeRepository(context)
         val jobs = BackgroundJobRepository(context)
-        val desiredStates = runtimeRepository.listDesiredStates()
-        val knownJobsById =
-            jobs.listJobs(status = null, limit = 400).associateBy { job -> job.id }
-        val enabledKeys = mutableSetOf<String>()
+        try {
+            val desiredStates = runtimeRepository.listDesiredStates()
+            val knownJobsById =
+                jobs.listJobs(status = null, limit = 400).associateBy { job -> job.id }
+            val enabledKeys = mutableSetOf<String>()
 
-        for (state in desiredStates) {
-            if (!isManagedTaskType(state.taskType)) continue
-            val key = buildStateKey(state.taskType, state.scopeId)
-            if (state.enabled) {
-                enabledKeys.add(key)
-                val jobId = buildManagedJobId(state.taskType, state.scopeId)
-                ensureManagedJob(
-                    runtimeRepository = runtimeRepository,
-                    jobs = jobs,
-                    state = state,
-                    existingJob = knownJobsById[jobId],
-                )
-            } else {
-                cancelManagedJob(runtimeRepository, jobs, state.taskType, state.scopeId)
+            for (state in desiredStates) {
+                if (!isManagedTaskType(state.taskType)) continue
+                val key = buildStateKey(state.taskType, state.scopeId)
+                if (state.enabled) {
+                    enabledKeys.add(key)
+                    val jobId = buildManagedJobId(state.taskType, state.scopeId)
+                    ensureManagedJob(
+                        runtimeRepository = runtimeRepository,
+                        jobs = jobs,
+                        state = state,
+                        existingJob = knownJobsById[jobId],
+                    )
+                } else {
+                    cancelManagedJob(runtimeRepository, jobs, state.taskType, state.scopeId)
+                }
             }
-        }
 
-        // Prevent stale orphan jobs from running when desired-state was switched off.
-        val existingJobs = jobs.listJobs(status = null, limit = 200)
-        for (job in existingJobs) {
-            if (!isManagedTaskType(job.type)) continue
-            val scopeId = parseScopeId(job.id, job.type)
-            if (scopeId.isBlank()) continue
-            val key = buildStateKey(job.type, scopeId)
-            if (enabledKeys.contains(key)) continue
-            if (job.status == BackgroundJobRepository.STATUS_PENDING || job.status == BackgroundJobRepository.STATUS_LEASED) {
-                jobs.cancelJob(job.id)
-                runtimeRepository.appendEvent(
-                    taskType = job.type,
-                    scopeId = scopeId,
-                    jobId = job.id,
-                    stage = "orphan_cancelled",
-                    level = "warn",
-                    message = "Cancelled orphan managed job because desired-state is disabled",
-                    detailsJson = null,
-                )
+            // Prevent stale orphan jobs from running when desired-state was switched off.
+            val existingJobs = jobs.listJobs(status = null, limit = 200)
+            for (job in existingJobs) {
+                if (!isManagedTaskType(job.type)) continue
+                val scopeId = parseScopeId(job.id, job.type)
+                if (scopeId.isBlank()) continue
+                val key = buildStateKey(job.type, scopeId)
+                if (enabledKeys.contains(key)) continue
+                if (job.status == BackgroundJobRepository.STATUS_PENDING || job.status == BackgroundJobRepository.STATUS_LEASED) {
+                    jobs.cancelJob(job.id)
+                    runtimeRepository.appendEvent(
+                        taskType = job.type,
+                        scopeId = scopeId,
+                        jobId = job.id,
+                        stage = "orphan_cancelled",
+                        level = "warn",
+                        message = "Cancelled orphan managed job because desired-state is disabled",
+                        detailsJson = null,
+                    )
+                }
             }
-        }
 
-        val nextTick = tickCounter.incrementAndGet()
-        if (nextTick % EVENT_PRUNE_TICK_INTERVAL == 0L) {
-            runtimeRepository.trimEvents(EVENT_PRUNE_MAX_ROWS)
+            val nextTick = tickCounter.incrementAndGet()
+            if (nextTick % EVENT_PRUNE_TICK_INTERVAL == 0L) {
+                runtimeRepository.trimEvents(EVENT_PRUNE_MAX_ROWS)
+            }
+        } finally {
+            jobs.closeQuietly()
+            runtimeRepository.closeQuietly()
         }
     }
 

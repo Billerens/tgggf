@@ -6,10 +6,11 @@ import org.json.JSONObject
 class LocalRepository(
     context: Context,
     private val dbPath: String = "tg_gf_local.db"
-) {
+) : AutoCloseable {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences("tg_gf_local_api", Context.MODE_PRIVATE)
-    private val groupRuntimeStoreRepository by lazy { GroupRuntimeStoreRepository(appContext) }
+    private val groupRuntimeStoreRepositoryDelegate = lazy { GroupRuntimeStoreRepository(appContext) }
+    private val groupRuntimeStoreRepository by groupRuntimeStoreRepositoryDelegate
     private val settingsJsonKey = "settings_json"
     private val personasJsonKey = "personas_json"
     private val chatsJsonKey = "chats_json"
@@ -177,6 +178,11 @@ class LocalRepository(
         } catch (_: Exception) {
             JSONObject()
         }
+    }
+
+    override fun close() {
+        if (!groupRuntimeStoreRepositoryDelegate.isInitialized()) return
+        groupRuntimeStoreRepository.closeQuietly()
     }
 }
 

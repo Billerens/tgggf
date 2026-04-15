@@ -258,6 +258,31 @@ class BackgroundRuntimeRepository(
         }
     }
 
+    fun clearEvents(
+        taskType: String? = null,
+        scopeId: String? = null,
+    ): Int {
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        val normalizedTaskType = taskType?.trim()?.ifEmpty { null }
+        val normalizedScopeId = scopeId?.trim()?.ifEmpty { null }
+        if (normalizedTaskType != null) {
+            clauses.add("$COL_TASK_TYPE = ?")
+            args.add(normalizedTaskType)
+        }
+        if (normalizedScopeId != null) {
+            clauses.add("$COL_SCOPE_ID = ?")
+            args.add(normalizedScopeId)
+        }
+        val selection = if (clauses.isEmpty()) null else clauses.joinToString(" AND ")
+        val selectionArgs = if (args.isEmpty()) null else args.toTypedArray()
+        return writableDatabase.delete(
+            TABLE_EVENTS,
+            selection,
+            selectionArgs,
+        )
+    }
+
     fun countEvents(
         taskType: String? = null,
         stage: String? = null,

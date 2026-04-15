@@ -7,7 +7,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.time.Instant
 import java.util.UUID
+import kotlin.math.ceil
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 object GroupIterationNativeExecutor {
     private const val GROUP_ITERATION_JOB_TYPE = "group_iteration"
@@ -16,7 +18,37 @@ object GroupIterationNativeExecutor {
     private const val GROUP_ITERATION_DEFAULT_INTERVAL_MS = 4_200L
     private const val GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS = 8_000L
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
-    private const val HEADLESS_FALLBACK_MESSAGE = "native_headless_v1"
+    private val DETERMINISTIC_HARD_BLOCK_REASONS =
+        setOf(
+            "room_not_active",
+            "waiting_for_user",
+            "no_active_participants",
+            "typing_delay",
+            "pending_image_generation",
+        )
+
+    private data class HeadlessTickDecision(
+        val status: String,
+        val reason: String,
+        val speakerPersonaId: String? = null,
+        val waitForUser: Boolean = false,
+        val waitReason: String? = null,
+        val userContextAction: String? = null,
+        val debug: JSONObject = JSONObject(),
+    )
+
+    private data class ActiveParticipant(
+        val personaId: String,
+        val initiativeBias: Double,
+        val aliveScore: Double,
+        val joinedAt: String,
+    )
+
+    private data class ScoredParticipant(
+        val participant: ActiveParticipant,
+        val score: Int,
+        val explain: JSONObject,
+    )
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -44,30 +76,36 @@ object GroupIterationNativeExecutor {
         val jobs = BackgroundJobRepository(context)
         val runtime = BackgroundRuntimeRepository(context)
         val repository = LocalRepository(context)
-        val claimed = jobs.claimDueJobs(
-            limit = 1,
-            leaseMs = GROUP_ITERATION_LEASE_MS,
-            type = GROUP_ITERATION_JOB_TYPE,
-        )
-
-        if (claimed.isEmpty()) {
-            emitAwaitingState(
-                context = context,
-                runtime = runtime,
-                jobs = jobs,
-                repository = repository,
+        try {
+            val claimed = jobs.claimDueJobs(
+                limit = 1,
+                leaseMs = GROUP_ITERATION_LEASE_MS,
+                type = GROUP_ITERATION_JOB_TYPE,
             )
-            return
-        }
 
-        for (job in claimed) {
-            processClaimedJob(
-                context = context,
-                jobs = jobs,
-                runtime = runtime,
-                repository = repository,
-                job = job,
-            )
+            if (claimed.isEmpty()) {
+                emitAwaitingState(
+                    context = context,
+                    runtime = runtime,
+                    jobs = jobs,
+                    repository = repository,
+                )
+                return
+            }
+
+            for (job in claimed) {
+                processClaimedJob(
+                    context = context,
+                    jobs = jobs,
+                    runtime = runtime,
+                    repository = repository,
+                    job = job,
+                )
+            }
+        } finally {
+            repository.close()
+            jobs.closeQuietly()
+            runtime.closeQuietly()
         }
     }
 
@@ -279,39 +317,6 @@ object GroupIterationNativeExecutor {
             return
         }
 
-        val blockingReason = resolveRoomBlockingReason(room)
-
-        if (blockingReason.isNotBlank()) {
-            jobs.rescheduleJob(
-                id = job.id,
-                runAtMs = System.currentTimeMillis() + intervalMs,
-                incrementAttempts = false,
-                lastError = null,
-            )
-            ForegroundSyncService.updateWorkerStatus(
-                context = context,
-                worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
-                state = "idle",
-                scopeId = roomId,
-                detail = blockingReason,
-                progress = false,
-                claimed = false,
-                lastError = "",
-            )
-            appendRuntimeEvent(
-                runtime = runtime,
-                scopeId = roomId,
-                jobId = job.id,
-                stage = "room_blocked",
-                level = "info",
-                message = "Skipped group iteration dispatch because room is blocked",
-                details = JSONObject().apply {
-                    put("reason", blockingReason)
-                },
-            )
-            return
-        }
-
         val nativeHeadlessEnabled = isNativeHeadlessModeEnabled(repository)
         if (nativeHeadlessEnabled) {
             val headlessCompleted =
@@ -353,6 +358,38 @@ object GroupIterationNativeExecutor {
             if (headlessCompleted) {
                 return
             }
+        }
+
+        val blockingReason = resolveRoomBlockingReason(room)
+        if (blockingReason.isNotBlank()) {
+            jobs.rescheduleJob(
+                id = job.id,
+                runAtMs = System.currentTimeMillis() + intervalMs,
+                incrementAttempts = false,
+                lastError = null,
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+                state = "idle",
+                scopeId = roomId,
+                detail = blockingReason,
+                progress = false,
+                claimed = false,
+                lastError = "",
+            )
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = roomId,
+                jobId = job.id,
+                stage = "room_blocked",
+                level = "info",
+                message = "Skipped group iteration dispatch because room is blocked",
+                details = JSONObject().apply {
+                    put("reason", blockingReason)
+                },
+            )
+            return
         }
 
         val requestedAtMs = System.currentTimeMillis()
@@ -471,100 +508,138 @@ object GroupIterationNativeExecutor {
         val personas = readStoreArray(repository, "personas")
         val events = readStoreArray(repository, "groupEvents")
         val messages = readStoreArray(repository, "groupMessages")
+        val personaStates = readStoreArray(repository, "groupPersonaStates")
+        val relationEdges = readStoreArray(repository, "groupRelationEdges")
+        val sharedMemories = readStoreArray(repository, "groupSharedMemories")
+        val privateMemories = readStoreArray(repository, "groupPrivateMemories")
         val settings = parseJsonObject(repository.readSettingsJson())
         val userName = settings.optString("userName", "Пользователь").trim().ifEmpty { "Пользователь" }
         val nativeGroupImagesEnabled = isNativeGroupImagesEnabled(settings)
-        val pendingImageMessage = findLatestPendingImageMessage(messages, roomId)
-        val deterministicSpeakerPersonaId = selectNextSpeakerPersonaId(participants, events, roomId)
-        var speakerPersonaId: String? = deterministicSpeakerPersonaId
-        val personasPlusUserMode =
-            room.optString("mode", "personas_plus_user")
-                .equals("personas_plus_user", ignoreCase = true)
-        var tickStatus = if (speakerPersonaId.isNullOrBlank()) "skipped" else "spoke"
-        var tickReason = "native_headless_tick"
-        var tickWaitForUser = !speakerPersonaId.isNullOrBlank() && personasPlusUserMode
-        var tickWaitReason: String? =
-            if (tickWaitForUser) {
-                "Ожидается ответ пользователя ($userName)"
+        val roomMode =
+            if (room.optString("mode", "personas_plus_user").trim().equals("personas_plus_user", ignoreCase = true)) {
+                "personas_plus_user"
             } else {
-                null
+                "personas_only"
             }
-        var userContextAction = "keep"
-        var orchestrationSource = "native_headless_deterministic"
-        var orchestratorDecisionApplied = false
+        val deterministicDecision =
+            runNativeDeterministicOrchestratorTick(
+                room = room,
+                participants = participants,
+                messages = messages,
+                events = events,
+                relationEdges = relationEdges,
+                personas = personas,
+                roomId = roomId,
+                userName = userName,
+                settingsModel = settings.optString("model", "").trim(),
+            )
+        val isStrictWaitingLock =
+            roomMode == "personas_plus_user" &&
+                room.optBoolean("waitingForUser", false) &&
+                deterministicDecision.status == "waiting" &&
+                deterministicDecision.waitForUser
+        val isDeterministicHardBlock =
+            deterministicDecision.status != "spoke" &&
+                DETERMINISTIC_HARD_BLOCK_REASONS.contains(deterministicDecision.reason)
 
-        if (pendingImageMessage != null) {
-            speakerPersonaId = null
-            tickStatus = "skipped"
-            tickReason = "pending_image_generation"
-            tickWaitForUser = false
-            tickWaitReason = null
-            orchestrationSource = "native_headless_blocked_pending_image"
-        } else {
+        var llmDecision: HeadlessTickDecision? = null
+        var orchestratorDecisionApplied = false
+        if (!isStrictWaitingLock && !isDeterministicHardBlock) {
             try {
-                val llmDecision =
+                val nativeLlmDecision =
                     NativeLlmClient.requestGroupOrchestratorDecision(
                         settings = settings,
                         room = room,
                         participants = participants,
                         personas = personas,
                         messages = messages,
+                        events = events,
                         roomId = roomId,
                         userName = userName,
                     )
-                if (llmDecision != null) {
+                if (nativeLlmDecision != null) {
+                    appendRuntimeEvent(
+                        runtime = runtime,
+                        scopeId = roomId,
+                        jobId = job.id,
+                        stage = "llm_orchestrator_contract",
+                        level = "info",
+                        message = "Native LLM orchestrator contract trace",
+                        details =
+                            JSONObject().apply {
+                                put("status", nativeLlmDecision.status)
+                                if (!nativeLlmDecision.speakerPersonaId.isNullOrBlank()) {
+                                    put("speakerPersonaId", nativeLlmDecision.speakerPersonaId)
+                                }
+                                put("waitForUser", nativeLlmDecision.waitForUser)
+                                if (!nativeLlmDecision.waitReason.isNullOrBlank()) {
+                                    put("waitReason", nativeLlmDecision.waitReason)
+                                }
+                                if (!nativeLlmDecision.reason.isBlank()) {
+                                    put("reason", nativeLlmDecision.reason)
+                                }
+                                putLlmCallDebugDetails(this, nativeLlmDecision.llmDebug)
+                            },
+                    )
                     orchestratorDecisionApplied = true
-                    val llmSpeakerId = llmDecision.speakerPersonaId?.trim().orEmpty()
-                    val validatedSpeakerId =
-                        if (llmSpeakerId.isNotBlank() && participantHasPersona(participants, roomId, llmSpeakerId)) {
-                            llmSpeakerId
+                    val llmStatus = nativeLlmDecision.status.trim().lowercase()
+                    if (llmStatus == "spoke" || llmStatus == "waiting" || llmStatus == "skipped") {
+                        val llmSpeakerId = nativeLlmDecision.speakerPersonaId?.trim().orEmpty()
+                        val validatedSpeakerId =
+                            if (
+                                llmStatus == "spoke" &&
+                                    llmSpeakerId.isNotBlank() &&
+                                    participantHasPersona(participants, roomId, llmSpeakerId)
+                            ) {
+                                llmSpeakerId
+                            } else {
+                                ""
+                            }
+                        if (llmStatus == "spoke" && validatedSpeakerId.isBlank()) {
+                            appendRuntimeEvent(
+                                runtime = runtime,
+                                scopeId = roomId,
+                                jobId = job.id,
+                                stage = "llm_orchestrator_invalid_speaker",
+                                level = "warn",
+                                message = "LLM orchestrator returned invalid speaker, using deterministic fallback",
+                                details = JSONObject().apply {
+                                    put("llmSpeakerPersonaId", llmSpeakerId)
+                                    put("deterministicSpeakerPersonaId", deterministicDecision.speakerPersonaId)
+                                    putLlmCallDebugDetails(this, nativeLlmDecision.llmDebug)
+                                },
+                            )
                         } else {
-                            ""
-                        }
-                    when (llmDecision.status) {
-                        "spoke" -> {
-                            if (validatedSpeakerId.isNotBlank()) {
-                                speakerPersonaId = validatedSpeakerId
-                                tickStatus = "spoke"
-                                tickReason = llmDecision.reason
-                                tickWaitForUser =
-                                    if (llmDecision.waitForUser) {
-                                        true
-                                    } else {
-                                        personasPlusUserMode
-                                    }
-                                tickWaitReason =
-                                    llmDecision.waitReason
-                                        ?: if (tickWaitForUser) {
-                                            "Ожидается ответ пользователя ($userName)"
+                            llmDecision =
+                                HeadlessTickDecision(
+                                    status = llmStatus,
+                                    reason = nativeLlmDecision.reason.trim().ifEmpty { "llm_orchestrator_decision" },
+                                    speakerPersonaId =
+                                        if (llmStatus == "spoke") {
+                                            validatedSpeakerId
                                         } else {
                                             null
-                                        }
-                                userContextAction = llmDecision.userContextAction ?: "keep"
-                                orchestrationSource = "native_llm"
-                            } else {
-                                appendRuntimeEvent(
-                                    runtime = runtime,
-                                    scopeId = roomId,
-                                    jobId = job.id,
-                                    stage = "llm_orchestrator_invalid_speaker",
-                                    level = "warn",
-                                    message = "LLM orchestrator returned invalid speaker, using deterministic fallback",
-                                    details = JSONObject().apply {
-                                        put("llmSpeakerPersonaId", llmSpeakerId)
-                                        put("deterministicSpeakerPersonaId", deterministicSpeakerPersonaId)
-                                    },
+                                        },
+                                    waitForUser =
+                                        if (nativeLlmDecision.waitForUser) {
+                                            true
+                                        } else {
+                                            llmStatus == "waiting"
+                                        },
+                                    waitReason = nativeLlmDecision.waitReason,
+                                    userContextAction = nativeLlmDecision.userContextAction,
+                                    debug =
+                                        JSONObject().apply {
+                                            put("status", llmStatus)
+                                            if (llmSpeakerId.isNotBlank()) {
+                                                put("speakerPersonaId", llmSpeakerId)
+                                            }
+                                            put("waitForUser", nativeLlmDecision.waitForUser)
+                                            if (!nativeLlmDecision.reason.isNullOrBlank()) {
+                                                put("reason", nativeLlmDecision.reason)
+                                            }
+                                        },
                                 )
-                            }
-                        }
-                        "waiting", "skipped" -> {
-                            speakerPersonaId = null
-                            tickStatus = llmDecision.status
-                            tickReason = llmDecision.reason
-                            tickWaitForUser = llmDecision.waitForUser || llmDecision.status == "waiting"
-                            tickWaitReason = llmDecision.waitReason
-                            userContextAction = llmDecision.userContextAction ?: "keep"
-                            orchestrationSource = "native_llm"
                         }
                     }
                 }
@@ -582,6 +657,45 @@ object GroupIterationNativeExecutor {
                 )
             }
         }
+
+        val effectiveDeterministicDecision =
+            if (isStrictWaitingLock || isDeterministicHardBlock) {
+                deterministicDecision.copy(
+                    debug =
+                        JSONObject(deterministicDecision.debug.toString()).apply {
+                            put("waitingLock", true)
+                        },
+                )
+            } else {
+                deterministicDecision
+            }
+        val mergedOutcome =
+            mergeHeadlessSpeakerDecision(
+                deterministicDecision = effectiveDeterministicDecision,
+                llmDecision = llmDecision,
+                roomMode = roomMode,
+                events = events,
+                participants = participants,
+                roomId = roomId,
+            )
+        val mergedDecision = mergedOutcome.first
+        val orchestrationSource = mergedOutcome.second
+        var speakerPersonaId =
+            if (mergedDecision.status == "spoke") {
+                mergedDecision.speakerPersonaId?.trim().orEmpty().ifBlank { null }
+            } else {
+                null
+            }
+        var tickStatus = mergedDecision.status
+        var tickReason = mergedDecision.reason
+        var tickWaitForUser = mergedDecision.waitForUser
+        var tickWaitReason = mergedDecision.waitReason
+        val userContextAction =
+            if ((mergedDecision.userContextAction ?: "").trim().lowercase() == "clear") {
+                "clear"
+            } else {
+                "keep"
+            }
 
         val turnId = UUID.randomUUID().toString()
         val nowIso = nowIsoUtc()
@@ -611,11 +725,14 @@ object GroupIterationNativeExecutor {
                                 put("nativeHeadless", true)
                                 put("headlessVersion", "v1")
                                 put("orchestratorDecisionApplied", orchestratorDecisionApplied)
-                                put("deterministicSpeakerPersonaId", deterministicSpeakerPersonaId)
+                                put("deterministicSpeakerPersonaId", deterministicDecision.speakerPersonaId)
                                 put("finalSpeakerPersonaId", speakerPersonaId)
+                                put("strictWaitingLock", isStrictWaitingLock)
+                                put("deterministicHardBlock", isDeterministicHardBlock)
                                 put("nativeGroupImagesEnabled", nativeGroupImagesEnabled)
-                                if (pendingImageMessage != null) {
-                                    put("pendingImageMessageId", pendingImageMessage.optString("id", ""))
+                                put("decisionDebug", mergedDecision.debug)
+                                if (llmDecision != null) {
+                                    put("llmDecision", headlessDecisionToJson(llmDecision))
                                 }
                             },
                         )
@@ -636,28 +753,51 @@ object GroupIterationNativeExecutor {
             val activeSpeakerPersonaId = speakerPersonaId.trim()
             val speakerPersona = findObjectById(personas, activeSpeakerPersonaId)
             speakerName = speakerPersona?.optString("name", "").orEmpty().ifBlank { speakerName }
-            val latestUserMessage = findLatestUserMessage(messages, roomId)
-            var speechText =
-                if (latestUserMessage != null) {
-                    "Продолжаю диалог без активного UI. ($HEADLESS_FALLBACK_MESSAGE)"
-                } else {
-                    "Фоновая автономная итерация выполнена. ($HEADLESS_FALLBACK_MESSAGE)"
-                }
+            val mentionUserName = findMostRecentUserDisplayName(messages, roomId).ifBlank { userName }
+            var speechText = ""
             var speechComfyPrompt: String? = null
             var speechComfyPrompts: List<String> = emptyList()
             var speechComfyImageDescription: String? = null
             var speechComfyImageDescriptions: List<String> = emptyList()
-            if (speakerPersona != null) {
+            var skipPersonaCommit = false
+            var skipReason = ""
+            var skipErrorMessage = ""
+            if (speakerPersona == null) {
+                skipPersonaCommit = true
+                skipReason = "speaker_not_found"
+            } else {
                 try {
                     val llmSpeech =
                         NativeLlmClient.requestGroupPersonaSpeech(
                             settings = settings,
                             room = room,
                             speakerPersona = speakerPersona,
+                            participants = participants,
+                            personas = personas,
                             messages = messages,
+                            events = events,
+                            personaStates = personaStates,
+                            relationEdges = relationEdges,
+                            sharedMemories = sharedMemories,
+                            privateMemories = privateMemories,
                             roomId = roomId,
-                            userName = userName,
+                            userName = mentionUserName,
                         )
+                    appendRuntimeEvent(
+                        runtime = runtime,
+                        scopeId = roomId,
+                        jobId = job.id,
+                        stage = "llm_persona_contract",
+                        level = if (llmSpeech?.content?.isNotBlank() == true) "info" else "warn",
+                        message = "Native LLM persona contract trace",
+                        details =
+                            JSONObject().apply {
+                                put("speakerPersonaId", activeSpeakerPersonaId)
+                                put("hasContent", llmSpeech?.content?.isNotBlank() == true)
+                                put("contentLength", llmSpeech?.content?.length ?: 0)
+                                putLlmCallDebugDetails(this, llmSpeech?.llmDebug)
+                            },
+                    )
                     if (llmSpeech != null && llmSpeech.content.isNotBlank()) {
                         speechText = llmSpeech.content
                         speechSource = "native_llm"
@@ -667,43 +807,127 @@ object GroupIterationNativeExecutor {
                         speechComfyImageDescription = llmSpeech.comfyImageDescription
                         speechComfyImageDescriptions = llmSpeech.comfyImageDescriptions
                     } else {
+                        skipPersonaCommit = true
+                        skipReason = "empty_llm_speech"
                         appendRuntimeEvent(
                             runtime = runtime,
                             scopeId = roomId,
                             jobId = job.id,
-                            stage = "llm_persona_empty_fallback",
+                            stage = "llm_persona_empty",
                             level = "warn",
-                            message = "Native LLM persona returned empty content, using deterministic fallback text",
+                            message = "Native LLM persona returned empty content, skipping persona message commit",
                             details = JSONObject().apply {
                                 put("speakerPersonaId", speakerPersonaId)
+                                put("hasContent", false)
+                                putLlmCallDebugDetails(this, llmSpeech?.llmDebug)
                             },
                         )
                     }
                 } catch (error: Exception) {
+                    skipPersonaCommit = true
+                    skipReason = "llm_generation_failed"
+                    skipErrorMessage = error.message ?: "unknown_error"
                     appendRuntimeEvent(
                         runtime = runtime,
                         scopeId = roomId,
                         jobId = job.id,
                         stage = "llm_persona_failed",
                         level = "warn",
-                        message = "Native LLM persona generation failed, using deterministic fallback text",
+                        message = "Native LLM persona generation failed, skipping persona message commit",
                         details = JSONObject().apply {
                             put("speakerPersonaId", speakerPersonaId)
-                            put("error", error.message ?: "unknown_error")
+                            put("error", skipErrorMessage)
                         },
                     )
                 }
             }
-            val promptsForImageGeneration =
-                resolveImagePromptsForGeneration(
-                    comfyPrompts = speechComfyPrompts,
-                    comfyPrompt = speechComfyPrompt,
-                    comfyImageDescriptions = speechComfyImageDescriptions,
-                    comfyImageDescription = speechComfyImageDescription,
+            if (skipPersonaCommit) {
+                events.put(
+                    JSONObject().apply {
+                        put("id", UUID.randomUUID().toString())
+                        put("roomId", roomId)
+                        put("turnId", turnId)
+                        put("type", "orchestrator_invariant_blocked")
+                        put(
+                            "payload",
+                            JSONObject().apply {
+                                put("speakerPersonaId", activeSpeakerPersonaId)
+                                put("reason", skipReason.ifBlank { "llm_generation_failed" })
+                                if (skipErrorMessage.isNotBlank()) {
+                                    put("error", skipErrorMessage)
+                                }
+                            },
+                        )
+                        put("createdAt", nowIso)
+                    },
                 )
-            val messageId = UUID.randomUUID().toString()
-            val nextMessage =
-                JSONObject().apply {
+                speakerPersonaId = null
+                tickStatus = "skipped"
+                tickReason = skipReason.ifBlank { "llm_generation_failed" }
+                tickWaitForUser = false
+                tickWaitReason = null
+            }
+            if (skipPersonaCommit) {
+                // Keep processing room/event updates below, but without persisting placeholder persona text.
+            } else {
+                val descriptionBlocksForPromptConversion =
+                    resolveImageDescriptionsForPromptConversion(
+                        comfyImageDescriptions = speechComfyImageDescriptions,
+                        comfyImageDescription = speechComfyImageDescription,
+                    )
+                if (
+                    speechComfyPrompts.isEmpty() &&
+                        speechComfyPrompt.isNullOrBlank() &&
+                        descriptionBlocksForPromptConversion.isNotEmpty()
+                ) {
+                    try {
+                        val convertedPrompts =
+                            NativeLlmClient.generateComfyPromptsFromImageDescriptions(
+                                settings = settings,
+                                speakerPersona = speakerPersona ?: JSONObject(),
+                                imageDescriptions = descriptionBlocksForPromptConversion,
+                            )
+                        if (convertedPrompts.isNotEmpty()) {
+                            speechComfyPrompts = convertedPrompts
+                            speechComfyPrompt = convertedPrompts.firstOrNull()
+                            appendRuntimeEvent(
+                                runtime = runtime,
+                                scopeId = roomId,
+                                jobId = job.id,
+                                stage = "comfy_prompt_conversion_applied",
+                                level = "info",
+                                message = "Native converted comfyImageDescriptions to comfyPrompts",
+                                details = JSONObject().apply {
+                                    put("speakerPersonaId", activeSpeakerPersonaId)
+                                    put("descriptions", descriptionBlocksForPromptConversion.size)
+                                    put("prompts", convertedPrompts.size)
+                                },
+                            )
+                        }
+                    } catch (error: Exception) {
+                        appendRuntimeEvent(
+                            runtime = runtime,
+                            scopeId = roomId,
+                            jobId = job.id,
+                            stage = "comfy_prompt_conversion_failed",
+                            level = "warn",
+                            message = "Native failed to convert comfyImageDescriptions to comfyPrompts",
+                            details = JSONObject().apply {
+                                put("speakerPersonaId", activeSpeakerPersonaId)
+                                put("descriptions", descriptionBlocksForPromptConversion.size)
+                                put("error", error.message ?: "unknown_error")
+                            },
+                        )
+                    }
+                }
+                val promptsForImageGeneration =
+                    resolveImagePromptsForGeneration(
+                        comfyPrompts = speechComfyPrompts,
+                        comfyPrompt = speechComfyPrompt,
+                    )
+                val messageId = UUID.randomUUID().toString()
+                val nextMessage =
+                    JSONObject().apply {
                     put("id", messageId)
                     put("roomId", roomId)
                     put("turnId", turnId)
@@ -831,19 +1055,27 @@ object GroupIterationNativeExecutor {
                 }
             }
         }
+        }
 
         val wasWaitingForUser = room.optBoolean("waitingForUser", false)
         val previousWaitingReason = room.optString("waitingReason", "").trim()
+        val roomIsActive = room.optString("status", "paused").trim().lowercase() == "active"
         val nextRoom = JSONObject(room.toString())
         nextRoom.put("updatedAt", nowIso)
         nextRoom.put("lastTickAt", nowIso)
-        nextRoom.put("waitingForUser", tickWaitForUser)
-        if (tickWaitForUser) {
-            if (!tickWaitReason.isNullOrBlank()) {
+        nextRoom.put("waitingForUser", if (roomIsActive) tickWaitForUser else wasWaitingForUser)
+        if (roomIsActive) {
+            if (tickWaitForUser && !tickWaitReason.isNullOrBlank()) {
                 nextRoom.put("waitingReason", tickWaitReason)
+            } else if (!tickWaitForUser) {
+                nextRoom.remove("waitingReason")
             }
         } else {
-            nextRoom.remove("waitingReason")
+            if (previousWaitingReason.isNotBlank()) {
+                nextRoom.put("waitingReason", previousWaitingReason)
+            } else {
+                nextRoom.remove("waitingReason")
+            }
         }
         if (userContextAction == "clear") {
             nextRoom.remove("orchestratorUserFocusMessageId")
@@ -851,7 +1083,16 @@ object GroupIterationNativeExecutor {
         nextRoom.put(
             "state",
             JSONObject().apply {
-                put("phase", if (tickWaitForUser) "waiting_user" else "idle")
+                val roomStatus = room.optString("status", "paused").trim().lowercase()
+                val nextPhase =
+                    if (roomIsActive && tickWaitForUser) {
+                        "waiting_user"
+                    } else if (roomStatus == "paused") {
+                        "paused"
+                    } else {
+                        "idle"
+                    }
+                put("phase", nextPhase)
                 put("updatedAt", nowIso)
                 put("turnId", turnId)
                 if (!speakerPersonaId.isNullOrBlank()) {
@@ -862,7 +1103,11 @@ object GroupIterationNativeExecutor {
         )
         upsertObjectById(rooms, roomId, nextRoom)
 
-        if (tickWaitForUser && (!wasWaitingForUser || previousWaitingReason != (tickWaitReason ?: ""))) {
+        if (
+            roomIsActive &&
+                tickWaitForUser &&
+                (!wasWaitingForUser || previousWaitingReason != (tickWaitReason ?: ""))
+        ) {
             events.put(
                 JSONObject().apply {
                     put("id", UUID.randomUUID().toString())
@@ -873,14 +1118,16 @@ object GroupIterationNativeExecutor {
                         "payload",
                         JSONObject().apply {
                             put("userName", userName)
-                            put("reason", tickWaitReason ?: "native_waiting")
+                            if (!tickWaitReason.isNullOrBlank()) {
+                                put("reason", tickWaitReason)
+                            }
                         },
                     )
                     put("createdAt", nowIso)
                 },
             )
         }
-        if (!tickWaitForUser && wasWaitingForUser) {
+        if (roomIsActive && !tickWaitForUser && wasWaitingForUser) {
             events.put(
                 JSONObject().apply {
                     put("id", UUID.randomUUID().toString())
@@ -993,42 +1240,662 @@ object GroupIterationNativeExecutor {
         return false
     }
 
-    private fun selectNextSpeakerPersonaId(
+    private fun runNativeDeterministicOrchestratorTick(
+        room: JSONObject,
         participants: JSONArray,
+        messages: JSONArray,
         events: JSONArray,
+        relationEdges: JSONArray,
+        personas: JSONArray,
         roomId: String,
-    ): String? {
-        val participantIds = mutableListOf<String>()
+        userName: String,
+        settingsModel: String,
+    ): HeadlessTickDecision {
+        val roomStatus = room.optString("status", "paused").trim().lowercase()
+        if (roomStatus != "active") {
+            val waitingReason = room.optString("waitingReason", "").trim().ifEmpty { null }
+            return HeadlessTickDecision(
+                status = "skipped",
+                reason = "room_not_active",
+                waitForUser = room.optBoolean("waitingForUser", false),
+                waitReason = waitingReason,
+                debug =
+                    JSONObject().apply {
+                        put("roomStatus", roomStatus)
+                    },
+            )
+        }
+
+        val roomMode = normalizeRoomMode(room)
+        if (roomMode == "personas_plus_user" && room.optBoolean("waitingForUser", false)) {
+            return HeadlessTickDecision(
+                status = "waiting",
+                reason = "waiting_for_user",
+                waitForUser = true,
+                waitReason =
+                    room.optString("waitingReason", "").trim().ifEmpty {
+                        "Ожидается ответ пользователя (${userName.trim().ifEmpty { "Пользователь" }})"
+                    },
+                debug =
+                    JSONObject().apply {
+                        put("waitingForUser", true)
+                    },
+            )
+        }
+
+        val nowMs = System.currentTimeMillis()
+        val pendingImageMessage = findLatestPendingImageMessage(messages, roomId)
+        if (pendingImageMessage != null) {
+            return HeadlessTickDecision(
+                status = "skipped",
+                reason = "pending_image_generation",
+                waitForUser = false,
+                waitReason = null,
+                debug =
+                    JSONObject().apply {
+                        put("pendingMessageId", pendingImageMessage.optString("id", ""))
+                        put("pendingAuthorType", pendingImageMessage.optString("authorType", ""))
+                        put("pendingExpected", pendingImageMessage.optInt("imageGenerationExpected", 0))
+                        put("pendingCompleted", pendingImageMessage.optInt("imageGenerationCompleted", 0))
+                    },
+            )
+        }
+
+        val lastRoomMessage = findLatestRoomMessage(messages, roomId)
+        if (lastRoomMessage != null) {
+            val createdAtMs = parseIsoToMillisOrNull(lastRoomMessage.optString("createdAt", "").trim())
+            if (createdAtMs != null) {
+                val elapsedMs = max(0L, nowMs - createdAtMs)
+                val requiredDelayMs =
+                    if (lastRoomMessage.optString("authorType", "").trim().equals("persona", ignoreCase = true)) {
+                        estimatePersonaTypingDelayMs(lastRoomMessage)
+                    } else {
+                        2_000L
+                    }
+                if (elapsedMs < requiredDelayMs) {
+                    return HeadlessTickDecision(
+                        status = "skipped",
+                        reason = "typing_delay",
+                        waitForUser = false,
+                        waitReason = null,
+                        debug =
+                            JSONObject().apply {
+                                put("lastAuthorType", lastRoomMessage.optString("authorType", ""))
+                                put("elapsedMs", elapsedMs)
+                                put("requiredDelayMs", requiredDelayMs)
+                            },
+                    )
+                }
+            }
+        }
+
+        val activeParticipants = collectActiveParticipants(participants, roomId, nowMs)
+        if (activeParticipants.isEmpty()) {
+            return HeadlessTickDecision(
+                status = "skipped",
+                reason = "no_active_participants",
+                waitForUser = false,
+                waitReason = null,
+                debug =
+                    JSONObject().apply {
+                        put("participantCount", countRoomParticipants(participants, roomId))
+                    },
+            )
+        }
+
+        val personaById = buildPersonaMap(personas)
+        val lastUserMessage = findLatestUserMessage(messages, roomId)
+        val focusedUserMessage = findFocusedUserMessage(messages, room, roomId)
+        val lastMessageId = lastRoomMessage?.optString("id", "")?.trim().orEmpty()
+        val lastUserMessageId = lastUserMessage?.optString("id", "")?.trim().orEmpty()
+        val mentionDrivenPersonaId =
+            if (lastUserMessage != null && lastMessageId.isNotBlank() && lastMessageId == lastUserMessageId) {
+                getMentionDrivenPersonaId(lastUserMessage, activeParticipants)
+            } else {
+                ""
+            }
+        val lastSpeakerPersonaId = findLastSelectedSpeakerPersonaId(events, roomId)
+        val recentSpeakers = buildRecentSpeakerIds(events, roomId, limit = 24)
+        val recentWindowSize = max(8, minOf(24, activeParticipants.size * 4))
+        val recentWindow = recentSpeakers.take(recentWindowSize)
+        val frequencyByPersonaId = mutableMapOf<String, Int>()
+        for (personaId in recentWindow) {
+            frequencyByPersonaId[personaId] = (frequencyByPersonaId[personaId] ?: 0) + 1
+        }
+        val allSpeakerCounts = buildAllSpeakerCounts(events, roomId)
+        val minAllSpeakerCount =
+            activeParticipants
+                .map { participant -> allSpeakerCounts[participant.personaId] ?: 0 }
+                .minOrNull() ?: 0
+        val relationByTargetId =
+            buildRelationByTargetId(
+                relationEdges = relationEdges,
+                roomId = roomId,
+                fromPersonaId = lastSpeakerPersonaId,
+            )
+
+        val scoredParticipants =
+            activeParticipants
+                .map { participant ->
+                    val recentFrequency = frequencyByPersonaId[participant.personaId] ?: 0
+                    val allTimeFrequency = allSpeakerCounts[participant.personaId] ?: 0
+                    val recentIndex = recentWindow.indexOf(participant.personaId)
+                    val mentionBoost = if (participant.personaId == mentionDrivenPersonaId) 40 else 0
+                    val repeatPenalty = if (participant.personaId == lastSpeakerPersonaId) 46 else 0
+                    val recentDominancePenalty =
+                        recentFrequency * 12 +
+                            if (recentFrequency >= ceil(recentWindowSize * 0.45).toInt()) {
+                                18
+                            } else {
+                                0
+                            }
+                    val historicalGap = max(0, minAllSpeakerCount + 1 - allTimeFrequency)
+                    val fairnessBoost = historicalGap * 14
+                    val neverSpokeBoost =
+                        if (allTimeFrequency == 0 && mentionBoost == 0) {
+                            10
+                        } else {
+                            0
+                        }
+                    val relationBias = computeRelationBias(relationByTargetId[participant.personaId])
+                    val dormancyBoost =
+                        when {
+                            recentIndex < 0 -> 16
+                            recentIndex >= 7 -> 10
+                            recentIndex >= 4 -> 5
+                            else -> 0
+                        }
+                    val score =
+                        (
+                            participant.initiativeBias * 0.25 +
+                                participant.aliveScore * 0.2 +
+                                22 +
+                                mentionBoost +
+                                fairnessBoost +
+                                neverSpokeBoost +
+                                relationBias +
+                                dormancyBoost -
+                                recentDominancePenalty -
+                                repeatPenalty
+                        ).roundToInt()
+
+                    ScoredParticipant(
+                        participant = participant,
+                        score = score,
+                        explain =
+                            JSONObject().apply {
+                                put("initiativeBias", participant.initiativeBias)
+                                put("aliveScore", participant.aliveScore)
+                                put("recentFrequency", recentFrequency)
+                                put("allTimeFrequency", allTimeFrequency)
+                                put("recentIndex", recentIndex)
+                                put("mentionBoost", mentionBoost)
+                                put("fairnessBoost", fairnessBoost)
+                                put("neverSpokeBoost", neverSpokeBoost)
+                                put("relationBias", relationBias)
+                                put("dormancyBoost", dormancyBoost)
+                                put("recentDominancePenalty", recentDominancePenalty)
+                                put("repeatPenalty", repeatPenalty)
+                            },
+                    )
+                }.sortedWith(
+                    compareByDescending<ScoredParticipant> { scored -> scored.score }
+                        .thenByDescending { scored -> scored.participant.aliveScore }
+                        .thenBy { scored -> scored.participant.joinedAt },
+                )
+
+        var selectedParticipant = scoredParticipants.firstOrNull()?.participant
+        var selectedBy =
+            if (
+                selectedParticipant?.personaId == mentionDrivenPersonaId &&
+                    mentionDrivenPersonaId.isNotBlank()
+            ) {
+                "mention"
+            } else {
+                "score"
+            }
+        if (
+            roomMode == "personas_only" &&
+                activeParticipants.size > 1 &&
+                selectedParticipant?.personaId == lastSpeakerPersonaId
+        ) {
+            val alternate =
+                scoredParticipants
+                    .firstOrNull { scored -> scored.participant.personaId != lastSpeakerPersonaId }
+                    ?.participant
+            if (alternate != null) {
+                selectedParticipant = alternate
+                selectedBy = "anti_repeat"
+            }
+        }
+
+        val selectedSpeakerPersonaId = selectedParticipant?.personaId.orEmpty()
+        if (selectedSpeakerPersonaId.isBlank()) {
+            return HeadlessTickDecision(
+                status = "skipped",
+                reason = "speaker_not_found",
+                waitForUser = false,
+                waitReason = null,
+                debug =
+                    JSONObject().apply {
+                        put("participantCount", activeParticipants.size)
+                    },
+            )
+        }
+
+        val selectedSpeakerPersona = personaById[selectedSpeakerPersonaId]
+        if (selectedSpeakerPersona == null) {
+            return HeadlessTickDecision(
+                status = "skipped",
+                reason = "speaker_not_found",
+                waitForUser = false,
+                waitReason = null,
+                debug =
+                    JSONObject().apply {
+                        put("selectedPersonaId", selectedSpeakerPersonaId)
+                    },
+            )
+        }
+
+        val selectedSpeakerName =
+            selectedSpeakerPersona
+                .optString("name", "")
+                .trim()
+                .ifEmpty { selectedSpeakerPersonaId }
+        val waitForUser = roomMode == "personas_plus_user"
+        val waitReason =
+            if (waitForUser) {
+                "Ожидаем ответ пользователя (${userName.trim().ifEmpty { "Пользователь" }}) после реплики $selectedSpeakerName"
+            } else {
+                null
+            }
+        return HeadlessTickDecision(
+            status = "spoke",
+            reason = "speaker_selected",
+            speakerPersonaId = selectedSpeakerPersonaId,
+            waitForUser = waitForUser,
+            waitReason = waitReason,
+            debug =
+                JSONObject().apply {
+                    put("selectedBy", selectedBy)
+                    put("mentionDrivenPersonaId", mentionDrivenPersonaId)
+                    put("lastSpeakerPersonaId", lastSpeakerPersonaId)
+                    put(
+                        "scoreBoard",
+                        JSONArray().apply {
+                            for (scored in scoredParticipants.take(5)) {
+                                put(
+                                    JSONObject().apply {
+                                        put("personaId", scored.participant.personaId)
+                                        put("score", scored.score)
+                                        put("explain", scored.explain)
+                                    },
+                                )
+                            }
+                        },
+                    )
+                    put("model", settingsModel)
+                    put("participantCount", activeParticipants.size)
+                    put(
+                        "focusedUserMessageId",
+                        focusedUserMessage?.optString("id", "")?.trim().orEmpty(),
+                    )
+                },
+        )
+    }
+
+    private fun mergeHeadlessSpeakerDecision(
+        deterministicDecision: HeadlessTickDecision,
+        llmDecision: HeadlessTickDecision?,
+        roomMode: String,
+        events: JSONArray,
+        participants: JSONArray,
+        roomId: String,
+    ): Pair<HeadlessTickDecision, String> {
+        var decision = deterministicDecision
+        var source = "deterministic"
+        val llmDecisionStatus = llmDecision?.status
+
+        if (llmDecision != null) {
+            val mergedDebug = JSONObject(deterministicDecision.debug.toString())
+            mergedDebug.put("llmDecision", headlessDecisionToJson(llmDecision))
+            decision =
+                HeadlessTickDecision(
+                    status = llmDecision.status.ifBlank { deterministicDecision.status },
+                    reason = llmDecision.reason.ifBlank { deterministicDecision.reason },
+                    speakerPersonaId = llmDecision.speakerPersonaId ?: deterministicDecision.speakerPersonaId,
+                    waitForUser = llmDecision.waitForUser,
+                    waitReason = llmDecision.waitReason ?: deterministicDecision.waitReason,
+                    userContextAction = llmDecision.userContextAction ?: deterministicDecision.userContextAction,
+                    debug = mergedDebug,
+                )
+            source = "llm"
+        }
+
+        val deterministicSpeaker = deterministicDecision.speakerPersonaId?.trim().orEmpty()
+        val decisionSpeakerBeforeForce = decision.speakerPersonaId?.trim().orEmpty()
+        val forceDeterministicSpeaker =
+            deterministicDecision.status == "spoke" &&
+                deterministicSpeaker.isNotBlank() &&
+                (decision.status != "spoke" || decisionSpeakerBeforeForce.isBlank())
+        if (forceDeterministicSpeaker) {
+            val debug = JSONObject(deterministicDecision.debug.toString())
+            debug.put("llmDecisionStatus", llmDecisionStatus ?: "")
+            debug.put("llmOverriddenByDeterministic", true)
+            decision =
+                deterministicDecision.copy(
+                    debug = debug,
+                )
+            source = "deterministic"
+        }
+
+        val mentionDrivenPersonaId =
+            deterministicDecision.debug.optString("mentionDrivenPersonaId", "").trim()
+        val decisionSpeaker = decision.speakerPersonaId?.trim().orEmpty()
+        if (
+            decision.status == "spoke" &&
+                decisionSpeaker.isNotBlank() &&
+                deterministicDecision.status == "spoke" &&
+                deterministicSpeaker.isNotBlank() &&
+                decisionSpeaker != deterministicSpeaker &&
+                (mentionDrivenPersonaId.isBlank() || mentionDrivenPersonaId != decisionSpeaker)
+        ) {
+            val roomParticipantsCount = countRoomParticipants(participants, roomId)
+            val recentSpeakerIds =
+                collectRecentSpeakerIds(
+                    events = events,
+                    roomId = roomId,
+                    participantsCount = roomParticipantsCount,
+                )
+            val llmCount = countRecentSpeaks(recentSpeakerIds, decisionSpeaker)
+            val deterministicCount = countRecentSpeaks(recentSpeakerIds, deterministicSpeaker)
+            val dominantCountThreshold =
+                max(3, ceil(recentSpeakerIds.size * 0.45).toInt())
+            if (
+                recentSpeakerIds.size >= 6 &&
+                    llmCount >= dominantCountThreshold &&
+                    deterministicCount < llmCount
+            ) {
+                val debug = JSONObject(deterministicDecision.debug.toString())
+                debug.put("llmDecisionStatus", llmDecisionStatus ?: "")
+                debug.put("llmOverriddenByDiversity", true)
+                debug.put("llmSpeakerPersonaId", decisionSpeaker)
+                debug.put("llmRecentCount", llmCount)
+                debug.put("deterministicRecentCount", deterministicCount)
+                debug.put("dominantCountThreshold", dominantCountThreshold)
+                decision = deterministicDecision.copy(debug = debug)
+                source = "deterministic"
+            }
+        }
+
+        if (roomMode == "personas_only") {
+            val originalStatus = decision.status
+            val normalizedStatus =
+                if (originalStatus == "waiting") {
+                    if (deterministicDecision.status == "spoke" && deterministicSpeaker.isNotBlank()) {
+                        "spoke"
+                    } else {
+                        "skipped"
+                    }
+                } else {
+                    originalStatus
+                }
+            val debug = JSONObject(decision.debug.toString())
+            debug.put("personasOnlyGuard", true)
+            debug.put("originalStatus", originalStatus)
+            decision =
+                decision.copy(
+                    status = normalizedStatus,
+                    speakerPersonaId =
+                        if (normalizedStatus == "spoke") {
+                            decision.speakerPersonaId ?: deterministicDecision.speakerPersonaId
+                        } else {
+                            null
+                        },
+                    waitForUser = false,
+                    waitReason = null,
+                    debug = debug,
+                )
+        }
+
+        return Pair(decision, source)
+    }
+
+    private fun normalizeRoomMode(room: JSONObject): String {
+        val mode = room.optString("mode", "personas_plus_user").trim().lowercase()
+        return if (mode == "personas_plus_user") "personas_plus_user" else "personas_only"
+    }
+
+    private fun countRoomParticipants(participants: JSONArray, roomId: String): Int {
+        var count = 0
+        for (index in 0 until participants.length()) {
+            val participant = participants.optJSONObject(index) ?: continue
+            if (participant.optString("roomId", "").trim() == roomId) {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private fun collectActiveParticipants(
+        participants: JSONArray,
+        roomId: String,
+        nowMs: Long,
+    ): List<ActiveParticipant> {
+        val active = mutableListOf<ActiveParticipant>()
         for (index in 0 until participants.length()) {
             val participant = participants.optJSONObject(index) ?: continue
             if (participant.optString("roomId", "").trim() != roomId) continue
-            val role = participant.optString("role", "member").trim().lowercase()
-            if (role == "observer") continue
             val personaId = participant.optString("personaId", "").trim()
             if (personaId.isBlank()) continue
-            if (!participantIds.contains(personaId)) {
-                participantIds.add(personaId)
+            val muteUntil = participant.optString("muteUntil", "").trim()
+            val isActive =
+                if (muteUntil.isBlank()) {
+                    true
+                } else {
+                    val muteUntilMs = parseIsoToMillisOrNull(muteUntil)
+                    muteUntilMs != null && muteUntilMs <= nowMs
+                }
+            if (!isActive) continue
+            active.add(
+                ActiveParticipant(
+                    personaId = personaId,
+                    initiativeBias = sanitizeFiniteDouble(participant.optDouble("initiativeBias", 0.0)),
+                    aliveScore = sanitizeFiniteDouble(participant.optDouble("aliveScore", 0.0)),
+                    joinedAt = participant.optString("joinedAt", "").trim(),
+                ),
+            )
+        }
+        return active.sortedBy { participant -> participant.joinedAt }
+    }
+
+    private fun buildPersonaMap(personas: JSONArray): Map<String, JSONObject> {
+        val result = mutableMapOf<String, JSONObject>()
+        for (index in 0 until personas.length()) {
+            val persona = personas.optJSONObject(index) ?: continue
+            val personaId = persona.optString("id", "").trim()
+            if (personaId.isNotBlank()) {
+                result[personaId] = persona
             }
         }
-        if (participantIds.isEmpty()) return null
+        return result
+    }
 
-        var previousSpeakerId = ""
+    private fun findFocusedUserMessage(messages: JSONArray, room: JSONObject, roomId: String): JSONObject? {
+        val marker = room.optString("orchestratorUserFocusMessageId", "").trim()
+        if (marker.isNotBlank()) {
+            for (index in 0 until messages.length()) {
+                val message = messages.optJSONObject(index) ?: continue
+                if (message.optString("roomId", "").trim() != roomId) continue
+                if (!message.optString("authorType", "").trim().equals("user", ignoreCase = true)) continue
+                if (message.optString("id", "").trim() == marker) {
+                    return message
+                }
+            }
+        }
+        return findLatestUserMessage(messages, roomId)
+    }
+
+    private fun getMentionDrivenPersonaId(
+        lastUserMessage: JSONObject,
+        activeParticipants: List<ActiveParticipant>,
+    ): String {
+        val mentions = lastUserMessage.optJSONArray("mentions") ?: return ""
+        if (mentions.length() == 0) return ""
+        val allowedPersonaIds = activeParticipants.map { participant -> participant.personaId }.toSet()
+        for (index in 0 until mentions.length()) {
+            val mention = mentions.optJSONObject(index) ?: continue
+            val targetType = mention.optString("targetType", "").trim()
+            val targetId = mention.optString("targetId", "").trim()
+            if (targetType.equals("persona", ignoreCase = true) && allowedPersonaIds.contains(targetId)) {
+                return targetId
+            }
+        }
+        return ""
+    }
+
+    private fun buildRecentSpeakerIds(events: JSONArray, roomId: String, limit: Int): List<String> {
+        val speakerIds = mutableListOf<String>()
+        for (index in 0 until events.length()) {
+            val event = events.optJSONObject(index) ?: continue
+            if (event.optString("roomId", "").trim() != roomId) continue
+            if (event.optString("type", "").trim() != "speaker_selected") continue
+            val personaId = event.optJSONObject("payload")?.optString("personaId", "")?.trim().orEmpty()
+            if (personaId.isNotBlank()) {
+                speakerIds.add(personaId)
+            }
+        }
+        val boundedLimit = max(0, limit)
+        val fromIndex = max(0, speakerIds.size - boundedLimit)
+        return speakerIds.subList(fromIndex, speakerIds.size).asReversed()
+    }
+
+    private fun buildAllSpeakerCounts(events: JSONArray, roomId: String): Map<String, Int> {
+        val counts = mutableMapOf<String, Int>()
+        for (index in 0 until events.length()) {
+            val event = events.optJSONObject(index) ?: continue
+            if (event.optString("roomId", "").trim() != roomId) continue
+            if (event.optString("type", "").trim() != "speaker_selected") continue
+            val personaId = event.optJSONObject("payload")?.optString("personaId", "")?.trim().orEmpty()
+            if (personaId.isBlank()) continue
+            counts[personaId] = (counts[personaId] ?: 0) + 1
+        }
+        return counts
+    }
+
+    private fun buildRelationByTargetId(
+        relationEdges: JSONArray,
+        roomId: String,
+        fromPersonaId: String,
+    ): Map<String, JSONObject> {
+        if (fromPersonaId.isBlank()) return emptyMap()
+        val map = mutableMapOf<String, JSONObject>()
+        for (index in 0 until relationEdges.length()) {
+            val edge = relationEdges.optJSONObject(index) ?: continue
+            if (edge.optString("roomId", "").trim() != roomId) continue
+            if (edge.optString("fromPersonaId", "").trim() != fromPersonaId) continue
+            val targetId = edge.optString("toPersonaId", "").trim()
+            if (targetId.isBlank()) continue
+            map[targetId] = edge
+        }
+        return map
+    }
+
+    private fun computeRelationBias(edge: JSONObject?): Int {
+        if (edge == null) return 0
+        val affinity = sanitizeFiniteDouble(edge.optDouble("affinity", 50.0))
+        val trust = sanitizeFiniteDouble(edge.optDouble("trust", 50.0))
+        val respect = sanitizeFiniteDouble(edge.optDouble("respect", 50.0))
+        val tension = sanitizeFiniteDouble(edge.optDouble("tension", 20.0))
+        val raw =
+            (affinity - 50.0) * 0.2 +
+                (trust - 50.0) * 0.15 +
+                (respect - 50.0) * 0.1 -
+                (tension - 20.0) * 0.2
+        return raw.roundToInt()
+    }
+
+    private fun collectRecentSpeakerIds(
+        events: JSONArray,
+        roomId: String,
+        participantsCount: Int,
+    ): List<String> {
+        val limit = max(8, participantsCount * 3)
+        return buildRecentSpeakerIds(events = events, roomId = roomId, limit = limit)
+    }
+
+    private fun countRecentSpeaks(recentSpeakerIds: List<String>, personaId: String): Int {
+        if (personaId.isBlank()) return 0
+        var count = 0
+        for (recentId in recentSpeakerIds) {
+            if (recentId == personaId) {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private fun headlessDecisionToJson(decision: HeadlessTickDecision): JSONObject {
+        return JSONObject().apply {
+            put("status", decision.status)
+            put("reason", decision.reason)
+            if (!decision.speakerPersonaId.isNullOrBlank()) {
+                put("speakerPersonaId", decision.speakerPersonaId)
+            }
+            put("waitForUser", decision.waitForUser)
+            if (!decision.waitReason.isNullOrBlank()) {
+                put("waitReason", decision.waitReason)
+            }
+            if (!decision.userContextAction.isNullOrBlank()) {
+                put("userContextAction", decision.userContextAction)
+            }
+            put("debug", decision.debug)
+        }
+    }
+
+    private fun findLastSelectedSpeakerPersonaId(events: JSONArray, roomId: String): String {
         for (index in events.length() - 1 downTo 0) {
             val event = events.optJSONObject(index) ?: continue
             if (event.optString("roomId", "").trim() != roomId) continue
             if (event.optString("type", "").trim() != "speaker_selected") continue
-            previousSpeakerId = event.optJSONObject("payload")?.optString("personaId", "")?.trim().orEmpty()
-            if (previousSpeakerId.isNotBlank()) break
+            val personaId = event.optJSONObject("payload")?.optString("personaId", "")?.trim().orEmpty()
+            if (personaId.isNotBlank()) return personaId
         }
-        if (previousSpeakerId.isBlank()) {
-            return participantIds.firstOrNull()
+        return ""
+    }
+
+    private fun findLatestRoomMessage(messages: JSONArray, roomId: String): JSONObject? {
+        var latest: JSONObject? = null
+        var latestCreatedAt = ""
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("roomId", "").trim() != roomId) continue
+            val createdAt = message.optString("createdAt", "").trim()
+            if (latest == null || createdAt > latestCreatedAt) {
+                latest = message
+                latestCreatedAt = createdAt
+            }
         }
-        val previousIndex = participantIds.indexOf(previousSpeakerId)
-        if (previousIndex < 0) {
-            return participantIds.firstOrNull()
+        return latest
+    }
+
+    private fun estimatePersonaTypingDelayMs(message: JSONObject): Long {
+        val textLength = message.optString("content", "").trim().length
+        val boundedLength = max(18, minOf(420, textLength))
+        val byLength = boundedLength * 32L
+        return max(6_500L, minOf(22_000L, byLength))
+    }
+
+    private fun sanitizeFiniteDouble(raw: Double): Double {
+        return if (raw.isFinite()) raw else 0.0
+    }
+
+    private fun parseIsoToMillisOrNull(raw: String): Long? {
+        return try {
+            Instant.parse(raw).toEpochMilli()
+        } catch (_: Exception) {
+            null
         }
-        val nextIndex = (previousIndex + 1) % participantIds.size
-        return participantIds[nextIndex]
     }
 
     private fun findLatestUserMessage(messages: JSONArray, roomId: String): JSONObject? {
@@ -1045,6 +1912,17 @@ object GroupIterationNativeExecutor {
             }
         }
         return latest
+    }
+
+    private fun findMostRecentUserDisplayName(messages: JSONArray, roomId: String): String {
+        for (index in messages.length() - 1 downTo 0) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("roomId", "").trim() != roomId) continue
+            if (!message.optString("authorType", "").trim().equals("user", ignoreCase = true)) continue
+            val displayName = message.optString("authorDisplayName", "").trim()
+            if (displayName.isNotBlank()) return displayName
+        }
+        return ""
     }
 
     private data class GroupImageGenerationResult(
@@ -1079,8 +1957,6 @@ object GroupIterationNativeExecutor {
     private fun resolveImagePromptsForGeneration(
         comfyPrompts: List<String>,
         comfyPrompt: String?,
-        comfyImageDescriptions: List<String>,
-        comfyImageDescription: String?,
     ): List<String> {
         val normalizedPrompts = LinkedHashSet<String>()
         for (prompt in comfyPrompts) {
@@ -1093,10 +1969,13 @@ object GroupIterationNativeExecutor {
         if (singlePrompt.isNotBlank()) {
             normalizedPrompts.add(singlePrompt)
         }
-        if (normalizedPrompts.isNotEmpty()) {
-            return normalizedPrompts.toList()
-        }
+        return normalizedPrompts.toList()
+    }
 
+    private fun resolveImageDescriptionsForPromptConversion(
+        comfyImageDescriptions: List<String>,
+        comfyImageDescription: String?,
+    ): List<String> {
         val normalizedDescriptions = LinkedHashSet<String>()
         for (description in comfyImageDescriptions) {
             val value = description.trim()
@@ -1135,6 +2014,10 @@ object GroupIterationNativeExecutor {
         val messageId = message.optString("id", "").trim()
         val expected = promptsForGeneration.size
         val checkpointName = speakerPersona?.optString("imageCheckpoint", "")?.trim().orEmpty()
+        val styleReferenceImage =
+            speakerPersona?.optString("avatarUrl", "")?.trim().orEmpty().ifEmpty {
+                speakerPersona?.optString("fullBodyUrl", "")?.trim().orEmpty()
+            }.ifEmpty { null }
         val nowIsoRequested = nowIsoUtc()
 
         events.put(
@@ -1174,6 +2057,7 @@ object GroupIterationNativeExecutor {
                         settings = settings,
                         prompt = prompt,
                         checkpointName = checkpointName.ifEmpty { null },
+                        styleReferenceImage = styleReferenceImage,
                         seedKey = "$messageId:${index + 1}:$prompt",
                         scopeId = roomId,
                     )
@@ -1357,6 +2241,33 @@ object GroupIterationNativeExecutor {
             return "waiting_for_user"
         }
         return ""
+    }
+
+    private fun putLlmCallDebugDetails(
+        details: JSONObject,
+        debug: NativeLlmCallDebug?,
+    ) {
+        if (debug == null) return
+        details.put("toolModeRequested", debug.toolModeRequested)
+        details.put("toolModeActive", debug.toolModeActive)
+        if (!debug.expectedToolName.isNullOrBlank()) {
+            details.put("expectedToolName", debug.expectedToolName)
+        }
+        if (!debug.actualToolName.isNullOrBlank()) {
+            details.put("actualToolName", debug.actualToolName)
+        }
+        if (debug.responseSource.isNotBlank()) {
+            details.put("responseSource", debug.responseSource)
+        }
+        if (!debug.fallbackReason.isNullOrBlank()) {
+            details.put("fallbackReason", debug.fallbackReason)
+        }
+        if (debug.httpStatus != null) {
+            details.put("httpStatus", debug.httpStatus)
+        }
+        if (!debug.parsedField.isNullOrBlank()) {
+            details.put("parsedField", debug.parsedField)
+        }
     }
 
     private fun appendRuntimeEvent(

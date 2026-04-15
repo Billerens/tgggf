@@ -1780,6 +1780,11 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       waitingReason: status === "paused" ? room.waitingReason : undefined,
       updatedAt: now,
     };
+    set((state) => ({
+      groupRooms: state.groupRooms.map((item) =>
+        item.id === roomId ? nextRoom : item,
+      ),
+    }));
     await dbApi.saveGroupRoom(nextRoom);
 
     const event: GroupEvent = {
@@ -1811,6 +1816,8 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       const foundRoom = get().groupRooms.find((item) => item.id === roomId);
       if (!foundRoom) return;
       const room = ensureRoomState(foundRoom);
+      if (room.status !== "active") return;
+      if (room.mode === "personas_plus_user" && room.waitingForUser) return;
       const tickNow = nowIso();
       const roomAtTickStart: GroupRoom = {
         ...room,

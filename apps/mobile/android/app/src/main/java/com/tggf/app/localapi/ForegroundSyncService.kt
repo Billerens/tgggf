@@ -205,40 +205,45 @@ class ForegroundSyncService : Service() {
                 ?.lastError
                 .orEmpty()
 
-            return try {
-                val runtime = BackgroundRuntimeRepository(context)
-                val jobs = BackgroundJobRepository(context)
-                RuntimeDiagnostics(
-                    queuePendingCount = jobs.countJobs(status = BackgroundJobRepository.STATUS_PENDING),
-                    queueLeasedCount = jobs.countJobs(status = BackgroundJobRepository.STATUS_LEASED),
-                    queueStaleLeasedCount = jobs.countStaleLeasedJobs(nowMs),
-                    topicActiveScopes =
-                        runtime.countDesiredStates(
-                            taskType = WORKER_TOPIC_GENERATION,
-                            enabledOnly = true,
-                        ),
-                    groupActiveScopes =
-                        runtime.countDesiredStates(
-                            taskType = WORKER_GROUP_ITERATION,
-                            enabledOnly = true,
-                        ),
-                    staleWorkerCount = staleWorkerCount,
-                    hasWorkerErrors = hasWorkerErrors,
-                    lastError = lastError,
-                    collectedAtMs = nowMs,
-                )
-            } catch (_: Exception) {
-                RuntimeDiagnostics(
-                    queuePendingCount = 0,
-                    queueLeasedCount = 0,
-                    queueStaleLeasedCount = 0,
-                    topicActiveScopes = 0,
-                    groupActiveScopes = 0,
-                    staleWorkerCount = staleWorkerCount,
-                    hasWorkerErrors = hasWorkerErrors,
-                    lastError = lastError,
-                    collectedAtMs = nowMs,
-                )
+            val runtime = BackgroundRuntimeRepository(context)
+            val jobs = BackgroundJobRepository(context)
+            try {
+                return try {
+                    RuntimeDiagnostics(
+                        queuePendingCount = jobs.countJobs(status = BackgroundJobRepository.STATUS_PENDING),
+                        queueLeasedCount = jobs.countJobs(status = BackgroundJobRepository.STATUS_LEASED),
+                        queueStaleLeasedCount = jobs.countStaleLeasedJobs(nowMs),
+                        topicActiveScopes =
+                            runtime.countDesiredStates(
+                                taskType = WORKER_TOPIC_GENERATION,
+                                enabledOnly = true,
+                            ),
+                        groupActiveScopes =
+                            runtime.countDesiredStates(
+                                taskType = WORKER_GROUP_ITERATION,
+                                enabledOnly = true,
+                            ),
+                        staleWorkerCount = staleWorkerCount,
+                        hasWorkerErrors = hasWorkerErrors,
+                        lastError = lastError,
+                        collectedAtMs = nowMs,
+                    )
+                } catch (_: Exception) {
+                    RuntimeDiagnostics(
+                        queuePendingCount = 0,
+                        queueLeasedCount = 0,
+                        queueStaleLeasedCount = 0,
+                        topicActiveScopes = 0,
+                        groupActiveScopes = 0,
+                        staleWorkerCount = staleWorkerCount,
+                        hasWorkerErrors = hasWorkerErrors,
+                        lastError = lastError,
+                        collectedAtMs = nowMs,
+                    )
+                }
+            } finally {
+                jobs.closeQuietly()
+                runtime.closeQuietly()
             }
         }
     }
@@ -578,74 +583,79 @@ class ForegroundSyncService : Service() {
     }
 
     private fun computeNotificationMetrics(): NotificationMetrics {
-        return try {
-            val runtime = BackgroundRuntimeRepository(applicationContext)
-            val jobs = BackgroundJobRepository(applicationContext)
-            NotificationMetrics(
-                topicDoneCount =
-                    runtime.countEvents(
-                        taskType = WORKER_TOPIC_GENERATION,
-                        stage = "iteration_completed",
-                    ),
-                topicFailedCount =
-                    runtime.countEvents(
-                        taskType = WORKER_TOPIC_GENERATION,
-                        stage = "iteration_failed",
-                    ),
-                topicEnabledCount =
-                    runtime.countDesiredStates(
-                        taskType = WORKER_TOPIC_GENERATION,
-                        enabledOnly = true,
-                    ),
-                topicPendingCount =
-                    jobs.countJobs(
-                        status = BackgroundJobRepository.STATUS_PENDING,
-                        type = WORKER_TOPIC_GENERATION,
-                    ),
-                topicLeasedCount =
-                    jobs.countJobs(
-                        status = BackgroundJobRepository.STATUS_LEASED,
-                        type = WORKER_TOPIC_GENERATION,
-                    ),
-                groupDoneCount =
-                    runtime.countEvents(
-                        taskType = WORKER_GROUP_ITERATION,
-                        stage = "iteration_completed",
-                    ),
-                groupFailedCount =
-                    runtime.countEvents(
-                        taskType = WORKER_GROUP_ITERATION,
-                        stage = "iteration_failed",
-                    ),
-                groupEnabledCount =
-                    runtime.countDesiredStates(
-                        taskType = WORKER_GROUP_ITERATION,
-                        enabledOnly = true,
-                    ),
-                groupPendingCount =
-                    jobs.countJobs(
-                        status = BackgroundJobRepository.STATUS_PENDING,
-                        type = WORKER_GROUP_ITERATION,
-                    ),
-                groupLeasedCount =
-                    jobs.countJobs(
-                        status = BackgroundJobRepository.STATUS_LEASED,
-                        type = WORKER_GROUP_ITERATION,
-                    ),
-            )
-        } catch (_: Exception) {
-            NotificationMetrics(
-                topicDoneCount = 0,
-                topicFailedCount = 0,
-                topicEnabledCount = 0,
-                topicPendingCount = 0,
-                topicLeasedCount = 0,
-                groupDoneCount = 0,
-                groupFailedCount = 0,
-                groupEnabledCount = 0,
-                groupPendingCount = 0,
-                groupLeasedCount = 0,
-            )
+        val runtime = BackgroundRuntimeRepository(applicationContext)
+        val jobs = BackgroundJobRepository(applicationContext)
+        try {
+            return try {
+                NotificationMetrics(
+                    topicDoneCount =
+                        runtime.countEvents(
+                            taskType = WORKER_TOPIC_GENERATION,
+                            stage = "iteration_completed",
+                        ),
+                    topicFailedCount =
+                        runtime.countEvents(
+                            taskType = WORKER_TOPIC_GENERATION,
+                            stage = "iteration_failed",
+                        ),
+                    topicEnabledCount =
+                        runtime.countDesiredStates(
+                            taskType = WORKER_TOPIC_GENERATION,
+                            enabledOnly = true,
+                        ),
+                    topicPendingCount =
+                        jobs.countJobs(
+                            status = BackgroundJobRepository.STATUS_PENDING,
+                            type = WORKER_TOPIC_GENERATION,
+                        ),
+                    topicLeasedCount =
+                        jobs.countJobs(
+                            status = BackgroundJobRepository.STATUS_LEASED,
+                            type = WORKER_TOPIC_GENERATION,
+                        ),
+                    groupDoneCount =
+                        runtime.countEvents(
+                            taskType = WORKER_GROUP_ITERATION,
+                            stage = "iteration_completed",
+                        ),
+                    groupFailedCount =
+                        runtime.countEvents(
+                            taskType = WORKER_GROUP_ITERATION,
+                            stage = "iteration_failed",
+                        ),
+                    groupEnabledCount =
+                        runtime.countDesiredStates(
+                            taskType = WORKER_GROUP_ITERATION,
+                            enabledOnly = true,
+                        ),
+                    groupPendingCount =
+                        jobs.countJobs(
+                            status = BackgroundJobRepository.STATUS_PENDING,
+                            type = WORKER_GROUP_ITERATION,
+                        ),
+                    groupLeasedCount =
+                        jobs.countJobs(
+                            status = BackgroundJobRepository.STATUS_LEASED,
+                            type = WORKER_GROUP_ITERATION,
+                        ),
+                )
+            } catch (_: Exception) {
+                NotificationMetrics(
+                    topicDoneCount = 0,
+                    topicFailedCount = 0,
+                    topicEnabledCount = 0,
+                    topicPendingCount = 0,
+                    topicLeasedCount = 0,
+                    groupDoneCount = 0,
+                    groupFailedCount = 0,
+                    groupEnabledCount = 0,
+                    groupPendingCount = 0,
+                    groupLeasedCount = 0,
+                )
+            }
+        } finally {
+            jobs.closeQuietly()
+            runtime.closeQuietly()
         }
     }
 

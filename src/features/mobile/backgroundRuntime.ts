@@ -261,3 +261,23 @@ export async function listBackgroundRuntimeEvents(
     .map(parseRuntimeEventRecord)
     .filter((row): row is BackgroundRuntimeEventRecord => Boolean(row));
 }
+
+export async function clearBackgroundRuntimeEvents(
+  input: {
+    taskType?: string;
+    scopeId?: string;
+  } = {},
+  options: BackgroundRuntimeRequestOptions = {},
+) {
+  const payload = await requestBackgroundRuntime(
+    "PUT",
+    "/api/background-runtime/events/clear",
+    {
+      taskType: input.taskType?.trim() || undefined,
+      scopeId: input.scopeId?.trim() || undefined,
+    },
+    options,
+  );
+  if (!isRecord(payload)) return 0;
+  return toSafeNumber(payload.deleted, 0);
+}

@@ -41,20 +41,24 @@ object BackgroundScheduler {
         )
 
         val runtime = BackgroundRuntimeRepository(appContext)
-        runtime.appendEvent(
-            taskType = "scheduler",
-            scopeId = "global",
-            jobId = null,
-            stage = "work_enqueued",
-            level = "info",
-            message = "Background scheduler work enqueued",
-            detailsJson =
-                org.json.JSONObject().apply {
-                    put("reason", reason.ifBlank { "unknown" })
-                    put("periodicMinutes", PERIODIC_INTERVAL_MINUTES)
-                    put("recoveryDelaySeconds", RECOVERY_DELAY_SECONDS)
-                }.toString(),
-        )
+        try {
+            runtime.appendEvent(
+                taskType = "scheduler",
+                scopeId = "global",
+                jobId = null,
+                stage = "work_enqueued",
+                level = "info",
+                message = "Background scheduler work enqueued",
+                detailsJson =
+                    org.json.JSONObject().apply {
+                        put("reason", reason.ifBlank { "unknown" })
+                        put("periodicMinutes", PERIODIC_INTERVAL_MINUTES)
+                        put("recoveryDelaySeconds", RECOVERY_DELAY_SECONDS)
+                    }.toString(),
+            )
+        } finally {
+            runtime.closeQuietly()
+        }
     }
 }
 

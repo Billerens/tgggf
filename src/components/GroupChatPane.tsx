@@ -27,6 +27,7 @@ import {
 } from "../personaAvatar";
 import { formatShortTime } from "../ui/format";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { useSmartMessageAutoscroll } from "../ui/useSmartMessageAutoscroll";
 import type {
   GroupMessage,
   GroupMessageMention,
@@ -716,7 +717,6 @@ export function GroupChatPane({
   onRegenerateMessageResponse,
   onOpenChatDetails,
 }: GroupChatPaneProps) {
-  const endRef = useRef<HTMLDivElement | null>(null);
   const [eventLogModalOpen, setEventLogModalOpen] = useState(false);
   const [eventLogMode, setEventLogMode] = useState<GroupLogViewMode>(
     "technical",
@@ -739,6 +739,23 @@ export function GroupChatPane({
     options: Array<{ index: number; label: string }>;
     selected: number[];
   } | null>(null);
+  const composerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const messageIds = useMemo(() => messages.map((message) => message.id), [messages]);
+  const {
+    messagesContainerRef,
+    endRef,
+    unreadCount,
+    jumpToLatest,
+    onMessagesScroll,
+  } = useSmartMessageAutoscroll({
+    streamType: "group",
+    streamId: activeRoom?.id ?? null,
+    messageIds,
+    nearBottomThresholdPx: 80,
+    overlayRef: composerWrapperRef,
+    bottomObscurerSelector: ".mobile-bottom-nav",
+    bottomOverlayGapPx: 12,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -779,10 +796,6 @@ export function GroupChatPane({
       cancelled = true;
     };
   }, [personas]);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
 
   useEffect(() => {
     if (!previewTarget || !previewSrc) return;
@@ -1391,7 +1404,11 @@ export function GroupChatPane({
         </div>
       ) : null}
 
-      <section className="messages group-messages">
+      <section
+        className="messages group-messages"
+        ref={messagesContainerRef}
+        onScroll={onMessagesScroll}
+      >
         {messages.map((message) => {
           const renderMeta = messageRenderMetaById.get(message.id);
           if (!renderMeta || renderMeta.skip) {
@@ -1595,7 +1612,16 @@ export function GroupChatPane({
         <div ref={endRef} aria-hidden="true" />
       </section>
 
-      <div className="composer-wrapper">
+      <div className="composer-wrapper" ref={composerWrapperRef}>
+        {unreadCount > 0 ? (
+          <button
+            type="button"
+            className="new-messages-btn"
+            onClick={jumpToLatest}
+          >
+            Новые: {unreadCount}
+          </button>
+        ) : null}
         <form className="composer" onSubmit={onSubmitMessage}>
           <textarea
             placeholder="Сообщение в группу..."

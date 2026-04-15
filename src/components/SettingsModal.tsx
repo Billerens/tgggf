@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
   CloudDownload,
@@ -30,6 +30,11 @@ import type {
   SystemLogEntry,
   SystemLogLevel,
 } from "../features/system-logs/systemLogStore";
+import {
+  clearBackgroundRuntimeEvents,
+  listBackgroundRuntimeEvents,
+  type BackgroundRuntimeEventRecord,
+} from "../features/mobile/backgroundRuntime";
 
 type PwaInstallStatus = "installed" | "available" | "unavailable";
 type ToolCapabilityMatrixStatus =
@@ -110,6 +115,33 @@ interface SettingsModalProps {
 
 type SettingsTab = "system" | "models" | "personal" | "chat" | "data" | "logs";
 type LogLevelFilter = "all" | SystemLogLevel;
+type LogSourceFilter = "all" | "system" | "native_runtime";
+type LogDetailTab = "status" | "request" | "response" | "error" | "raw";
+
+interface DevtoolsLogEntry {
+  id: string;
+  timestamp: string;
+  timestampMs: number;
+  level: SystemLogLevel;
+  eventType: string;
+  message: string;
+  source: "system" | "native_runtime";
+  detailsRaw: unknown;
+  runtimeMeta?: {
+    taskType: string;
+    scopeId: string;
+    stage: string;
+    jobId: string | null;
+  };
+}
+
+interface DevtoolsLogPanels {
+  status: unknown;
+  request: unknown;
+  response: unknown;
+  error: unknown;
+  raw: unknown;
+}
 
 const LOG_LEVEL_OPTIONS: Array<{ value: LogLevelFilter; label: string }> = [
   { value: "all", label: "Все уровни" },
@@ -117,6 +149,18 @@ const LOG_LEVEL_OPTIONS: Array<{ value: LogLevelFilter; label: string }> = [
   { value: "info", label: "Info" },
   { value: "warn", label: "Warn" },
   { value: "error", label: "Error" },
+];
+const LOG_SOURCE_OPTIONS: Array<{ value: LogSourceFilter; label: string }> = [
+  { value: "all", label: "Все источники" },
+  { value: "system", label: "Web/System" },
+  { value: "native_runtime", label: "Native Runtime" },
+];
+const LOG_DETAIL_TAB_OPTIONS: Array<{ value: LogDetailTab; label: string }> = [
+  { value: "status", label: "Status" },
+  { value: "request", label: "Request" },
+  { value: "response", label: "Response" },
+  { value: "error", label: "Error" },
+  { value: "raw", label: "Raw" },
 ];
 
 const AUTH_MODE_LABELS: Array<{ value: AuthMode; label: string }> = [
@@ -259,6 +303,184 @@ function formatSystemLogTimestamp(value: string) {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseJsonMaybe(value: string | undefined): unknown {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[") && !trimmed.startsWith("\"")) {
+    return trimmed;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
+}
+
+function pickRecordValue(record: Record<string, unknown>, keys: string[]): unknown {
+  for (const key of keys) {
+    const candidate = record[key];
+    if (candidate === undefined || candidate === null) continue;
+    if (typeof candidate === "string" && !candidate.trim()) continue;
+    return candidate;
+  }
+  return undefined;
+}
+
+function collectRecordValues(record: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    const candidate = record[key];
+    if (candidate === undefined || candidate === null) continue;
+    if (typeof candidate === "string" && !candidate.trim()) continue;
+    result[key] = candidate;
+  }
+  return result;
+}
+
+function formatDetailForView(value: unknown): string {
+  if (value === undefined || value === null) return "Нет данных";
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || "Нет данных";
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function toSystemLogLevel(value: string): SystemLogLevel {
+  switch (value) {
+    case "debug":
+    case "info":
+    case "warn":
+    case "error":
+      return value;
+    default:
+      return "info";
+  }
+}
+
+function buildDevtoolsPanels(entry: DevtoolsLogEntry | null): DevtoolsLogPanels {
+  if (!entry) {
+    return {
+      status: null,
+      request: null,
+      response: null,
+      error: null,
+      raw: null,
+    };
+  }
+
+  const detailsRecord = isRecord(entry.detailsRaw) ? entry.detailsRaw : null;
+  const request =
+    detailsRecord == null
+      ? null
+      : pickRecordValue(detailsRecord, [
+          "request",
+          "requestBody",
+          "requestPayload",
+          "requestJson",
+          "payload",
+          "input",
+          "toolInput",
+          "systemPrompt",
+          "userPrompt",
+          "prompt",
+        ]) ?? null;
+  const response =
+    detailsRecord == null
+      ? null
+      : pickRecordValue(detailsRecord, [
+          "response",
+          "responseBody",
+          "responsePayload",
+          "output",
+          "result",
+          "llmDebug",
+          "content",
+          "responseId",
+          "comfyPrompt",
+          "comfyPrompts",
+          "comfyImageDescription",
+          "comfyImageDescriptions",
+        ]) ?? null;
+  const errorCandidate =
+    detailsRecord == null
+      ? null
+      : pickRecordValue(detailsRecord, [
+          "error",
+          "errors",
+          "reason",
+          "lastError",
+          "exception",
+          "stack",
+        ]) ?? null;
+
+  const status = {
+    source: entry.source,
+    level: entry.level,
+    eventType: entry.eventType,
+    timestamp: entry.timestamp,
+    message: entry.message,
+    ...(entry.runtimeMeta ?? {}),
+    ...(detailsRecord
+      ? collectRecordValues(detailsRecord, [
+          "status",
+          "state",
+          "stage",
+          "waitForUser",
+          "waitReason",
+          "scopeId",
+          "taskType",
+          "jobId",
+          "httpStatus",
+          "responseSource",
+          "toolModeRequested",
+          "toolModeActive",
+          "expectedToolName",
+          "actualToolName",
+          "fallbackReason",
+          "parsedField",
+          "hasContent",
+          "contentLength",
+          "reason",
+        ])
+      : {}),
+  };
+
+  const error =
+    errorCandidate ??
+    (entry.level === "error" || entry.level === "warn"
+      ? {
+          message: entry.message,
+        }
+      : null);
+
+  const raw = {
+    ...(entry.runtimeMeta
+      ? {
+          runtime: entry.runtimeMeta,
+        }
+      : {}),
+    details: entry.detailsRaw ?? null,
+  };
+
+  return {
+    status,
+    request,
+    response,
+    error,
+    raw,
+  };
+}
+
 function AuthSettingsSection({
   title,
   auth,
@@ -394,6 +616,8 @@ export function SettingsModal({
   onClose,
   onSubmit,
 }: SettingsModalProps) {
+  const detectCompactLogLayout = () =>
+    typeof window !== "undefined" ? window.innerWidth <= 960 : false;
   const [activeTab, setActiveTab] = useState<SettingsTab>("system");
   const [exportScope, setExportScope] = useState<BackupExportScope>("all");
   const [exportFormat, setExportFormat] = useState<BackupExportFormat>("json");
@@ -402,6 +626,19 @@ export function SettingsModal({
   const [importMode, setImportMode] = useState<BackupImportMode>("merge");
   const [logLevelFilter, setLogLevelFilter] = useState<LogLevelFilter>("all");
   const [logTypeFilter, setLogTypeFilter] = useState<string>("all");
+  const [logSourceFilter, setLogSourceFilter] = useState<LogSourceFilter>("all");
+  const [logSearchQuery, setLogSearchQuery] = useState("");
+  const [selectedLogId, setSelectedLogId] = useState<string | null>(null);
+  const [activeLogDetailTab, setActiveLogDetailTab] = useState<LogDetailTab>("status");
+  const [isCompactLogLayout, setIsCompactLogLayout] = useState(detectCompactLogLayout);
+  const [logMobilePane, setLogMobilePane] = useState<"list" | "detail">("list");
+  const [nativeRuntimeEvents, setNativeRuntimeEvents] = useState<BackgroundRuntimeEventRecord[]>([]);
+  const [nativeRuntimeEventsLoading, setNativeRuntimeEventsLoading] = useState(false);
+  const [nativeRuntimeEventsClearing, setNativeRuntimeEventsClearing] = useState(false);
+  const [nativeRuntimeEventsError, setNativeRuntimeEventsError] = useState<string | null>(null);
+  const [nativeRuntimeEventsFetchedAtMs, setNativeRuntimeEventsFetchedAtMs] = useState<number | null>(
+    null,
+  );
   const googleDriveBackupOptions = useMemo(() => {
     if (googleDriveBackups.length === 0) {
       return [{ value: "", label: "Бэкапы в Drive не найдены" }];
@@ -424,9 +661,103 @@ export function SettingsModal({
       null,
     [googleDriveBackups, selectedGoogleDriveBackupId],
   );
+  const canLoadNativeRuntimeEvents = runtimeMode === "android";
+  const refreshNativeRuntimeEvents = useCallback(async () => {
+    if (!canLoadNativeRuntimeEvents) {
+      setNativeRuntimeEvents([]);
+      setNativeRuntimeEventsError(null);
+      setNativeRuntimeEventsFetchedAtMs(null);
+      return;
+    }
+    setNativeRuntimeEventsLoading(true);
+    try {
+      const [groupRows, topicRows] = await Promise.all([
+        listBackgroundRuntimeEvents({ taskType: "group_iteration", limit: 400 }),
+        listBackgroundRuntimeEvents({ taskType: "topic_generation", limit: 400 }),
+      ]);
+      const mergedRows = [...groupRows, ...topicRows].sort((left, right) => {
+        if (left.createdAtMs !== right.createdAtMs) {
+          return right.createdAtMs - left.createdAtMs;
+        }
+        return right.id - left.id;
+      });
+      setNativeRuntimeEvents(mergedRows);
+      setNativeRuntimeEventsError(null);
+      setNativeRuntimeEventsFetchedAtMs(Date.now());
+    } catch (error) {
+      setNativeRuntimeEventsError(
+        error instanceof Error ? error.message : "native_runtime_events_fetch_failed",
+      );
+    } finally {
+      setNativeRuntimeEventsLoading(false);
+    }
+  }, [canLoadNativeRuntimeEvents]);
+  const clearNativeRuntimeLogs = useCallback(async () => {
+    if (!canLoadNativeRuntimeEvents) return;
+    setNativeRuntimeEventsClearing(true);
+    try {
+      await clearBackgroundRuntimeEvents();
+      setNativeRuntimeEvents([]);
+      setNativeRuntimeEventsError(null);
+      setNativeRuntimeEventsFetchedAtMs(Date.now());
+      setSelectedLogId((previous) =>
+        typeof previous === "string" && previous.startsWith("native:") ? null : previous,
+      );
+    } catch (error) {
+      setNativeRuntimeEventsError(
+        error instanceof Error ? error.message : "native_runtime_events_clear_failed",
+      );
+    } finally {
+      setNativeRuntimeEventsClearing(false);
+    }
+  }, [canLoadNativeRuntimeEvents]);
+  const allLogEntries = useMemo<DevtoolsLogEntry[]>(() => {
+    const systemEntries: DevtoolsLogEntry[] = systemLogs.map((entry, index) => {
+      const timestampMs = Number.isFinite(new Date(entry.timestamp).getTime())
+        ? new Date(entry.timestamp).getTime()
+        : Date.now() - index;
+      return {
+        id: `system:${entry.id}`,
+        timestamp: entry.timestamp,
+        timestampMs,
+        level: entry.level,
+        eventType: entry.eventType,
+        message: entry.message,
+        source: "system",
+        detailsRaw: parseJsonMaybe(entry.details),
+      };
+    });
+    const nativeEntries: DevtoolsLogEntry[] = nativeRuntimeEvents.map((entry, index) => {
+      const timestampMs = Number.isFinite(entry.createdAtMs) ? entry.createdAtMs : Date.now() - index;
+      const timestamp = new Date(timestampMs).toISOString();
+      return {
+        id: `native:${entry.id}`,
+        timestamp,
+        timestampMs,
+        level: toSystemLogLevel(entry.level),
+        eventType: `${entry.taskType}.${entry.stage}`,
+        message: entry.message,
+        source: "native_runtime",
+        detailsRaw:
+          typeof entry.details === "string"
+            ? parseJsonMaybe(entry.details)
+            : entry.details,
+        runtimeMeta: {
+          taskType: entry.taskType,
+          scopeId: entry.scopeId,
+          stage: entry.stage,
+          jobId: entry.jobId,
+        },
+      };
+    });
+    return [...systemEntries, ...nativeEntries].sort((a, b) => {
+      if (a.timestampMs !== b.timestampMs) return b.timestampMs - a.timestampMs;
+      return b.id.localeCompare(a.id);
+    });
+  }, [nativeRuntimeEvents, systemLogs]);
   const logTypeOptions = useMemo(() => {
     const typeSet = new Set<string>();
-    for (const entry of systemLogs) {
+    for (const entry of allLogEntries) {
       if (entry.eventType.trim()) {
         typeSet.add(entry.eventType.trim());
       }
@@ -436,19 +767,25 @@ export function SettingsModal({
       { value: "all", label: "Все типы" },
       ...sorted.map((eventType) => ({ value: eventType, label: eventType })),
     ];
-  }, [systemLogs]);
-  const filteredSystemLogs = useMemo(
-    () =>
-      [...systemLogs]
-        .reverse()
-        .filter((entry) =>
-          logLevelFilter === "all" ? true : entry.level === logLevelFilter,
-        )
-        .filter((entry) =>
-          logTypeFilter === "all" ? true : entry.eventType === logTypeFilter,
-        ),
-    [systemLogs, logLevelFilter, logTypeFilter],
+  }, [allLogEntries]);
+  const filteredLogEntries = useMemo(() => {
+    const normalizedSearch = logSearchQuery.trim().toLowerCase();
+    return allLogEntries
+      .filter((entry) => (logLevelFilter === "all" ? true : entry.level === logLevelFilter))
+      .filter((entry) => (logTypeFilter === "all" ? true : entry.eventType === logTypeFilter))
+      .filter((entry) => (logSourceFilter === "all" ? true : entry.source === logSourceFilter))
+      .filter((entry) => {
+        if (!normalizedSearch) return true;
+        const payload =
+          `${entry.eventType} ${entry.message} ${formatDetailForView(entry.detailsRaw)}`.toLowerCase();
+        return payload.includes(normalizedSearch);
+      });
+  }, [allLogEntries, logLevelFilter, logSearchQuery, logSourceFilter, logTypeFilter]);
+  const selectedLogEntry = useMemo(
+    () => filteredLogEntries.find((entry) => entry.id === selectedLogId) ?? null,
+    [filteredLogEntries, selectedLogId],
   );
+  const selectedLogPanels = useMemo(() => buildDevtoolsPanels(selectedLogEntry), [selectedLogEntry]);
   const nativeRuntimeHealth: ForegroundServiceHealth =
     runtimeMode !== "android" || !settingsDraft.androidNativeGroupIterationV1
       ? "fallback"
@@ -518,6 +855,23 @@ export function SettingsModal({
   };
 
   useEffect(() => {
+    const onResize = () => {
+      setIsCompactLogLayout(detectCompactLogLayout());
+    };
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+    };
+  }, []);
+  useEffect(() => {
+    if (!isCompactLogLayout) {
+      setLogMobilePane("detail");
+      return;
+    }
+    setLogMobilePane("list");
+  }, [isCompactLogLayout]);
+  useEffect(() => {
     if (open) {
       setActiveTab("system");
       setExportScope("all");
@@ -527,8 +881,43 @@ export function SettingsModal({
       setImportMode("merge");
       setLogLevelFilter("all");
       setLogTypeFilter("all");
+      setLogSourceFilter("all");
+      setLogSearchQuery("");
+      setSelectedLogId(null);
+      setActiveLogDetailTab("status");
+      setNativeRuntimeEventsError(null);
+      setLogMobilePane(detectCompactLogLayout() ? "list" : "detail");
     }
   }, [open, exportableChats]);
+  useEffect(() => {
+    if (!open || activeTab !== "logs" || !canLoadNativeRuntimeEvents) return;
+    void refreshNativeRuntimeEvents();
+    const timerId = window.setInterval(() => {
+      void refreshNativeRuntimeEvents();
+    }, 6_000);
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [activeTab, canLoadNativeRuntimeEvents, open, refreshNativeRuntimeEvents]);
+  useEffect(() => {
+    if (filteredLogEntries.length === 0) {
+      if (selectedLogId !== null) {
+        setSelectedLogId(null);
+      }
+      return;
+    }
+    if (selectedLogId && filteredLogEntries.some((entry) => entry.id === selectedLogId)) {
+      return;
+    }
+    setSelectedLogId(filteredLogEntries[0].id);
+  }, [filteredLogEntries, selectedLogId]);
+  useEffect(() => {
+    if (!isCompactLogLayout) return;
+    if (activeTab !== "logs") return;
+    if (selectedLogEntry == null) {
+      setLogMobilePane("list");
+    }
+  }, [activeTab, isCompactLogLayout, selectedLogEntry]);
 
   const getProviderModelOptions = (
     provider: LlmProvider,
@@ -609,6 +998,23 @@ export function SettingsModal({
       </div>
     );
   };
+
+  const selectedLogDetailValue = (() => {
+    if (activeLogDetailTab === "request") return selectedLogPanels.request;
+    if (activeLogDetailTab === "response") return selectedLogPanels.response;
+    if (activeLogDetailTab === "error") return selectedLogPanels.error;
+    if (activeLogDetailTab === "raw") return selectedLogPanels.raw;
+    return selectedLogPanels.status;
+  })();
+  const nativeRuntimeStatusLabel = !canLoadNativeRuntimeEvents
+    ? "Native Runtime недоступен в этом режиме"
+    : nativeRuntimeEventsLoading
+      ? "Обновление Native Runtime…"
+      : nativeRuntimeEventsFetchedAtMs
+        ? `Native Runtime обновлён: ${new Date(nativeRuntimeEventsFetchedAtMs).toLocaleString(
+            "ru-RU",
+          )}`
+        : "Native Runtime ещё не загружен";
 
   if (!open) return null;
 
@@ -1558,7 +1964,8 @@ export function SettingsModal({
               <div className="persona-section">
                 <h5>Системные логи</h5>
                 <small style={{ color: "var(--text-secondary)" }}>
-                  Общий поток событий приложения: console, ошибки окна, telemetry и системные операции.
+                  Devtools-режим для анализа событий: слева поток записей, справа детальная панель
+                  Request/Response/Status/Error.
                 </small>
                 <div className="settings-log-filters">
                   <label>
@@ -1572,55 +1979,188 @@ export function SettingsModal({
                     />
                   </label>
                   <label>
-                    Тип события
+                    Источник
+                    <Dropdown
+                      value={logSourceFilter}
+                      options={LOG_SOURCE_OPTIONS}
+                      onChange={(nextValue) =>
+                        setLogSourceFilter(nextValue as LogSourceFilter)
+                      }
+                    />
+                  </label>
+                  <label>
+                    Тип
                     <Dropdown
                       value={logTypeFilter}
                       options={logTypeOptions}
                       onChange={(nextValue) => setLogTypeFilter(nextValue)}
                     />
                   </label>
+                  <label>
+                    Поиск
+                    <input
+                      type="text"
+                      value={logSearchQuery}
+                      onChange={(event) => setLogSearchQuery(event.target.value)}
+                      placeholder="eventType / message / details"
+                    />
+                  </label>
                 </div>
                 <div className="inline-row" style={{ marginTop: 8 }}>
                   <small style={{ color: "var(--text-secondary)" }}>
-                    Показано: {filteredSystemLogs.length} из {systemLogs.length}
+                    Показано: {filteredLogEntries.length} из {allLogEntries.length}
                   </small>
-                  <button
-                    type="button"
-                    onClick={onClearSystemLogs}
-                    disabled={systemLogs.length === 0}
-                  >
-                    Очистить логи
-                  </button>
+                  <div className="inline-row">
+                    {canLoadNativeRuntimeEvents ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void refreshNativeRuntimeEvents();
+                        }}
+                        disabled={nativeRuntimeEventsLoading}
+                      >
+                        <RefreshCw
+                          size={14}
+                          className={nativeRuntimeEventsLoading ? "spin" : ""}
+                        />{" "}
+                        Обновить Native Runtime
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={onClearSystemLogs}
+                      disabled={systemLogs.length === 0}
+                    >
+                      Очистить Web/System
+                    </button>
+                    {canLoadNativeRuntimeEvents ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void clearNativeRuntimeLogs();
+                        }}
+                        disabled={
+                          nativeRuntimeEventsClearing ||
+                          nativeRuntimeEventsLoading ||
+                          nativeRuntimeEvents.length === 0
+                        }
+                      >
+                        {nativeRuntimeEventsClearing
+                          ? "Очистка Native Runtime…"
+                          : "Очистить Native Runtime"}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
+                <small style={{ color: "var(--text-secondary)" }}>
+                  {nativeRuntimeStatusLabel}
+                  {nativeRuntimeEventsError
+                    ? ` • Ошибка: ${nativeRuntimeEventsError}`
+                    : ""}
+                </small>
               </div>
-              <div className="settings-log-list">
-                {filteredSystemLogs.length === 0 ? (
-                  <small style={{ color: "var(--text-secondary)" }}>
-                    Нет логов для выбранных фильтров.
-                  </small>
-                ) : (
-                  filteredSystemLogs.map((entry) => (
-                    <article className="settings-log-entry" key={entry.id}>
-                      <header className="settings-log-entry-head">
-                        <span
-                          className={`settings-log-level settings-log-level-${entry.level}`}
-                        >
-                          {entry.level.toUpperCase()}
-                        </span>
-                        <code className="settings-log-type">{entry.eventType}</code>
-                        <small className="settings-log-time">
+              <div
+                className={`settings-log-devtools ${
+                  isCompactLogLayout
+                    ? logMobilePane === "detail"
+                      ? "mobile-detail"
+                      : "mobile-list"
+                    : ""
+                }`}
+              >
+                <div className="settings-log-master">
+                  {filteredLogEntries.length === 0 ? (
+                    <small style={{ color: "var(--text-secondary)" }}>
+                      Нет логов для выбранных фильтров.
+                    </small>
+                  ) : (
+                    filteredLogEntries.map((entry) => (
+                      <button
+                        type="button"
+                        className={`settings-log-row ${
+                          entry.id === selectedLogId ? "active" : ""
+                        }`}
+                        key={entry.id}
+                        onClick={() => {
+                          setSelectedLogId(entry.id);
+                          if (isCompactLogLayout) {
+                            setLogMobilePane("detail");
+                          }
+                        }}
+                      >
+                        <div className="settings-log-row-head">
+                          <span
+                            className={`settings-log-level settings-log-level-${entry.level}`}
+                          >
+                            {entry.level.toUpperCase()}
+                          </span>
+                          <code className="settings-log-type">{entry.eventType}</code>
+                          <span className={`settings-log-source settings-log-source-${entry.source}`}>
+                            {entry.source === "native_runtime" ? "NATIVE" : "WEB"}
+                          </span>
+                        </div>
+                        <p className="settings-log-message">{entry.message}</p>
+                        <small className="settings-log-time settings-log-row-time">
                           {formatSystemLogTimestamp(entry.timestamp)}
                         </small>
-                      </header>
-                      <p className="settings-log-message">{entry.message}</p>
-                      {entry.details ? (
-                        <details className="settings-log-details">
-                          <summary>Показать детали</summary>
-                          <pre>{entry.details}</pre>
-                        </details>
+                      </button>
+                    ))
+                  )}
+                </div>
+                {selectedLogEntry == null ? (
+                  <div className="settings-log-detail">
+                    <small style={{ color: "var(--text-secondary)" }}>
+                      Выбери запись слева, чтобы открыть детали.
+                    </small>
+                  </div>
+                ) : (
+                  <div className="settings-log-detail">
+                    <header className="settings-log-detail-head">
+                      {isCompactLogLayout ? (
+                        <div className="inline-row">
+                          <button
+                            type="button"
+                            className="settings-log-mobile-back"
+                            onClick={() => setLogMobilePane("list")}
+                          >
+                            Назад к списку
+                          </button>
+                        </div>
                       ) : null}
-                    </article>
-                  ))
+                      <div className="settings-log-entry-head">
+                        <span
+                          className={`settings-log-level settings-log-level-${selectedLogEntry.level}`}
+                        >
+                          {selectedLogEntry.level.toUpperCase()}
+                        </span>
+                        <code className="settings-log-type">{selectedLogEntry.eventType}</code>
+                        <span
+                          className={`settings-log-source settings-log-source-${selectedLogEntry.source}`}
+                        >
+                          {selectedLogEntry.source === "native_runtime" ? "NATIVE" : "WEB"}
+                        </span>
+                        <small className="settings-log-time">
+                          {formatSystemLogTimestamp(selectedLogEntry.timestamp)}
+                        </small>
+                      </div>
+                      <p className="settings-log-message">{selectedLogEntry.message}</p>
+                    </header>
+                    <div className="settings-log-detail-tabs">
+                      {LOG_DETAIL_TAB_OPTIONS.map((tab) => (
+                        <button
+                          type="button"
+                          key={tab.value}
+                          className={activeLogDetailTab === tab.value ? "active" : ""}
+                          onClick={() => setActiveLogDetailTab(tab.value)}
+                        >
+                          {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                    <pre className="settings-log-detail-pre">
+                      {formatDetailForView(selectedLogDetailValue)}
+                    </pre>
+                  </div>
                 )}
               </div>
             </>

@@ -11,6 +11,7 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URLEncoder
+import java.net.URLDecoder
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
@@ -35,6 +36,8 @@ object TopicGenerationNativeExecutor {
     private const val COMFY_SEED_NODE_ID = "137"
     private const val COMFY_HIRES_NODE_ID = "849"
     private const val COMFY_SIZE_NODE_ID = "141"
+    private const val COMFY_STYLE_IMAGE_NODE_ID = "420"
+    private const val COMFY_COMPOSITION_IMAGE_NODE_ID = "455"
     private const val COMFY_HISTORY_TIMEOUT_MS = 600_000L
     private const val COMFY_HISTORY_POLL_INTERVAL_MS = 1_200L
     private const val COMFY_WEBP_QUALITY = 82
@@ -58,6 +61,19 @@ object TopicGenerationNativeExecutor {
     private data class HttpResult(
         val code: Int,
         val body: String,
+    )
+
+    private data class BinaryHttpResult(
+        val code: Int,
+        val bytes: ByteArray,
+        val bodyText: String,
+        val contentType: String?,
+    )
+
+    private data class ReferenceImagePayload(
+        val bytes: ByteArray,
+        val extension: String,
+        val mimeType: String,
     )
 
     data class ComfyRunResult(
@@ -94,25 +110,31 @@ object TopicGenerationNativeExecutor {
         val jobs = BackgroundJobRepository(context)
         val runtimeRepository = BackgroundRuntimeRepository(context)
         val repository = LocalRepository(context)
-        val claimed = jobs.claimDueJobs(
-            limit = 1,
-            leaseMs = TOPIC_GENERATION_LEASE_MS,
-            type = TOPIC_GENERATION_JOB_TYPE,
-        )
-
-        if (claimed.isEmpty()) {
-            emitAwaitingState(context, repository, jobs)
-            return
-        }
-
-        for (job in claimed) {
-            processClaimedJob(
-                context = context,
-                repository = repository,
-                jobs = jobs,
-                runtimeRepository = runtimeRepository,
-                job = job,
+        try {
+            val claimed = jobs.claimDueJobs(
+                limit = 1,
+                leaseMs = TOPIC_GENERATION_LEASE_MS,
+                type = TOPIC_GENERATION_JOB_TYPE,
             )
+
+            if (claimed.isEmpty()) {
+                emitAwaitingState(context, repository, jobs)
+                return
+            }
+
+            for (job in claimed) {
+                processClaimedJob(
+                    context = context,
+                    repository = repository,
+                    jobs = jobs,
+                    runtimeRepository = runtimeRepository,
+                    job = job,
+                )
+            }
+        } finally {
+            repository.close()
+            jobs.closeQuietly()
+            runtimeRepository.closeQuietly()
         }
     }
 
@@ -533,6 +555,7 @@ object TopicGenerationNativeExecutor {
         settings: JSONObject,
         prompt: String,
         checkpointName: String?,
+        styleReferenceImage: String?,
         seedKey: String,
         scopeId: String,
     ): ComfyRunResult {
@@ -547,6 +570,7 @@ object TopicGenerationNativeExecutor {
             prompt = prompt,
             seed = seed,
             checkpointName = checkpointName?.trim().orEmpty().ifEmpty { null },
+            styleReferenceImage = styleReferenceImage?.trim().orEmpty().ifEmpty { null },
             preferredTitleIncludes = emptyList(),
             strictPreferredMatch = false,
             pickLatestImageOnly = false,
@@ -575,6 +599,10 @@ object TopicGenerationNativeExecutor {
         val topic = session.optString("topic", "").trim()
         val seed = stableSeedFromText("$sessionId:$iteration:$topic")
         val checkpointName = persona.optString("imageCheckpoint", "").trim()
+        val styleReferenceImage =
+            persona.optString("avatarUrl", "").trim().ifEmpty {
+                persona.optString("fullBodyUrl", "").trim()
+            }.ifEmpty { null }
         return runComfyGenerationInternal(
             context = context,
             worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
@@ -585,6 +613,7 @@ object TopicGenerationNativeExecutor {
             prompt = prompt,
             seed = seed,
             checkpointName = checkpointName.ifEmpty { null },
+            styleReferenceImage = styleReferenceImage,
             preferredTitleIncludes = parseStringList(session.optJSONArray("outputNodeTitleIncludes")),
             strictPreferredMatch = session.optBoolean("strictOutputNodeMatch", false),
             pickLatestImageOnly = session.optBoolean("pickLatestImageOnly", false),
@@ -601,17 +630,19 @@ object TopicGenerationNativeExecutor {
         prompt: String,
         seed: Long,
         checkpointName: String?,
+        styleReferenceImage: String?,
         preferredTitleIncludes: List<String>,
         strictPreferredMatch: Boolean,
         pickLatestImageOnly: Boolean,
     ): ComfyRunResult {
-        val baseUrl =
+        val requestedBaseUrl =
             normalizeBaseUrl(
                 settings.optString("comfyBaseUrl", COMFY_DEFAULT_BASE_URL).ifBlank {
                     COMFY_DEFAULT_BASE_URL
                 },
             )
         val auth = settings.optJSONObject("comfyAuth")
+        val baseUrl = resolveComfyBaseUrl(requestedBaseUrl, auth)
         val workflowTemplate = loadBaseWorkflowTemplate(context)
         val workflow = JSONObject(workflowTemplate)
 
@@ -633,6 +664,31 @@ object TopicGenerationNativeExecutor {
         if (!checkpointName.isNullOrBlank()) {
             setCheckpointName(workflow, checkpointName)
         }
+        if (!styleReferenceImage.isNullOrBlank()) {
+            try {
+                val uploadedFilename =
+                    uploadReferenceImage(
+                        context = context,
+                        source = styleReferenceImage,
+                        baseUrl = baseUrl,
+                        auth = auth,
+                    )
+                setImageFilenameOnNode(
+                    workflow = workflow,
+                    nodeId = COMFY_STYLE_IMAGE_NODE_ID,
+                    filename = uploadedFilename,
+                )
+                setImageFilenameOnNode(
+                    workflow = workflow,
+                    nodeId = COMFY_COMPOSITION_IMAGE_NODE_ID,
+                    filename = uploadedFilename,
+                )
+            } catch (error: Exception) {
+                if (!shouldIgnoreReferenceImageError(error)) {
+                    throw error
+                }
+            }
+        }
 
         sanitizeWorkflowForApi(workflow)
         if (!settings.optBoolean("saveComfyOutputs", false)) {
@@ -651,38 +707,42 @@ object TopicGenerationNativeExecutor {
                 lastError = "",
             )
         }
+        try {
+            val queued = queuePrompt(baseUrl, workflow, auth)
+            val promptId = queued.optString("prompt_id", "").trim()
+            if (promptId.isEmpty()) {
+                throw IllegalStateException("Comfy /prompt did not return prompt_id")
+            }
 
-        val queued = queuePrompt(baseUrl, workflow, auth)
-        val promptId = queued.optString("prompt_id", "").trim()
-        if (promptId.isEmpty()) {
-            throw IllegalStateException("Comfy /prompt did not return prompt_id")
+            val historyEntry =
+                waitForHistory(
+                    context = context,
+                    worker = worker,
+                    scopeId = workerScopeId,
+                    workerWaitDetail = workerWaitDetail,
+                    baseUrl = baseUrl,
+                    promptId = promptId,
+                    auth = auth,
+                )
+            val urls =
+                collectImageUrls(
+                    baseUrl = baseUrl,
+                    workflow = workflow,
+                    historyEntry = historyEntry,
+                    outputTitlePreferences = BASE_OUTPUT_TITLE_PREFERENCES,
+                    preferredTitleIncludes = preferredTitleIncludes,
+                    strictPreferredMatch = strictPreferredMatch,
+                    pickLatestImageOnly = pickLatestImageOnly,
+                )
+            return ComfyRunResult(
+                imageUrls = urls,
+                seed = seed,
+                model = checkpointName,
+            )
+        } catch (error: Exception) {
+            stopComfyExecution(baseUrl, auth)
+            throw normalizeComfyError(error, requestedBaseUrl, baseUrl)
         }
-
-        val historyEntry =
-            waitForHistory(
-                context = context,
-                worker = worker,
-                scopeId = workerScopeId,
-                workerWaitDetail = workerWaitDetail,
-                baseUrl = baseUrl,
-                promptId = promptId,
-                auth = auth,
-            )
-        val urls =
-            collectImageUrls(
-                baseUrl = baseUrl,
-                workflow = workflow,
-                historyEntry = historyEntry,
-                outputTitlePreferences = BASE_OUTPUT_TITLE_PREFERENCES,
-                preferredTitleIncludes = preferredTitleIncludes,
-                strictPreferredMatch = strictPreferredMatch,
-                pickLatestImageOnly = pickLatestImageOnly,
-            )
-        return ComfyRunResult(
-            imageUrls = urls,
-            seed = seed,
-            model = checkpointName,
-        )
     }
 
     private fun queuePrompt(baseUrl: String, workflow: JSONObject, auth: JSONObject?): JSONObject {
@@ -1072,6 +1132,311 @@ object TopicGenerationNativeExecutor {
         }
     }
 
+    private fun setImageFilenameOnNode(workflow: JSONObject, nodeId: String, filename: String) {
+        if (nodeId.isBlank() || filename.isBlank()) return
+        val inputs = workflow.optJSONObject(nodeId)?.optJSONObject("inputs") ?: return
+        inputs.put("image", filename)
+    }
+
+    private fun uploadReferenceImage(
+        context: Context,
+        source: String,
+        baseUrl: String,
+        auth: JSONObject?,
+    ): String {
+        val payload = resolveReferenceImagePayload(context, source, baseUrl, auth)
+        val filename = "tg_gf_ref_${System.currentTimeMillis()}_${(Math.random() * 100_000).toInt()}.${payload.extension}"
+        val boundary = "----tg_gf_ref_${UUID.randomUUID()}"
+
+        val response =
+            uploadMultipartImage(
+                url = "$baseUrl/upload/image",
+                filename = filename,
+                payload = payload,
+                boundary = boundary,
+                auth = auth,
+            )
+        if (response.code !in 200..299) {
+            throw IllegalStateException("Comfy /upload/image error (${response.code}): ${response.body}")
+        }
+        val parsed = parseJsonObject(response.body)
+        return parsed.optString("name", filename).trim().ifEmpty { filename }
+    }
+
+    private fun uploadMultipartImage(
+        url: String,
+        filename: String,
+        payload: ReferenceImagePayload,
+        boundary: String,
+        auth: JSONObject?,
+    ): HttpResult {
+        val connection = URI(url).toURL().openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 30_000
+        connection.doOutput = true
+        connection.useCaches = false
+        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+        val authHeaders = buildAuthHeaders(auth)
+        for ((name, value) in authHeaders) {
+            connection.setRequestProperty(name, value)
+        }
+
+        BufferedOutputStream(connection.outputStream).use { stream ->
+            writeMultipartTextPart(stream, boundary, "image", filename, payload.mimeType, payload.bytes)
+            writeMultipartTextField(stream, boundary, "overwrite", "true")
+            writeMultipartTextField(stream, boundary, "type", "input")
+            stream.write("--$boundary--\r\n".toByteArray(StandardCharsets.UTF_8))
+        }
+
+        val code = connection.responseCode
+        val body =
+            try {
+                val stream =
+                    if (code in 200..299) {
+                        connection.inputStream
+                    } else {
+                        connection.errorStream ?: connection.inputStream
+                    }
+                BufferedInputStream(stream).use { input ->
+                    InputStreamReader(input, StandardCharsets.UTF_8).use { reader ->
+                        reader.readText()
+                    }
+                }
+            } catch (_: Exception) {
+                ""
+            } finally {
+                connection.disconnect()
+            }
+        return HttpResult(code = code, body = body)
+    }
+
+    private fun writeMultipartTextPart(
+        stream: BufferedOutputStream,
+        boundary: String,
+        fieldName: String,
+        filename: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ) {
+        stream.write("--$boundary\r\n".toByteArray(StandardCharsets.UTF_8))
+        stream.write(
+            "Content-Disposition: form-data; name=\"$fieldName\"; filename=\"$filename\"\r\n".toByteArray(
+                StandardCharsets.UTF_8,
+            ),
+        )
+        stream.write("Content-Type: $mimeType\r\n\r\n".toByteArray(StandardCharsets.UTF_8))
+        stream.write(bytes)
+        stream.write("\r\n".toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun writeMultipartTextField(
+        stream: BufferedOutputStream,
+        boundary: String,
+        fieldName: String,
+        value: String,
+    ) {
+        stream.write("--$boundary\r\n".toByteArray(StandardCharsets.UTF_8))
+        stream.write(
+            "Content-Disposition: form-data; name=\"$fieldName\"\r\n\r\n".toByteArray(
+                StandardCharsets.UTF_8,
+            ),
+        )
+        stream.write(value.toByteArray(StandardCharsets.UTF_8))
+        stream.write("\r\n".toByteArray(StandardCharsets.UTF_8))
+    }
+
+    private fun resolveReferenceImagePayload(
+        context: Context,
+        source: String,
+        baseUrl: String,
+        auth: JSONObject?,
+    ): ReferenceImagePayload {
+        val normalizedSource = source.trim()
+        if (normalizedSource.isBlank()) {
+            throw IllegalStateException("Reference image source is empty.")
+        }
+        if (normalizedSource.startsWith("idb://")) {
+            val imageAssetId = normalizedSource.removePrefix("idb://").trim()
+            if (imageAssetId.isBlank()) {
+                throw IllegalStateException("Invalid idb reference image source.")
+            }
+            val imageAssetDataUrl = readImageAssetDataUrlById(context, imageAssetId)
+                ?: throw IllegalStateException("Reference image $imageAssetId not found in local imageAssets store.")
+            return resolveReferenceImagePayload(
+                context = context,
+                source = imageAssetDataUrl,
+                baseUrl = baseUrl,
+                auth = auth,
+            )
+        }
+        if (normalizedSource.startsWith("data:")) {
+            return decodeDataUrlToReferencePayload(normalizedSource)
+        }
+        return downloadReferenceImagePayload(normalizedSource, baseUrl, auth)
+    }
+
+    private fun readImageAssetDataUrlById(context: Context, imageAssetId: String): String? {
+        val repository = LocalRepository(context)
+        try {
+            val imageAssets = readStoreArray(repository, "imageAssets")
+            for (index in 0 until imageAssets.length()) {
+                val imageAsset = imageAssets.optJSONObject(index) ?: continue
+                if (imageAsset.optString("id", "").trim() != imageAssetId) continue
+                val dataUrl = imageAsset.optString("dataUrl", "").trim()
+                if (dataUrl.isNotEmpty()) {
+                    return dataUrl
+                }
+                return null
+            }
+            return null
+        } finally {
+            repository.close()
+        }
+    }
+
+    private fun decodeDataUrlToReferencePayload(dataUrl: String): ReferenceImagePayload {
+        val commaIndex = dataUrl.indexOf(',')
+        if (commaIndex <= 0 || !dataUrl.startsWith("data:")) {
+            throw IllegalStateException("Invalid data URL reference image payload.")
+        }
+        val metadata = dataUrl.substring(5, commaIndex)
+        val payload = dataUrl.substring(commaIndex + 1)
+        val mimeType = normalizeReferenceMimeType(metadata.substringBefore(';').trim())
+        val isBase64Payload =
+            metadata
+                .split(";")
+                .any { token -> token.equals("base64", ignoreCase = true) }
+        val bytes =
+            if (isBase64Payload) {
+                Base64.decode(payload, Base64.DEFAULT)
+            } else {
+                URLDecoder.decode(payload, StandardCharsets.UTF_8.toString()).toByteArray(StandardCharsets.UTF_8)
+            }
+        if (bytes.isEmpty()) {
+            throw IllegalStateException("Decoded data URL reference image is empty.")
+        }
+        return ReferenceImagePayload(
+            bytes = bytes,
+            extension = extensionFromMimeType(mimeType),
+            mimeType = mimeType,
+        )
+    }
+
+    private fun downloadReferenceImagePayload(
+        source: String,
+        baseUrl: String,
+        auth: JSONObject?,
+    ): ReferenceImagePayload {
+        val normalizedSource = normalizeReferenceSourceUrl(source, baseUrl)
+        var response =
+            requestBinary(
+                url = normalizedSource,
+                method = "GET",
+                payload = null,
+                auth = null,
+                connectTimeoutMs = 10_000,
+                readTimeoutMs = 30_000,
+                cacheNoStore = true,
+            )
+        if (response.code !in 200..299 && auth != null) {
+            response =
+                requestBinary(
+                    url = normalizedSource,
+                    method = "GET",
+                    payload = null,
+                    auth = auth,
+                    connectTimeoutMs = 10_000,
+                    readTimeoutMs = 30_000,
+                    cacheNoStore = true,
+                )
+        }
+        if (response.code !in 200..299 || response.bytes.isEmpty()) {
+            val errorPreview = response.bodyText.replace(Regex("\\s+"), " ").trim().take(220)
+            throw IllegalStateException(
+                "Reference image fetch failed (${response.code}): $errorPreview",
+            )
+        }
+        val mimeType =
+            normalizeReferenceMimeType(
+                response.contentType?.substringBefore(';')?.trim(),
+            )
+        return ReferenceImagePayload(
+            bytes = response.bytes,
+            extension = extensionFromMimeType(mimeType),
+            mimeType = mimeType,
+        )
+    }
+
+    private fun shouldIgnoreReferenceImageError(error: Exception): Boolean {
+        val normalizedMessage = error.message?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return normalizedMessage.contains("not found in local imageassets store") ||
+            normalizedMessage.contains("invalid idb reference image source") ||
+            normalizedMessage.contains("reference image source is empty") ||
+            normalizedMessage.contains("reference image fetch failed") ||
+            normalizedMessage.contains("comfy /upload/image error")
+    }
+
+    private fun normalizeReferenceSourceUrl(source: String, baseUrl: String): String {
+        val sourceUri =
+            try {
+                URI(source)
+            } catch (_: Exception) {
+                return source
+            }
+        val sourceHost = sourceUri.host?.trim().orEmpty()
+        if (!isLoopbackHost(sourceHost)) {
+            return source
+        }
+
+        val baseUri =
+            try {
+                URI(baseUrl)
+            } catch (_: Exception) {
+                return source
+            }
+        val baseScheme = baseUri.scheme?.trim().orEmpty()
+        val baseHost = baseUri.host?.trim().orEmpty()
+        if (baseScheme.isEmpty() || baseHost.isEmpty()) {
+            return source
+        }
+
+        return try {
+            URI(
+                baseScheme,
+                sourceUri.userInfo,
+                baseHost,
+                baseUri.port,
+                sourceUri.path,
+                sourceUri.query,
+                sourceUri.fragment,
+            ).toString()
+        } catch (_: Exception) {
+            source
+        }
+    }
+
+    private fun normalizeReferenceMimeType(raw: String?): String {
+        val normalized = raw?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return when {
+            normalized.contains("webp") -> "image/webp"
+            normalized.contains("jpeg") || normalized.contains("jpg") -> "image/jpeg"
+            normalized.contains("png") -> "image/png"
+            else -> "image/png"
+        }
+    }
+
+    private fun extensionFromMimeType(mimeType: String): String {
+        val normalized = mimeType.trim().lowercase(Locale.ROOT)
+        return when {
+            normalized.contains("webp") -> "webp"
+            normalized.contains("jpeg") || normalized.contains("jpg") -> "jpg"
+            else -> "png"
+        }
+    }
+
     private fun appendImageAssets(
         repository: LocalRepository,
         imageUrls: List<String>,
@@ -1258,6 +1623,173 @@ object TopicGenerationNativeExecutor {
         return if (normalized.isEmpty()) COMFY_DEFAULT_BASE_URL else normalized
     }
 
+    private fun resolveComfyBaseUrl(baseUrl: String, auth: JSONObject?): String {
+        val candidates = buildComfyBaseUrlCandidates(baseUrl)
+        if (candidates.size <= 1) return baseUrl
+
+        var lastError: Exception? = null
+        for (candidate in candidates) {
+            try {
+                val response =
+                    requestJson(
+                        url = "$candidate/system_stats",
+                        method = "GET",
+                        payload = null,
+                        auth = auth,
+                        connectTimeoutMs = 4_000,
+                        readTimeoutMs = 4_000,
+                        cacheNoStore = true,
+                    )
+                if (response.code in 200..599) {
+                    return candidate
+                }
+            } catch (error: Exception) {
+                lastError = error
+            }
+        }
+
+        if (lastError != null) {
+            throw IllegalStateException(
+                "ComfyUI is unreachable for candidates: ${candidates.joinToString(", ")}",
+                lastError,
+            )
+        }
+        return baseUrl
+    }
+
+    private fun buildComfyBaseUrlCandidates(baseUrl: String): List<String> {
+        val normalized = normalizeBaseUrl(baseUrl)
+        val candidates = linkedSetOf(normalized)
+        val parsed =
+            try {
+                URI(normalized)
+            } catch (_: Exception) {
+                return candidates.toList()
+            }
+        val host = parsed.host?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        if (!isLoopbackHost(host)) {
+            return candidates.toList()
+        }
+
+        listOf("10.0.2.2", "10.0.3.2")
+            .mapNotNull { alias -> replaceUriHost(parsed, alias) }
+            .map { candidate -> normalizeBaseUrl(candidate) }
+            .forEach { candidate -> candidates.add(candidate) }
+        return candidates.toList()
+    }
+
+    private fun isLoopbackHost(host: String): Boolean {
+        val normalized = host.trim().lowercase(Locale.ROOT)
+        return normalized == "127.0.0.1" ||
+            normalized == "localhost" ||
+            normalized == "::1" ||
+            normalized == "0:0:0:0:0:0:0:1"
+    }
+
+    private fun replaceUriHost(uri: URI, host: String): String? {
+        return try {
+            URI(
+                uri.scheme,
+                uri.userInfo,
+                host,
+                uri.port,
+                uri.path,
+                uri.query,
+                uri.fragment,
+            ).toString()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun stopComfyExecution(baseUrl: String, auth: JSONObject?) {
+        interruptComfyExecution(baseUrl, auth)
+        clearComfyQueue(baseUrl, auth)
+    }
+
+    private fun interruptComfyExecution(baseUrl: String, auth: JSONObject?) {
+        try {
+            requestJson(
+                url = "$baseUrl/interrupt",
+                method = "POST",
+                payload = null,
+                auth = auth,
+                connectTimeoutMs = 2_500,
+                readTimeoutMs = 2_500,
+            )
+        } catch (_: Exception) {
+            // Best-effort interrupt.
+        }
+    }
+
+    private fun clearComfyQueue(baseUrl: String, auth: JSONObject?) {
+        try {
+            requestJson(
+                url = "$baseUrl/queue",
+                method = "POST",
+                payload = JSONObject().put("clear", true).toString(),
+                auth = auth,
+                connectTimeoutMs = 2_500,
+                readTimeoutMs = 2_500,
+            )
+            return
+        } catch (_: Exception) {
+            // Continue fallback payload.
+        }
+
+        try {
+            requestJson(
+                url = "$baseUrl/queue",
+                method = "POST",
+                payload = JSONObject().put("delete", "all").toString(),
+                auth = auth,
+                connectTimeoutMs = 2_500,
+                readTimeoutMs = 2_500,
+            )
+        } catch (_: Exception) {
+            // Best-effort queue clear.
+        }
+    }
+
+    private fun normalizeComfyError(
+        error: Exception,
+        requestedBaseUrl: String,
+        resolvedBaseUrl: String,
+    ): Exception {
+        if (!isLikelyNetworkError(error)) {
+            return error
+        }
+
+        val hints = mutableListOf<String>()
+        hints.add("Не удалось подключиться к ComfyUI ($resolvedBaseUrl).")
+        if (isLoopbackComfyUrl(requestedBaseUrl)) {
+            hints.add(
+                "Локальный localhost обычно недоступен из Android устройства: для эмулятора укажи http://10.0.2.2:8188, для физического устройства — LAN IP хоста.",
+            )
+        }
+        hints.add("Исходная ошибка: ${error.message ?: "network_error"}")
+        return IllegalStateException(hints.joinToString(" "), error)
+    }
+
+    private fun isLoopbackComfyUrl(baseUrl: String): Boolean {
+        val host =
+            try {
+                URI(baseUrl).host?.trim().orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+        return isLoopbackHost(host)
+    }
+
+    private fun isLikelyNetworkError(error: Throwable?): Boolean {
+        var cursor = error
+        while (cursor != null) {
+            if (cursor is IOException) return true
+            cursor = cursor.cause
+        }
+        return false
+    }
+
     private fun parseJsonObject(raw: String?): JSONObject {
         if (raw.isNullOrBlank()) return JSONObject()
         return try {
@@ -1271,6 +1803,79 @@ object TopicGenerationNativeExecutor {
         val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
         formatter.timeZone = TimeZone.getTimeZone("UTC")
         return formatter.format(Date())
+    }
+
+    private fun requestBinary(
+        url: String,
+        method: String,
+        payload: String?,
+        auth: JSONObject?,
+        connectTimeoutMs: Int,
+        readTimeoutMs: Int,
+        cacheNoStore: Boolean = false,
+    ): BinaryHttpResult {
+        val connection = URI(url).toURL().openConnection() as HttpURLConnection
+        connection.requestMethod = method
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = connectTimeoutMs
+        connection.readTimeout = if (readTimeoutMs <= 0) 0 else readTimeoutMs
+        connection.useCaches = false
+        connection.setRequestProperty("Accept", "*/*")
+        if (cacheNoStore) {
+            connection.setRequestProperty("Cache-Control", "no-store")
+            connection.setRequestProperty("Pragma", "no-cache")
+        }
+        val authHeaders = buildAuthHeaders(auth)
+        for ((name, value) in authHeaders) {
+            connection.setRequestProperty(name, value)
+        }
+        if (!payload.isNullOrBlank()) {
+            connection.doOutput = true
+            connection.setRequestProperty("Content-Type", "application/json")
+            BufferedOutputStream(connection.outputStream).use { stream ->
+                stream.write(payload.toByteArray(StandardCharsets.UTF_8))
+            }
+        }
+
+        val code = connection.responseCode
+        val contentType = connection.contentType
+        val response =
+            try {
+                if (code in 200..299) {
+                    BufferedInputStream(connection.inputStream).use { input ->
+                        val bytes = input.readBytes()
+                        BinaryHttpResult(
+                            code = code,
+                            bytes = bytes,
+                            bodyText = "",
+                            contentType = contentType,
+                        )
+                    }
+                } else {
+                    val bodyText =
+                        BufferedInputStream(connection.errorStream ?: connection.inputStream).use { input ->
+                            InputStreamReader(input, StandardCharsets.UTF_8).use { reader ->
+                                reader.readText()
+                            }
+                        }
+                    BinaryHttpResult(
+                        code = code,
+                        bytes = ByteArray(0),
+                        bodyText = bodyText,
+                        contentType = contentType,
+                    )
+                }
+            } catch (_: Exception) {
+                BinaryHttpResult(
+                    code = code,
+                    bytes = ByteArray(0),
+                    bodyText = "",
+                    contentType = contentType,
+                )
+            } finally {
+                connection.disconnect()
+            }
+        return response
     }
 
     private fun requestJson(

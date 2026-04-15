@@ -9,6 +9,7 @@ import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URI
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 import kotlin.math.max
 import kotlin.math.min
 
@@ -19,6 +20,7 @@ data class NativeGroupOrchestratorDecision(
     val waitForUser: Boolean,
     val waitReason: String?,
     val userContextAction: String?,
+    val llmDebug: NativeLlmCallDebug?,
 )
 
 data class NativeLlmResponse(
@@ -28,11 +30,45 @@ data class NativeLlmResponse(
     val comfyPrompts: List<String>,
     val comfyImageDescription: String?,
     val comfyImageDescriptions: List<String>,
+    val llmDebug: NativeLlmCallDebug?,
+)
+
+data class NativeLlmCallDebug(
+    val toolModeRequested: Boolean,
+    val toolModeActive: Boolean,
+    val expectedToolName: String?,
+    val actualToolName: String?,
+    val responseSource: String,
+    val fallbackReason: String?,
+    val httpStatus: Int?,
+    val parsedField: String?,
 )
 
 private data class HttpResult(
     val code: Int,
     val body: String,
+)
+
+private data class LlmChoiceExtractionResult(
+    val content: String,
+    val source: String,
+    val toolName: String?,
+)
+
+private data class ToolCallArgumentsResult(
+    val arguments: String,
+    val toolName: String?,
+)
+
+private data class NamedStringEntry(
+    val key: String,
+    val value: String,
+)
+
+private data class LlmToolDefinition(
+    val name: String,
+    val description: String,
+    val parameters: JSONObject,
 )
 
 object NativeLlmClient {
@@ -43,12 +79,33 @@ object NativeLlmClient {
     private const val READ_TIMEOUT_MS = 60_000
     private const val MAX_RETRIES = 3
 
+    private data class OrchestratorParticipantProfile(
+        val personaId: String,
+        val name: String,
+        val archetype: String,
+        val character: String,
+        val voiceTone: String,
+        val lexicalStyle: String,
+        val sentenceLength: String,
+        val formality: Int,
+        val expressiveness: Int,
+        val emoji: Int,
+        val initiative: Int,
+        val curiosity: Int,
+        val empathy: Int,
+        val appearance: String,
+    )
+
+    private val mentionTokenCleanupRegex =
+        Regex("[.,!?;:()\\[\\]{}\"'`~@#\\$%^&*+=<>/\\\\|-]+")
+
     fun requestGroupOrchestratorDecision(
         settings: JSONObject,
         room: JSONObject,
         participants: JSONArray,
         personas: JSONArray,
         messages: JSONArray,
+        events: JSONArray,
         roomId: String,
         userName: String,
     ): NativeGroupOrchestratorDecision? {
@@ -58,65 +115,86 @@ object NativeLlmClient {
             settings.optString("groupOrchestratorModel", settings.optString("model", "")).trim()
         if (model.isBlank()) return null
 
-        val participantList = buildParticipantList(participants, personas, roomId)
-        if (participantList.isEmpty()) return null
-        val recentMessages = buildRecentMessages(messages, roomId, 10)
+        val participantProfiles = buildOrchestratorParticipantProfiles(participants, personas, roomId)
+        if (participantProfiles.isEmpty()) return null
+        val participantNameById = participantProfiles.associate { it.personaId to it.name }
+
+        val focusedUserMessage = resolveFocusedUserMessage(messages, room, roomId)
+        val mentionPriorityHints = buildMentionPriorityHints(focusedUserMessage, participantNameById, userName)
+        val participantRuntimeHints =
+            buildParticipantRuntimeHints(
+                participants = participants,
+                participantProfiles = participantProfiles,
+                roomId = roomId,
+            )
+        val recentMessageLines =
+            buildRecentMessageLines(
+                messages = messages,
+                roomId = roomId,
+                limit = 8,
+                contentMaxLen = 180,
+            )
+        val recentEventLines =
+            buildRecentEventLines(
+                events = events,
+                roomId = roomId,
+                limit = 8,
+                payloadMaxLen = 200,
+            )
 
         val systemPrompt =
-            """
-            You are a strict group chat orchestrator.
-            Return ONLY JSON object with fields:
-            - status: "spoke" | "waiting" | "skipped"
-            - reason: short snake_case reason
-            - speakerPersonaId: persona id when status="spoke"
-            - waitForUser: boolean
-            - waitReason: optional text
-            - userContextAction: "keep" | "clear" (optional)
-            Never return markdown.
-            """.trimIndent()
+            buildGroupOrchestratorSystemPrompt(
+                room = room,
+                userName = userName,
+                participants = participantProfiles,
+            )
         val userPrompt =
-            buildString {
-                appendLine("roomId=$roomId")
-                appendLine("roomMode=${room.optString("mode", "personas_plus_user")}")
-                appendLine("userName=$userName")
-                appendLine("participants:")
-                for (participant in participantList) {
-                    appendLine("- ${participant.first} (${participant.second})")
-                }
-                appendLine("recentMessages:")
-                if (recentMessages.isEmpty()) {
-                    appendLine("- none")
-                } else {
-                    for (line in recentMessages) {
-                        appendLine("- $line")
-                    }
-                }
-            }.trim()
+            buildGroupOrchestratorUserPrompt(
+                lastUserMessageContent = focusedUserMessage?.optString("content", "").orEmpty(),
+                mentionPriorityHints = mentionPriorityHints,
+                participantRuntimeHints = participantRuntimeHints,
+                recentMessageLines = recentMessageLines,
+                recentEventLines = recentEventLines,
+            )
 
         val response =
             requestChatCompletionsWithRetry(
                 baseUrl = baseUrl,
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
-                temperature = clampTemperature(settings.optDouble("temperature", 0.45)),
-                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 320), minValue = 120, maxValue = 420),
+                temperature = clampTemperature(settings.optDouble("temperature", 0.45), minValue = 0.15, maxValue = 0.7),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 320), minValue = 120, maxValue = 320),
                 systemPrompt = systemPrompt,
                 userPrompt = userPrompt,
                 forceJsonObject = true,
+                toolDefinition = buildGroupOrchestratorToolDefinition(),
             )
         val parsed = parseJsonObjectLoose(response.content)
         val status = normalizeStatus(parsed.optString("status", ""))
         if (status == null) return null
-        val reason = parsed.optString("reason", "native_llm_decision").trim().ifEmpty { "native_llm_decision" }
-        val speakerPersonaId = parsed.optString("speakerPersonaId", "").trim().ifEmpty { null }
+        val reason = parsed.optString("reason", "llm_orchestrator_decision").trim().ifEmpty { "llm_orchestrator_decision" }
+        val speakerPersonaId =
+            parsed.optString("speakerPersonaId", parsed.optString("speaker_persona_id", ""))
+                .trim()
+                .ifEmpty { null }
         val waitForUser =
-            if (parsed.has("waitForUser")) {
-                parsed.optBoolean("waitForUser", status == "waiting")
+            if (parsed.has("waitForUser") || parsed.has("wait_for_user")) {
+                if (parsed.has("waitForUser")) {
+                    parsed.optBoolean("waitForUser", status == "waiting")
+                } else {
+                    parsed.optBoolean("wait_for_user", status == "waiting")
+                }
             } else {
                 status == "waiting"
             }
-        val waitReason = parsed.optString("waitReason", "").trim().ifEmpty { null }
-        val userContextAction = normalizeUserContextAction(parsed.optString("userContextAction", ""))
+        val waitReason =
+            parsed.optString("waitReason", parsed.optString("wait_reason", ""))
+                .trim()
+                .ifEmpty { null }
+        val userContextAction =
+            normalizeUserContextAction(
+                parsed.optString("userContextAction", parsed.optString("user_context_action", "")),
+            )
         return NativeGroupOrchestratorDecision(
             status = status,
             reason = reason,
@@ -124,6 +202,7 @@ object NativeLlmClient {
             waitForUser = waitForUser,
             waitReason = waitReason,
             userContextAction = userContextAction,
+            llmDebug = response.llmDebug,
         )
     }
 
@@ -131,7 +210,14 @@ object NativeLlmClient {
         settings: JSONObject,
         room: JSONObject,
         speakerPersona: JSONObject,
+        participants: JSONArray,
+        personas: JSONArray,
         messages: JSONArray,
+        events: JSONArray,
+        personaStates: JSONArray,
+        relationEdges: JSONArray,
+        sharedMemories: JSONArray,
+        privateMemories: JSONArray,
         roomId: String,
         userName: String,
     ): NativeLlmResponse? {
@@ -141,65 +227,135 @@ object NativeLlmClient {
         if (model.isBlank()) return null
 
         val personaId = speakerPersona.optString("id", "").trim()
-        val personaName = speakerPersona.optString("name", "").trim().ifEmpty { "Persona" }
-        val personalityPrompt = speakerPersona.optString("personalityPrompt", "").trim()
-        val stylePrompt = speakerPersona.optString("stylePrompt", "").trim()
-        val recentMessages = buildRecentMessages(messages, roomId, 8)
+        val previousResponseId = findLastPersonaResponseId(events, roomId, personaId)
+        val participantNameById = buildParticipantNameMap(participants, personas, roomId)
+        val participantNames =
+            participantNameById
+                .filterKeys { it != personaId }
+                .values
+                .filter { it.isNotBlank() }
+                .distinct()
+                .toList()
+
+        val focusedUserMessage = resolveFocusedUserMessage(messages, room, roomId)
+        val mentionContext = buildMentionContext(focusedUserMessage, personaId)
+        val recentMessageLines =
+            buildRecentMessageLines(
+                messages = messages,
+                roomId = roomId,
+                limit = if (previousResponseId == null) 8 else 5,
+                contentMaxLen = if (previousResponseId == null) 220 else 170,
+            )
+        val relationLines =
+            buildRelationLines(
+                relationEdges = relationEdges,
+                roomId = roomId,
+                fromPersonaId = personaId,
+                participantNameById = participantNameById,
+                limit = 8,
+            )
+        val sharedMemoryLines =
+            buildMemoryLines(
+                memories = sharedMemories,
+                roomId = roomId,
+                personaId = null,
+                limit = 5,
+            )
+        val privateMemoryLines =
+            buildMemoryLines(
+                memories = privateMemories,
+                roomId = roomId,
+                personaId = personaId,
+                limit = 5,
+            )
+        val recentEventLines =
+            buildRecentEventLines(
+                events = events,
+                roomId = roomId,
+                limit = 6,
+                payloadMaxLen = 220,
+            )
+        val personaStateLine =
+            buildPersonaStateLine(
+                personaStates = personaStates,
+                roomId = roomId,
+                personaId = personaId,
+            )
 
         val systemPrompt =
-            buildString {
-                appendLine("You are persona \"$personaName\" ($personaId).")
-                appendLine(
-                    "Return ONLY JSON with fields: visibleText (required), " +
-                        "comfyPrompts (optional string array), " +
-                        "comfyImageDescriptions (optional string array).",
-                )
-                appendLine("No markdown, no narration, no speaker labels.")
-                appendLine("Keep response concise and conversational.")
-                if (personalityPrompt.isNotBlank()) {
-                    appendLine("Persona personality: $personalityPrompt")
-                }
-                if (stylePrompt.isNotBlank()) {
-                    appendLine("Persona style: $stylePrompt")
-                }
-            }.trim()
+            buildGroupPersonaSystemPrompt(
+                room = room,
+                speakerPersona = speakerPersona,
+                userName = userName,
+                participantNames = participantNames,
+            )
         val userPrompt =
-            buildString {
-                appendLine("roomMode=${room.optString("mode", "personas_plus_user")}")
-                appendLine("userName=$userName")
-                appendLine("recentMessages:")
-                if (recentMessages.isEmpty()) {
-                    appendLine("- none")
-                } else {
-                    for (line in recentMessages) {
-                        appendLine("- $line")
-                    }
-                }
-            }.trim()
+            buildGroupPersonaUserPrompt(
+                userName = userName,
+                lastUserMessageContent = focusedUserMessage?.optString("content", "").orEmpty(),
+                recentMessageLines = recentMessageLines,
+                personaStateLine = personaStateLine,
+                relationLines = relationLines,
+                sharedMemoryLines = sharedMemoryLines,
+                privateMemoryLines = privateMemoryLines,
+                recentEventLines = recentEventLines,
+                mentionContext = mentionContext,
+            )
 
         val response =
             requestChatCompletionsWithRetry(
                 baseUrl = baseUrl,
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
-                temperature = clampTemperature(settings.optDouble("temperature", 0.7)),
-                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 500), minValue = 120, maxValue = 520),
+                temperature = clampTemperature(settings.optDouble("temperature", 0.7), minValue = 0.25, maxValue = 0.9),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 500), minValue = 120, maxValue = 500),
                 systemPrompt = systemPrompt,
                 userPrompt = userPrompt,
                 forceJsonObject = true,
+                toolDefinition = buildGroupPersonaTurnToolDefinition(),
             )
         val parsed = parseJsonObjectLoose(response.content)
-        val visibleText = sanitizeVisibleText(parsed.optString("visibleText", ""))
-        if (visibleText.isBlank()) return null
+        val visibleTextEntry =
+            readFirstNonBlankEntry(
+                parsed,
+                "visibleText",
+                "visible_text",
+                "speech",
+                "text",
+                "reply",
+                "message",
+            )
+        val visibleTextRaw = visibleTextEntry?.value.orEmpty()
+        var visibleText = sanitizeVisibleText(visibleTextRaw)
+        var parsedVisibleField = visibleTextEntry?.key
+        if (visibleText.isBlank()) {
+            val rawContent = response.content.trim()
+            val looksLikeStructuredPayload = rawContent.startsWith("{") || rawContent.startsWith("[")
+            if (!looksLikeStructuredPayload) {
+                visibleText = sanitizeVisibleText(rawContent)
+                if (visibleText.isNotBlank()) {
+                    parsedVisibleField = "raw_content_fallback"
+                }
+            }
+        }
+        val llmDebug = response.llmDebug?.copy(parsedField = parsedVisibleField)
         val comfyPrompts =
             parseStringArrayFlexible(parsed.opt("comfyPrompts"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfy_prompts")) }
                 .ifEmpty {
-                    parsed.optString("comfyPrompt", "").trim().ifEmpty { null }?.let { listOf(it) } ?: emptyList()
+                    parsed.optString("comfyPrompt", parsed.optString("comfy_prompt", ""))
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
                 }
         val comfyImageDescriptions =
             parseStringArrayFlexible(parsed.opt("comfyImageDescriptions"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfy_image_descriptions")) }
                 .ifEmpty {
-                    parsed.optString("comfyImageDescription", "").trim().ifEmpty { null }?.let { listOf(it) } ?: emptyList()
+                    parsed.optString("comfyImageDescription", parsed.optString("comfy_image_description", ""))
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
                 }
         return NativeLlmResponse(
             content = visibleText,
@@ -208,14 +364,86 @@ object NativeLlmClient {
             comfyPrompts = comfyPrompts,
             comfyImageDescription = comfyImageDescriptions.firstOrNull(),
             comfyImageDescriptions = comfyImageDescriptions,
+            llmDebug = llmDebug,
         )
     }
 
-    private fun buildParticipantList(
+    fun generateComfyPromptsFromImageDescriptions(
+        settings: JSONObject,
+        speakerPersona: JSONObject,
+        imageDescriptions: List<String>,
+    ): List<String> {
+        val descriptions =
+            imageDescriptions
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+        if (descriptions.isEmpty()) return emptyList()
+
+        val provider = settings.optString("groupPersonaProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model =
+            settings
+                .optString(
+                    "imagePromptModel",
+                    settings.optString("groupPersonaModel", settings.optString("model", "")),
+                ).trim()
+        if (model.isBlank()) return emptyList()
+
+        val auth = resolveProviderAuth(settings, provider)
+        val personaName = speakerPersona.optString("name", "").trim().ifEmpty { "Unknown" }
+        val appearanceSummary = summarizePersonaAppearance(speakerPersona).ifBlank { "-" }
+        val stylePrompt = clipText(speakerPersona.optString("stylePrompt", "").trim(), 200).ifBlank { "-" }
+        val personalityPrompt =
+            clipText(speakerPersona.optString("personalityPrompt", "").trim(), 200).ifBlank { "-" }
+        val toolDefinition = buildComfyPromptConversionToolDefinition()
+
+        val prompts = mutableListOf<String>()
+        for ((index, description) in descriptions.withIndex()) {
+            val response =
+                requestChatCompletionsWithRetry(
+                    baseUrl = baseUrl,
+                    model = model,
+                    auth = auth,
+                    temperature =
+                        clampTemperature(
+                            settings.optDouble("temperature", 0.55),
+                            minValue = 0.35,
+                            maxValue = 0.75,
+                        ),
+                    maxTokens = clampMaxTokens(settings.optInt("maxTokens", 520), minValue = 180, maxValue = 700),
+                    systemPrompt = buildImageDescriptionToComfyPromptSystemPrompt(),
+                    userPrompt =
+                        buildImageDescriptionToComfyPromptUserPrompt(
+                            personaName = personaName,
+                            appearanceSummary = appearanceSummary,
+                            stylePrompt = stylePrompt,
+                            personalityPrompt = personalityPrompt,
+                            imageDescription = description,
+                            iteration = index + 1,
+                        ),
+                    forceJsonObject = true,
+                    toolDefinition = toolDefinition,
+                )
+            val payload = parseJsonObjectLoose(response.content)
+            val extracted = extractComfyPromptsFromConversionPayload(payload, response.content)
+            if (extracted.isEmpty()) {
+                throw IllegalStateException("comfy_prompt_conversion_empty_response_${index + 1}")
+            }
+            prompts.addAll(extracted)
+        }
+
+        return prompts
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+    }
+
+    private fun buildParticipantNameMap(
         participants: JSONArray,
         personas: JSONArray,
         roomId: String,
-    ): List<Pair<String, String>> {
+    ): Map<String, String> {
         val personaNameById = mutableMapOf<String, String>()
         for (index in 0 until personas.length()) {
             val persona = personas.optJSONObject(index) ?: continue
@@ -224,51 +452,879 @@ object NativeLlmClient {
             val personaName = persona.optString("name", "").trim().ifEmpty { personaId }
             personaNameById[personaId] = personaName
         }
-        val result = mutableListOf<Pair<String, String>>()
+        val result = linkedMapOf<String, String>()
         for (index in 0 until participants.length()) {
             val participant = participants.optJSONObject(index) ?: continue
             if (participant.optString("roomId", "").trim() != roomId) continue
-            val role = participant.optString("role", "member").trim().lowercase()
-            if (role == "observer") continue
             val personaId = participant.optString("personaId", "").trim()
             if (personaId.isBlank()) continue
-            val personaName = personaNameById[personaId] ?: personaId
-            if (result.none { pair -> pair.second == personaId }) {
-                result.add(Pair(personaName, personaId))
-            }
+            result[personaId] = personaNameById[personaId] ?: personaId
         }
         return result
     }
 
-    private fun buildRecentMessages(
-        messages: JSONArray,
+    private fun buildOrchestratorParticipantProfiles(
+        participants: JSONArray,
+        personas: JSONArray,
         roomId: String,
-        limit: Int,
-    ): List<String> {
-        data class MessageRow(
-            val createdAt: String,
-            val line: String,
-        )
-        val rows = mutableListOf<MessageRow>()
-        for (index in 0 until messages.length()) {
-            val message = messages.optJSONObject(index) ?: continue
-            if (message.optString("roomId", "").trim() != roomId) continue
-            val authorType = message.optString("authorType", "").trim().ifEmpty { "unknown" }
-            val authorName = message.optString("authorDisplayName", "").trim().ifEmpty { authorType }
-            val content = message.optString("content", "").trim()
-            if (content.isBlank()) continue
-            val clipped = clipText(content, 220)
-            rows.add(
-                MessageRow(
-                    createdAt = message.optString("createdAt", ""),
-                    line = "[$authorType] $authorName: $clipped",
+    ): List<OrchestratorParticipantProfile> {
+        val personaById = mutableMapOf<String, JSONObject>()
+        for (index in 0 until personas.length()) {
+            val persona = personas.optJSONObject(index) ?: continue
+            val personaId = persona.optString("id", "").trim()
+            if (personaId.isNotBlank()) {
+                personaById[personaId] = persona
+            }
+        }
+        val profiles = mutableListOf<OrchestratorParticipantProfile>()
+        for (index in 0 until participants.length()) {
+            val participant = participants.optJSONObject(index) ?: continue
+            if (participant.optString("roomId", "").trim() != roomId) continue
+            val personaId = participant.optString("personaId", "").trim()
+            if (personaId.isBlank()) continue
+            val persona = personaById[personaId] ?: continue
+            val personaName = persona.optString("name", "").trim().ifEmpty { personaId }
+            profiles.add(
+                OrchestratorParticipantProfile(
+                    personaId = personaId,
+                    name = personaName,
+                    archetype = clipText(readNestedString(persona, "advanced", "core", "archetype"), 60),
+                    character = clipText(persona.optString("personalityPrompt", "").trim(), 120),
+                    voiceTone = clipText(readNestedString(persona, "advanced", "voice", "tone"), 40),
+                    lexicalStyle = clipText(readNestedString(persona, "advanced", "voice", "lexicalStyle"), 48),
+                    sentenceLength = normalizeSentenceLength(readNestedString(persona, "advanced", "voice", "sentenceLength")),
+                    formality = readNestedInt(persona, 50, "advanced", "voice", "formality"),
+                    expressiveness = readNestedInt(persona, 50, "advanced", "voice", "expressiveness"),
+                    emoji = readNestedInt(persona, 35, "advanced", "voice", "emoji"),
+                    initiative = readNestedInt(persona, 50, "advanced", "behavior", "initiative"),
+                    curiosity = readNestedInt(persona, 50, "advanced", "behavior", "curiosity"),
+                    empathy = readNestedInt(persona, 50, "advanced", "behavior", "empathy"),
+                    appearance = summarizePersonaAppearance(persona),
                 ),
             )
         }
-        return rows
-            .sortedBy { row -> row.createdAt }
-            .takeLast(max(1, limit))
-            .map { row -> row.line }
+        return profiles
+    }
+
+    private fun summarizePersonaAppearance(persona: JSONObject): String {
+        val appearance = persona.optJSONObject("appearance") ?: JSONObject()
+        val parts =
+            listOf(
+                appearance.optString("hair", "").trim(),
+                appearance.optString("eyes", "").trim(),
+                appearance.optString("bodyType", "").trim(),
+                appearance.optString("clothingStyle", "").trim(),
+            ).filter { it.isNotBlank() }
+        return clipText(parts.joinToString(", "), 120)
+    }
+
+    private fun resolveFocusedUserMessage(messages: JSONArray, room: JSONObject, roomId: String): JSONObject? {
+        val marker = room.optString("orchestratorUserFocusMessageId", "").trim()
+        if (marker.isNotBlank()) {
+            for (index in 0 until messages.length()) {
+                val message = messages.optJSONObject(index) ?: continue
+                if (message.optString("roomId", "").trim() != roomId) continue
+                if (!message.optString("authorType", "").trim().equals("user", ignoreCase = true)) continue
+                if (message.optString("id", "").trim() == marker) {
+                    return message
+                }
+            }
+        }
+        for (index in messages.length() - 1 downTo 0) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("roomId", "").trim() != roomId) continue
+            if (!message.optString("authorType", "").trim().equals("user", ignoreCase = true)) continue
+            return message
+        }
+        return null
+    }
+
+    private fun buildMentionPriorityHints(
+        focusedUserMessage: JSONObject?,
+        participantNameById: Map<String, String>,
+        userName: String,
+    ): List<String> {
+        val hints = mutableListOf<String>()
+        val mentions = focusedUserMessage?.optJSONArray("mentions") ?: JSONArray()
+        for (index in 0 until mentions.length()) {
+            val mention = mentions.optJSONObject(index) ?: continue
+            val targetType = mention.optString("targetType", "").trim().lowercase()
+            val targetId = mention.optString("targetId", "").trim()
+            when (targetType) {
+                "persona" -> {
+                    val name = participantNameById[targetId] ?: continue
+                    hints.add("persona:$name ($targetId)")
+                }
+                "user" -> hints.add("user:$userName")
+            }
+        }
+        return hints.distinct()
+    }
+
+    private fun buildParticipantRuntimeHints(
+        participants: JSONArray,
+        participantProfiles: List<OrchestratorParticipantProfile>,
+        roomId: String,
+    ): List<String> {
+        val profileById = participantProfiles.associateBy { it.personaId }
+        val nowMs = System.currentTimeMillis()
+        val hints = mutableListOf<String>()
+        for (index in 0 until participants.length()) {
+            val participant = participants.optJSONObject(index) ?: continue
+            if (participant.optString("roomId", "").trim() != roomId) continue
+            val personaId = participant.optString("personaId", "").trim()
+            if (personaId.isBlank()) continue
+            val profile = profileById[personaId] ?: continue
+            val initiativeBias = participant.optInt("initiativeBias", 0)
+            val aliveScore = participant.optInt("aliveScore", 0)
+            val muteUntil = participant.optString("muteUntil", "").trim()
+            val cooldown =
+                if (muteUntil.isBlank()) {
+                    "0"
+                } else {
+                    val parsedMuteUntilMs = parseIsoToMillisOrNull(muteUntil)
+                    if (parsedMuteUntilMs == null) {
+                        "NaN"
+                    } else {
+                        max(0L, parsedMuteUntilMs - nowMs).toString()
+                    }
+                }
+            hints.add(
+                "${profile.name} ($personaId): initiativeBias=$initiativeBias, aliveScore=$aliveScore, cooldownMs=$cooldown",
+            )
+        }
+        return hints
+    }
+
+    private fun buildRecentMessageLines(
+        messages: JSONArray,
+        roomId: String,
+        limit: Int,
+        contentMaxLen: Int,
+    ): List<String> {
+        val lines = mutableListOf<String>()
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("roomId", "").trim() != roomId) continue
+            val content = message.optString("content", "")
+            val authorName = clipText(message.optString("authorDisplayName", "").trim(), 36)
+            val authorType = message.optString("authorType", "").uppercase()
+            lines.add("$authorType $authorName: ${clipText(content, contentMaxLen)}")
+        }
+        return lines.takeLast(max(1, limit))
+    }
+
+    private fun buildRecentEventLines(
+        events: JSONArray,
+        roomId: String,
+        limit: Int,
+        payloadMaxLen: Int,
+    ): List<String> {
+        val lines = mutableListOf<String>()
+        for (index in 0 until events.length()) {
+            val event = events.optJSONObject(index) ?: continue
+            if (event.optString("roomId", "").trim() != roomId) continue
+            val type = event.optString("type", "")
+            lines.add("$type: ${compactPayload(event.opt("payload"), payloadMaxLen)}")
+        }
+        return lines.takeLast(max(1, limit))
+    }
+
+    private fun buildRelationLines(
+        relationEdges: JSONArray,
+        roomId: String,
+        fromPersonaId: String,
+        participantNameById: Map<String, String>,
+        limit: Int,
+    ): List<String> {
+        val lines = mutableListOf<String>()
+        for (index in 0 until relationEdges.length()) {
+            val edge = relationEdges.optJSONObject(index) ?: continue
+            if (edge.optString("roomId", "").trim() != roomId) continue
+            if (edge.optString("fromPersonaId", "").trim() != fromPersonaId) continue
+            val toPersonaId = edge.optString("toPersonaId", "").trim()
+            if (toPersonaId.isBlank()) continue
+            val name = participantNameById[toPersonaId] ?: toPersonaId
+            lines.add(
+                "$name: trust=${edge.optInt("trust", 50)}, affinity=${edge.optInt("affinity", 50)}, tension=${edge.optInt("tension", 0)}, respect=${edge.optInt("respect", 50)}",
+            )
+        }
+        return lines.take(max(1, limit))
+    }
+
+    private fun buildMemoryLines(
+        memories: JSONArray,
+        roomId: String,
+        personaId: String?,
+        limit: Int,
+    ): List<String> {
+        val lines = mutableListOf<String>()
+        for (index in 0 until memories.length()) {
+            val memory = memories.optJSONObject(index) ?: continue
+            if (memory.optString("roomId", "").trim() != roomId) continue
+            if (personaId != null && memory.optString("personaId", "").trim() != personaId) continue
+            val kind = memory.optString("kind", "").trim()
+            val layer = memory.optString("layer", "").trim()
+            val content = memory.optString("content", "").trim()
+            if (content.isBlank()) continue
+            lines.add("[${if (kind.isBlank()) "unknown" else kind}/${if (layer.isBlank()) "unknown" else layer}] $content")
+        }
+        return lines.takeLast(max(1, limit))
+    }
+
+    private fun buildPersonaStateLine(
+        personaStates: JSONArray,
+        roomId: String,
+        personaId: String,
+    ): String {
+        for (index in 0 until personaStates.length()) {
+            val state = personaStates.optJSONObject(index) ?: continue
+            if (state.optString("roomId", "").trim() != roomId) continue
+            if (state.optString("personaId", "").trim() != personaId) continue
+            return "mood=${state.optString("mood", "")}, trustToUser=${state.optInt("trustToUser", 50)}, energy=${state.optInt("energy", 50)}, engagement=${state.optInt("engagement", 50)}, initiative=${state.optInt("initiative", 50)}, affectionToUser=${state.optInt("affectionToUser", 50)}, tension=${state.optInt("tension", 0)}"
+        }
+        return "none"
+    }
+
+    private data class MentionContext(
+        val addressedToCurrentPersona: Boolean,
+        val mentionedPersonaNames: List<String>,
+        val rawLabels: List<String>,
+    )
+
+    private fun buildMentionContext(focusedUserMessage: JSONObject?, speakerPersonaId: String): MentionContext {
+        val mentions = focusedUserMessage?.optJSONArray("mentions") ?: JSONArray()
+        var addressed = false
+        val mentionedPersonaNames = mutableListOf<String>()
+        val rawLabels = mutableListOf<String>()
+        for (index in 0 until mentions.length()) {
+            val mention = mentions.optJSONObject(index) ?: continue
+            val targetType = mention.optString("targetType", "").trim().lowercase()
+            val targetId = mention.optString("targetId", "").trim()
+            val label = mention.optString("label", "").trim()
+            if (targetType == "persona" && targetId == speakerPersonaId) {
+                addressed = true
+            }
+            if (targetType == "persona") {
+                val mentionName = if (label.isNotBlank()) label else targetId
+                if (mentionName.isNotBlank()) {
+                    mentionedPersonaNames.add(mentionName)
+                }
+            }
+            val rawLabelValue =
+                when (val raw = mention.opt("label")) {
+                    null -> "undefined"
+                    JSONObject.NULL -> "null"
+                    else -> raw.toString()
+                }
+            rawLabels.add("@$rawLabelValue")
+        }
+        return MentionContext(
+            addressedToCurrentPersona = addressed,
+            mentionedPersonaNames = mentionedPersonaNames.distinct(),
+            rawLabels = rawLabels,
+        )
+    }
+
+    private fun buildGroupOrchestratorSystemPrompt(
+        room: JSONObject,
+        userName: String,
+        participants: List<OrchestratorParticipantProfile>,
+    ): String {
+        val participantList =
+            participants.joinToString(", ") { item -> "${item.name} (${item.personaId})" }
+        val participantProfileBlock =
+            if (participants.isEmpty()) {
+                "none"
+            } else {
+                participants.joinToString("\n") { item ->
+                    listOf(
+                        "${item.name} (${item.personaId})",
+                        "archetype=${if (item.archetype.isBlank()) "не задан" else item.archetype}",
+                        "voiceTone=${if (item.voiceTone.isBlank()) "нейтральный" else item.voiceTone}",
+                        "lexicalStyle=${if (item.lexicalStyle.isBlank()) "нейтральная" else item.lexicalStyle}",
+                        "sentenceLength=${item.sentenceLength}",
+                        "formality=${item.formality}",
+                        "expressiveness=${item.expressiveness}",
+                        "emoji=${item.emoji}",
+                        "initiative=${item.initiative}",
+                        "curiosity=${item.curiosity}",
+                        "empathy=${item.empathy}",
+                        "character=${if (item.character.isBlank()) "не задан" else item.character}",
+                        "appearance=${if (item.appearance.isBlank()) "не задана" else item.appearance}",
+                    ).joinToString(" | ")
+                }
+            }
+        val modeLabel =
+            if (room.optString("mode", "personas_plus_user")
+                    .trim()
+                    .equals("personas_plus_user", ignoreCase = true)
+            ) {
+                "personas_plus_user"
+            } else {
+                "personas_only"
+            }
+
+        return listOf(
+            "Ты оркестратор группового чата. Ты НЕ персона и НЕ автор реплик от имени персон.",
+            "",
+            "HARD RULES (нельзя нарушать):",
+            "1) Ты никогда не пишешь диалог за персонажей.",
+            "2) Ты не имитируешь стиль, голос или реплики персонажей.",
+            "3) Ты не создаешь multi-speaker сообщения. Один шаг = один выбранный говорящий.",
+            "4) Ты возвращаешь только структурированные оркестрационные решения в JSON.",
+            "",
+            "Текущая комната:",
+            "roomId=${room.optString("id", "").trim()}",
+            "mode=$modeLabel",
+            "userName=$userName",
+            "participants=${if (participantList.isBlank()) "none" else participantList}",
+            "participant_profiles:",
+            participantProfileBlock,
+            "",
+            "Твои задачи:",
+            "- выбрать следующего говорящего персонажа или режим ожидания пользователя;",
+            "- определить нужен ли wait_for_user;",
+            "- указать причину выбора и intent шага;",
+            "- определить действие для пользовательского вброса: userContextAction=\"keep|clear\";",
+            "- если последний пользовательский вброс уже не влияет на текущий шаг, ставь clear;",
+            "- не генерировать саму реплику персонажа.",
+            "- для выбора очереди учитывай не только инициативность, но и динамику диалога: кто говорил недавно, кто давно молчит, упоминания и межперсональные отношения.",
+            "- не допускай доминирования 1-2 персон при наличии активных альтернатив: поддерживай ротацию участников.",
+            "- если mode=personas_only, waitForUser всегда должен быть false, статус wait недопустим.",
+            "",
+            "Формат ответа строго JSON без markdown:",
+            "{\"status\":\"speak|wait|skip\",\"speakerPersonaId\":\"<id or empty>\",\"waitForUser\":true,\"waitReason\":\"...\",\"reason\":\"...\",\"intent\":\"...\",\"userContextAction\":\"keep|clear\"}",
+        ).joinToString("\n")
+    }
+
+    private fun buildGroupOrchestratorUserPrompt(
+        lastUserMessageContent: String,
+        mentionPriorityHints: List<String>,
+        participantRuntimeHints: List<String>,
+        recentMessageLines: List<String>,
+        recentEventLines: List<String>,
+    ): String {
+        val mentionBlock =
+            if (mentionPriorityHints.isEmpty()) {
+                "none"
+            } else {
+                mentionPriorityHints.joinToString("\n")
+            }
+        val runtimeHintsBlock =
+            if (participantRuntimeHints.isEmpty()) {
+                "none"
+            } else {
+                participantRuntimeHints.joinToString("\n")
+            }
+        val messageBlock =
+            if (recentMessageLines.isEmpty()) {
+                "none"
+            } else {
+                recentMessageLines.joinToString("\n")
+            }
+        val eventBlock =
+            if (recentEventLines.isEmpty()) {
+                "none"
+            } else {
+                recentEventLines.joinToString("\n")
+            }
+        return listOf(
+            "Последний ввод пользователя: ${if (lastUserMessageContent.isEmpty()) "none" else lastUserMessageContent}",
+            "",
+            "Приоритеты адресации:",
+            mentionBlock,
+            "",
+            "Runtime подсказки очередности:",
+            runtimeHintsBlock,
+            "",
+            "Последние сообщения:",
+            messageBlock,
+            "",
+            "Последние события:",
+            eventBlock,
+        ).joinToString("\n")
+    }
+
+    private fun buildGroupPersonaSystemPrompt(
+        room: JSONObject,
+        speakerPersona: JSONObject,
+        userName: String,
+        participantNames: List<String>,
+    ): String {
+        val personaName = speakerPersona.optString("name", "").trim().ifEmpty { "Persona" }
+        val modeLabel =
+            if (room.optString("mode", "personas_plus_user")
+                    .trim()
+                    .equals("personas_plus_user", ignoreCase = true)
+            ) {
+                "personas_plus_user"
+            } else {
+                "personas_only"
+            }
+        val peers =
+            participantNames
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !it.equals(personaName, ignoreCase = true) }
+        val userMentionToken =
+            ((userName.trim().split(Regex("""\s+""")).firstOrNull() ?: "user")
+                .trim())
+                .replace(mentionTokenCleanupRegex, "")
+                .ifEmpty { "user" }
+        val userMentionHint = "@$userMentionToken"
+        val peerMentionTokenHint =
+            peers
+                .map { value ->
+                    (value.trim().split(Regex("""\s+""")).firstOrNull() ?: "").trim()
+                }.map { value ->
+                    value.replace(mentionTokenCleanupRegex, "").trim()
+                }.filter { it.isNotBlank() }
+                .distinct()
+                .joinToString(", ") { token -> "@$token" }
+                .ifBlank { "none" }
+
+        val advanced = speakerPersona.optJSONObject("advanced") ?: JSONObject()
+        val core = advanced.optJSONObject("core") ?: JSONObject()
+        val emotion = advanced.optJSONObject("emotion") ?: JSONObject()
+        val voice = advanced.optJSONObject("voice") ?: JSONObject()
+        val appearance = speakerPersona.optJSONObject("appearance") ?: JSONObject()
+
+        return listOf(
+            "Ты персона \"$personaName\" в групповом чате.",
+            "",
+            "Профиль персоны:",
+            "- Архетип: ${core.optString("archetype", "").trim().ifEmpty { "не задан" }}",
+            "- Характер: ${speakerPersona.optString("personalityPrompt", "").trim().ifEmpty { "не задан" }}",
+            "- Стиль речи: ${speakerPersona.optString("stylePrompt", "").trim().ifEmpty { "не задан" }}",
+            "- Ценности: ${core.optString("values", "").trim().ifEmpty { "не заданы" }}",
+            "- Границы: ${core.optString("boundaries", "").trim().ifEmpty { "не заданы" }}",
+            "- Экспертиза: ${core.optString("expertise", "").trim().ifEmpty { "не задана" }}",
+            "- Базовое настроение: ${emotion.optString("baselineMood", "").trim()}",
+            "- Тон голоса: ${voice.optString("tone", "").trim().ifEmpty { "нейтральный" }}",
+            "- Лексика: ${voice.optString("lexicalStyle", "").trim().ifEmpty { "нейтральная" }}",
+            "- Длина фраз: ${normalizeSentenceLength(voice.optString("sentenceLength", "").trim())}",
+            "- Формальность (0-100): ${readNestedInt(speakerPersona, 50, "advanced", "voice", "formality")}",
+            "- Экспрессивность (0-100): ${readNestedInt(speakerPersona, 50, "advanced", "voice", "expressiveness")}",
+            "- Эмодзи (0-100): ${readNestedInt(speakerPersona, 35, "advanced", "voice", "emoji")}",
+            "- Внешность (лицо): ${appearance.optString("faceDescription", "").trim().ifEmpty { "не задано" }}",
+            "- Внешность (волосы): ${appearance.optString("hair", "").trim().ifEmpty { "не задано" }}",
+            "- Внешность (глаза): ${appearance.optString("eyes", "").trim().ifEmpty { "не задано" }}",
+            "- Внешность (губы): ${appearance.optString("lips", "").trim().ifEmpty { "не задано" }}",
+            "- Внешность (кожа): ${appearance.optString("skin", "").trim().ifEmpty { "не задано" }}",
+            "- Внешность (телосложение): ${appearance.optString("bodyType", "").trim().ifEmpty { "не задано" }}",
+            "- Внешность (одежда): ${appearance.optString("clothingStyle", "").trim().ifEmpty { "не задано" }}",
+            "- Внешность (маркеры): ${appearance.optString("markers", "").trim().ifEmpty { "не заданы" }}",
+            "",
+            "HARD RULES (критично):",
+            "1) Говори ТОЛЬКО от своего имени.",
+            "2) Никогда не пиши за других персон.",
+            "3) Никогда не создавай сообщения вида \"Персона A: ... Персона B: ...\".",
+            "4) Один ответ = одна реплика только текущей персоны.",
+            "5) Не подменяй роль оркестратора и не добавляй служебные решения в текст реплики.",
+            "",
+            "Контекст комнаты:",
+            "roomId=${room.optString("id", "").trim()}",
+            "mode=$modeLabel",
+            "userName=$userName",
+            "peers=${if (peers.isEmpty()) "none" else peers.joinToString(", ")}",
+            "",
+            "Поведение по режимам (ОБЯЗАТЕЛЬНО):",
+            "- personas_only: общайся с персонажами и реагируй на вбросы пользователя, но не жди явного ответа пользователя.",
+            "- personas_plus_user: можно обращаться к пользователю по имени и задавать вопросы, если это уместно.",
+            "",
+            "Упоминания и обращения (ОБЯЗАТЕЛЬНО):",
+            "- если в контексте есть @имя, учитывай адресацию;",
+            "- не перехватывай реплики, адресованные другим персонажам, если это не уместно по ситуации.",
+            "- при ПРЯМОМ обращении к пользователю ОБЯЗАТЕЛЬНО используй маркер $userMentionHint;",
+            "- маркер @user допустим только как технический fallback, если имя пользователя неизвестно;",
+            "- при ПРЯМОМ обращении к конкретной персоне ОБЯЗАТЕЛЬНО используй маркер @Имя (без пробелов и знаков после @);",
+            "- доступные @маркеры персон в этой комнате: $peerMentionTokenHint;",
+            "- при упоминании кого-либо в тексте, используй @маркер ОБЯЗАТЕЛЬНО;",
+            "- маркер ставь в начале обращения, например: \"@Луна, как тебе идея?\";",
+            "- если прямого обращения нет, не вставляй @маркеры искусственно.",
+            "",
+            "Изображения:",
+            "- добавляй изображение только когда есть ЯВНЫЙ запрос на картинку/визуализацию от пользователя;",
+            "- не добавляй изображение в small talk, приветствиях и обычных коротких обменах репликами;",
+            "- не вставляй markdown-картинки вида ![...](...) и не пиши фейковые ссылки на фото;",
+            "- ЗАПРЕЩЕНО имитировать отправку изображения обычным текстом: не пиши фразы вроде \"вот фото\", \"держи фото\", \"скинула фото\", \"прикрепила фото\", \"отправила картинку\", \"лови фото\" и любые близкие по смыслу;",
+            "- запрещено утверждать, что изображение уже отправлено/прикреплено/приложено, если в ответе нет service JSON с comfy_image_descriptions;",
+            "- запрещены сценические ремарки об отправке контента в *звездочках* (например: *прикрепила фото*, *скинула фотку*);",
+            "- если изображения нет в service JSON, считай что изображения НЕТ: не упоминай его как будто оно отправлено;",
+            "- если ты отказываешь в фото или фото не требуется, не добавляй service JSON и не упоминай отправку изображения в тексте реплики;",
+            "- не предлагай «я уже скинула/прикрепила», вместо этого пиши нейтрально: «могу показать, если хочешь»;",
+            "- частота изображений: не отправляй изображения слишком часто;",
+            "- запрещено отправлять изображения в трёх ответах подряд, если пользователь явно не просил об этом;",
+            "- после отправки изображения выдерживай минимум 3 текстовых ответа до следующего изображения, если нет явного запроса пользователя;",
+            "- если изображение действительно нужно, ОБЯЗАТЕЛЬНО добавь после реплики service JSON (лучше в ```json```), ключ comfy_image_descriptions = массив описаний;",
+            "Пример: {\"comfy_image_descriptions\":[\"type: person\\nparticipants: persona\\nПодробное визуальное описание кадра...\"]}",
+            "- внутри каждого описания: только визуальные детали, без markdown и без пояснений;",
+            "- для консистентности внешности повторяй стабильные признаки персоны (волосы, глаза, возрастной тип, телосложение, отличительные детали);",
+            "- не меняй базовую внешность между сообщениями без явной просьбы пользователя.",
+            "",
+            "Как применять голос (ОБЯЗАТЕЛЬНО):",
+            "- соблюдай sentenceLength из профиля (short=короткие фразы, balanced=средние, long=чуть длиннее, но без монологов);",
+            "- formality: низко = разговорно и просто, высоко = сдержанно и аккуратно;",
+            "- expressiveness: низко = спокойно, высоко = эмоциональнее и живее;",
+            "- emoji: 0-20 почти без эмодзи, 21-60 умеренно, 61-100 чаще, но не спам;",
+            "",
+            "Стиль живого чата (ОБЯЗАТЕЛЬНО):",
+            "- пиши как обычный живой человек, а не как рассказчик или ведущий;",
+            "- длина: 1-3 коротких предложения, чаще 1-2;",
+            "- избегай литературщины, пафоса, канцелярита и шаблонных комплиментов;",
+            "- не начинай каждый ответ с длинного приветствия/самопрезентации;",
+            "- не описывай внешность, позы и сцену без прямого запроса;",
+            "- максимум один вопрос в конце, если он действительно уместен;",
+            "",
+            "Формат ответа:",
+            "- верни СТРОГО JSON-объект без markdown;",
+            "- ключ для реплики: visible_text (или visibleText);",
+            "- если нужен сервисный блок для изображений: comfy_image_descriptions (или comfyImageDescriptions) массив строк;",
+            "- не используй ключи speech/text/reply/message для основной реплики;",
+            "- не добавляй префикс имени персоны в тексте реплики.",
+            "- никогда не выводи служебные строки формата \"key=value\" (например: mood=..., trustToUser=..., addressedToCurrentPersona=..., rawMentions=...).",
+            "- если хочешь обратиться к кому-то, пиши обращение в своей реплике (например: \"@Луна, ...\"), но не в формате \"Луна: ...\".",
+            "",
+            "SELF-CHECK ПЕРЕД ОТПРАВКОЙ (обязательно):",
+            "- если ты не уверена, что твой ответ соответствует стилю, то перепиши его;",
+            "- если ты ответила как другая персона — перепиши ответ;",
+            "- если ты ответила как системный бот — перепиши ответ;",
+            "- если в ответе ты добавила реплику другой персоны — перепиши ответ;",
+            "- если в тексте есть утверждение «фото/картинка отправлена», а service JSON с comfy_image_descriptions нет — перепиши ответ;",
+            "- если в тексте есть упоминание НЕСКОЛЬКИХ изображений, а элементов comfy_image_descriptions меньше — перепиши ответ;",
+            "- если есть ремарки в *...* про отправку фото — перепиши ответ;",
+            "- если нет явного запроса на изображение, а ты добавила service JSON с comfy_image_descriptions — убери блок;",
+            "- после self-check верни финальный ответ только один раз, без комментариев о проверке.",
+        ).joinToString("\n")
+    }
+
+    private fun buildGroupPersonaUserPrompt(
+        userName: String,
+        lastUserMessageContent: String,
+        recentMessageLines: List<String>,
+        personaStateLine: String,
+        relationLines: List<String>,
+        sharedMemoryLines: List<String>,
+        privateMemoryLines: List<String>,
+        recentEventLines: List<String>,
+        mentionContext: MentionContext,
+    ): String {
+        val messageBlock = if (recentMessageLines.isEmpty()) "none" else recentMessageLines.joinToString("\n")
+        val relationBlock = if (relationLines.isEmpty()) "none" else relationLines.joinToString("\n")
+        val sharedMemoryBlock = if (sharedMemoryLines.isEmpty()) "none" else sharedMemoryLines.joinToString("\n")
+        val privateMemoryBlock = if (privateMemoryLines.isEmpty()) "none" else privateMemoryLines.joinToString("\n")
+        val eventsBlock = if (recentEventLines.isEmpty()) "none" else recentEventLines.joinToString("\n")
+        val mentionContextBlock =
+            listOf(
+                "addressedToCurrentPersona=${if (mentionContext.addressedToCurrentPersona) "yes" else "no"}",
+                "mentionedPersonaNames=${if (mentionContext.mentionedPersonaNames.isEmpty()) "none" else mentionContext.mentionedPersonaNames.joinToString(", ")}",
+                "rawMentions=${if (mentionContext.rawLabels.isEmpty()) "none" else mentionContext.rawLabels.joinToString(", ")}",
+            ).joinToString("\n")
+        return listOf(
+            "Пользователь: $userName",
+            "Последний пользовательский вброс: ${if (lastUserMessageContent.isEmpty()) "none" else lastUserMessageContent}",
+            "",
+            "Контекст последних сообщений:",
+            messageBlock,
+            "",
+            "Состояние текущей персоны:",
+            personaStateLine,
+            "",
+            "Отношения к другим персонам:",
+            relationBlock,
+            "",
+            "Память группы (shared):",
+            sharedMemoryBlock,
+            "",
+            "Личная память персоны в этой группе:",
+            privateMemoryBlock,
+            "",
+            "Последние события комнаты:",
+            eventsBlock,
+            "",
+            "Адресация и упоминания:",
+            mentionContextBlock,
+        ).joinToString("\n")
+    }
+
+    private fun compactPayload(raw: Any?, maxLen: Int): String {
+        val serialized =
+            when (raw) {
+                null, JSONObject.NULL -> "{}"
+                is JSONObject -> raw.toString()
+                is JSONArray -> raw.toString()
+                is String -> raw
+                else -> JSONObject.wrap(raw)?.toString() ?: "{}"
+            }
+        return clipText(serialized, maxLen)
+    }
+
+    private fun normalizeSentenceLength(raw: String): String {
+        return when (raw.trim().lowercase()) {
+            "short" -> "short"
+            "long" -> "long"
+            else -> "balanced"
+        }
+    }
+
+    private fun readNestedString(root: JSONObject?, vararg path: String): String {
+        val value = readNestedValue(root, *path)
+        return when (value) {
+            is String -> value.trim()
+            else -> ""
+        }
+    }
+
+    private fun readNestedInt(root: JSONObject?, defaultValue: Int, vararg path: String): Int {
+        val value = readNestedValue(root, *path)
+        return when (value) {
+            is Number -> value.toInt()
+            is String -> value.trim().toIntOrNull() ?: defaultValue
+            else -> defaultValue
+        }
+    }
+
+    private fun readNestedValue(root: JSONObject?, vararg path: String): Any? {
+        if (root == null || path.isEmpty()) return null
+        var cursor: Any = root
+        for (segment in path) {
+            cursor =
+                when (cursor) {
+                    is JSONObject -> cursor.opt(segment)
+                    else -> return null
+                } ?: return null
+            if (cursor == JSONObject.NULL) {
+                return null
+            }
+        }
+        return cursor
+    }
+
+    private fun parseIsoToMillisOrNull(raw: String): Long? {
+        return try {
+            Instant.parse(raw).toEpochMilli()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun findLastPersonaResponseId(events: JSONArray, roomId: String, personaId: String): String? {
+        if (personaId.isBlank()) return null
+        for (index in events.length() - 1 downTo 0) {
+            val event = events.optJSONObject(index) ?: continue
+            if (event.optString("roomId", "").trim() != roomId) continue
+            if (event.optString("type", "").trim() != "persona_spoke") continue
+            val payload = event.optJSONObject("payload") ?: JSONObject()
+            if (payload.optString("personaId", "").trim() != personaId) continue
+            val responseId = payload.optString("responseId", "").trim()
+            if (responseId.isNotEmpty()) return responseId
+        }
+        return null
+    }
+
+    private fun buildGroupOrchestratorToolDefinition(): LlmToolDefinition {
+        return LlmToolDefinition(
+            name = "select_group_turn_action",
+            description = "Select the next group turn action and speaking persona in structured form.",
+            parameters =
+                JSONObject().apply {
+                    put("type", "object")
+                    put(
+                        "properties",
+                        JSONObject().apply {
+                            put(
+                                "status",
+                                JSONObject().apply {
+                                    put("type", "string")
+                                    put(
+                                        "enum",
+                                        JSONArray().apply {
+                                            put("speak")
+                                            put("wait")
+                                            put("skip")
+                                        },
+                                    )
+                                },
+                            )
+                            put("speakerPersonaId", JSONObject().apply { put("type", "string") })
+                            put("waitForUser", JSONObject().apply { put("type", "boolean") })
+                            put("waitReason", JSONObject().apply { put("type", "string") })
+                            put("reason", JSONObject().apply { put("type", "string") })
+                            put("intent", JSONObject().apply { put("type", "string") })
+                            put(
+                                "userContextAction",
+                                JSONObject().apply {
+                                    put("type", "string")
+                                    put(
+                                        "enum",
+                                        JSONArray().apply {
+                                            put("keep")
+                                            put("clear")
+                                        },
+                                    )
+                                },
+                            )
+                        },
+                    )
+                    put("required", JSONArray().apply { put("status") })
+                    put("additionalProperties", true)
+                },
+        )
+    }
+
+    private fun buildGroupPersonaTurnToolDefinition(): LlmToolDefinition {
+        return LlmToolDefinition(
+            name = "emit_group_persona_turn",
+            description = "Return the active persona reply and optional service payload for images/control.",
+            parameters =
+                JSONObject().apply {
+                    put("type", "object")
+                    put(
+                        "properties",
+                        JSONObject().apply {
+                            put("visible_text", JSONObject().apply { put("type", "string") })
+                            put("visibleText", JSONObject().apply { put("type", "string") })
+                            put(
+                                "comfy_prompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfyPrompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfy_image_descriptions",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfyImageDescriptions",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put("persona_control", JSONObject().apply { put("type", "object") })
+                            put("personaControl", JSONObject().apply { put("type", "object") })
+                        },
+                    )
+                    put("additionalProperties", true)
+                },
+        )
+    }
+
+    private fun buildComfyPromptConversionToolDefinition(): LlmToolDefinition {
+        return LlmToolDefinition(
+            name = "emit_comfy_prompts",
+            description = "Return one or more ComfyUI prompts generated from image descriptions.",
+            parameters =
+                JSONObject().apply {
+                    put("type", "object")
+                    put(
+                        "properties",
+                        JSONObject().apply {
+                            put(
+                                "prompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfyPrompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfy_prompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                        },
+                    )
+                    put("additionalProperties", true)
+                },
+        )
+    }
+
+    private fun buildImageDescriptionToComfyPromptSystemPrompt(): String {
+        return listOf(
+            "Ты конвертер описания сцены в ComfyUI prompt.",
+            "Верни строго JSON-объект без markdown.",
+            "Формат: {\"prompts\":[\"...\"]}.",
+            "Для одного описания верни один prompt в массиве.",
+            "Строки type: и participants: считай служебными, не копируй их как теги.",
+            "Каждый prompt: одна строка на английском, только comma-separated visual tags.",
+            "Разделитель тегов строго ', ' (запятая и пробел), без переносов.",
+            "Не добавляй объяснений, не добавляй ключей кроме prompts/comfyPrompts/comfy_prompts.",
+            "Сохраняй ключевые визуальные детали из description без выдумок.",
+            "Избегай дубликатов и взаимоисключающих тегов.",
+        ).joinToString("\n")
+    }
+
+    private fun buildImageDescriptionToComfyPromptUserPrompt(
+        personaName: String,
+        appearanceSummary: String,
+        stylePrompt: String,
+        personalityPrompt: String,
+        imageDescription: String,
+        iteration: Int,
+    ): String {
+        return listOf(
+            "Character name: $personaName",
+            "Appearance summary: $appearanceSummary",
+            "Style: $stylePrompt",
+            "Personality: $personalityPrompt",
+            "Iteration: $iteration",
+            "Image description:",
+            imageDescription,
+        ).joinToString("\n")
+    }
+
+    private fun extractComfyPromptsFromConversionPayload(parsed: JSONObject, rawContent: String): List<String> {
+        val parsedPrompts =
+            parseStringArrayFlexible(parsed.opt("prompts"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfyPrompts")) }
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfy_prompts")) }
+                .ifEmpty {
+                    parsed.optString("prompt", parsed.optString("comfyPrompt", parsed.optString("comfy_prompt", "")))
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
+                }
+        if (parsedPrompts.isNotEmpty()) return parsedPrompts
+
+        val fallback = rawContent.trim()
+        if (fallback.isBlank()) return emptyList()
+        if (fallback.startsWith("{") || fallback.startsWith("[")) return emptyList()
+        return listOf(fallback)
+    }
+
+    private fun looksLikeToolingContractError(body: String): Boolean {
+        val normalized = body.trim().lowercase()
+        if (normalized.isBlank()) return false
+        return listOf(
+            "tool_choice",
+            "\"tools\"",
+            "tools is not",
+            "unsupported",
+            "not supported",
+            "unknown field",
+            "invalid parameter",
+            "invalid_request_error",
+        ).any { token -> normalized.contains(token) }
     }
 
     private fun requestChatCompletionsWithRetry(
@@ -280,43 +1336,67 @@ object NativeLlmClient {
         systemPrompt: String,
         userPrompt: String,
         forceJsonObject: Boolean,
+        toolDefinition: LlmToolDefinition? = null,
     ): NativeLlmResponse {
         val normalizedBase = normalizeBaseUrl(baseUrl)
-        val payload =
-            JSONObject().apply {
-                put("model", model)
-                put(
-                    "messages",
-                    JSONArray().apply {
-                        put(
-                            JSONObject().apply {
-                                put("role", "system")
-                                put("content", systemPrompt)
-                            },
-                        )
-                        put(
-                            JSONObject().apply {
-                                put("role", "user")
-                                put("content", userPrompt)
-                            },
-                        )
-                    },
-                )
-                put("temperature", temperature)
-                put("max_tokens", maxTokens)
-                if (forceJsonObject) {
-                    put(
-                        "response_format",
-                        JSONObject().apply {
-                            put("type", "json_object")
-                        },
-                    )
-                }
-            }
-
         var lastError: Exception? = null
+        val toolModeRequested = toolDefinition != null
+        var toolModeEnabled = toolModeRequested
+        var toolFallbackReason: String? = null
         for (attempt in 0 until MAX_RETRIES) {
             try {
+                val payload =
+                    JSONObject().apply {
+                        put("model", model)
+                        put(
+                            "messages",
+                            JSONArray().apply {
+                                put(
+                                    JSONObject().apply {
+                                        put("role", "system")
+                                        put("content", systemPrompt)
+                                    },
+                                )
+                                put(
+                                    JSONObject().apply {
+                                        put("role", "user")
+                                        put("content", userPrompt)
+                                    },
+                                )
+                            },
+                        )
+                        put("temperature", temperature)
+                        put("max_tokens", maxTokens)
+                        if (forceJsonObject) {
+                            put(
+                                "response_format",
+                                JSONObject().apply {
+                                    put("type", "json_object")
+                                },
+                            )
+                        }
+                        if (toolModeEnabled && toolDefinition != null) {
+                            put(
+                                "tools",
+                                JSONArray().apply {
+                                    put(
+                                        JSONObject().apply {
+                                            put("type", "function")
+                                            put(
+                                                "function",
+                                                JSONObject().apply {
+                                                    put("name", toolDefinition.name)
+                                                    put("description", toolDefinition.description)
+                                                    put("parameters", toolDefinition.parameters)
+                                                },
+                                            )
+                                        },
+                                    )
+                                },
+                            )
+                            put("tool_choice", "required")
+                        }
+                    }
                 val response =
                     requestJson(
                         url = "$normalizedBase/chat/completions",
@@ -329,19 +1409,46 @@ object NativeLlmClient {
                 if (response.code in 200..299) {
                     val body = parseJsonObjectLoose(response.body)
                     val choices = body.optJSONArray("choices")
-                    val content = extractChoiceContent(choices?.optJSONObject(0))
-                    if (content.isBlank()) {
+                    val extraction = extractChoiceContent(choices?.optJSONObject(0))
+                    if (extraction.content.isBlank()) {
                         throw IllegalStateException("llm_empty_content")
                     }
                     val responseId = body.optString("id", "").trim().ifEmpty { null }
                     return NativeLlmResponse(
-                        content = content,
+                        content = extraction.content,
                         responseId = responseId,
                         comfyPrompt = null,
                         comfyPrompts = emptyList(),
                         comfyImageDescription = null,
                         comfyImageDescriptions = emptyList(),
+                        llmDebug =
+                            NativeLlmCallDebug(
+                                toolModeRequested = toolModeRequested,
+                                toolModeActive = toolModeEnabled && toolDefinition != null,
+                                expectedToolName = toolDefinition?.name,
+                                actualToolName = extraction.toolName,
+                                responseSource = extraction.source,
+                                fallbackReason = toolFallbackReason,
+                                httpStatus = response.code,
+                                parsedField = null,
+                            ),
                     )
+                }
+
+                if (
+                    toolModeEnabled &&
+                        toolDefinition != null &&
+                        response.code in 400..499 &&
+                        looksLikeToolingContractError(response.body)
+                ) {
+                    toolModeEnabled = false
+                    toolFallbackReason =
+                        "http_${response.code}:${clipText(response.body.replace(Regex("\\s+"), " ").trim(), 200)}"
+                    lastError =
+                        IllegalStateException(
+                            "llm_tools_unsupported_fallback_to_json: ${clipText(response.body, 220)}",
+                        )
+                    continue
                 }
 
                 val retryable = response.code == 429 || response.code >= 500
@@ -369,15 +1476,42 @@ object NativeLlmClient {
         throw lastError ?: IllegalStateException("llm_request_failed")
     }
 
-    private fun extractChoiceContent(choice: JSONObject?): String {
-        if (choice == null) return ""
+    private fun extractChoiceContent(choice: JSONObject?): LlmChoiceExtractionResult {
+        if (choice == null) return LlmChoiceExtractionResult(content = "", source = "none", toolName = null)
         val message = choice.optJSONObject("message")
         val contentRaw = message?.opt("content")
-        return when (contentRaw) {
-            is String -> contentRaw.trim()
-            is JSONArray -> extractContentFromArray(contentRaw)
-            else -> ""
+        val content =
+            when (contentRaw) {
+                is String -> contentRaw.trim()
+                is JSONArray -> extractContentFromArray(contentRaw)
+                is JSONObject -> contentRaw.toString().trim()
+                else -> ""
+            }
+        if (content.isNotBlank()) {
+            return LlmChoiceExtractionResult(content = content, source = "message_content", toolName = null)
         }
+        val toolCallArguments = extractToolCallArguments(message)
+        if (toolCallArguments.arguments.isNotBlank()) {
+            return LlmChoiceExtractionResult(
+                content = toolCallArguments.arguments,
+                source = "tool_call",
+                toolName = toolCallArguments.toolName,
+            )
+        }
+        val functionCall = message?.optJSONObject("function_call")
+        val functionCallArguments =
+            functionCall
+                ?.optString("arguments", "")
+                ?.trim()
+                .orEmpty()
+        if (functionCallArguments.isNotBlank()) {
+            return LlmChoiceExtractionResult(
+                content = functionCallArguments,
+                source = "function_call",
+                toolName = functionCall?.optString("name", "")?.trim().orEmpty().ifBlank { null },
+            )
+        }
+        return LlmChoiceExtractionResult(content = "", source = "none", toolName = null)
     }
 
     private fun extractContentFromArray(items: JSONArray): String {
@@ -399,6 +1533,29 @@ object NativeLlmClient {
             }
         }
         return parts.joinToString("\n").trim()
+    }
+
+    private fun extractToolCallArguments(message: JSONObject?): ToolCallArgumentsResult {
+        if (message == null) return ToolCallArgumentsResult(arguments = "", toolName = null)
+        val toolCalls = message.optJSONArray("tool_calls") ?: return ToolCallArgumentsResult(arguments = "", toolName = null)
+        for (index in 0 until toolCalls.length()) {
+            val call = toolCalls.optJSONObject(index) ?: continue
+            val functionObject = call.optJSONObject("function")
+            val functionName = functionObject?.optString("name", "")?.trim().orEmpty().ifBlank { null }
+            val functionArgs =
+                functionObject
+                    ?.optString("arguments", "")
+                    ?.trim()
+                    .orEmpty()
+            if (functionArgs.isNotBlank()) {
+                return ToolCallArgumentsResult(arguments = functionArgs, toolName = functionName)
+            }
+            val directArgs = call.optString("arguments", "").trim()
+            if (directArgs.isNotBlank()) {
+                return ToolCallArgumentsResult(arguments = directArgs, toolName = functionName)
+            }
+        }
+        return ToolCallArgumentsResult(arguments = "", toolName = null)
     }
 
     private fun requestJson(
@@ -527,6 +1684,9 @@ object NativeLlmClient {
 
     private fun normalizeStatus(raw: String): String? {
         return when (raw.trim().lowercase()) {
+            "speak" -> "spoke"
+            "wait" -> "waiting"
+            "skip" -> "skipped"
             "spoke" -> "spoke"
             "waiting" -> "waiting"
             "skipped" -> "skipped"
@@ -597,15 +1757,30 @@ object NativeLlmClient {
         }
     }
 
+    private fun readFirstNonBlankEntry(root: JSONObject?, vararg keys: String): NamedStringEntry? {
+        if (root == null) return null
+        for (key in keys) {
+            val value = root.optString(key, "").trim()
+            if (value.isNotBlank()) {
+                return NamedStringEntry(key = key, value = value)
+            }
+        }
+        return null
+    }
+
     private fun clipText(value: String, maxLen: Int): String {
         val text = value.trim()
         if (text.length <= maxLen) return text
         return text.substring(0, max(0, maxLen - 1)).trimEnd() + "…"
     }
 
-    private fun clampTemperature(value: Double): Double {
+    private fun clampTemperature(
+        value: Double,
+        minValue: Double = 0.1,
+        maxValue: Double = 0.95,
+    ): Double {
         val numeric = if (value.isNaN() || value.isInfinite()) 0.7 else value
-        return min(0.95, max(0.1, numeric))
+        return min(maxValue, max(minValue, numeric))
     }
 
     private fun clampMaxTokens(value: Int, minValue: Int, maxValue: Int): Int {

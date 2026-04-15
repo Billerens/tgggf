@@ -31,6 +31,7 @@ import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { useSmartMessageAutoscroll } from "../ui/useSmartMessageAutoscroll";
 
 interface ChatPaneProps {
   activeChat: ChatSession | null;
@@ -200,12 +201,28 @@ export function ChatPane({
     sourceUrl: string;
     sourceIndex: number;
   } | null>(null);
+  const composerWrapperRef = useRef<HTMLDivElement | null>(null);
   const [activePersonaAvatarSrc, setActivePersonaAvatarSrc] = useState("");
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const onRegeneratePromptAtIndexRef = useRef(onRegeneratePromptAtIndex);
   const onResolveRelationshipProposalRef = useRef(
     onResolveRelationshipProposal,
   );
+  const messageIds = useMemo(() => messages.map((message) => message.id), [messages]);
+  const {
+    messagesContainerRef,
+    endRef: messagesEndRef,
+    unreadCount,
+    jumpToLatest,
+    onMessagesScroll,
+  } = useSmartMessageAutoscroll({
+    streamType: "chat",
+    streamId: activeChatId,
+    messageIds,
+    nearBottomThresholdPx: 80,
+    overlayRef: composerWrapperRef,
+    bottomObscurerSelector: ".mobile-bottom-nav",
+    bottomOverlayGapPx: 12,
+  });
 
   onRegeneratePromptAtIndexRef.current = onRegeneratePromptAtIndex;
   onResolveRelationshipProposalRef.current = onResolveRelationshipProposal;
@@ -240,12 +257,6 @@ export function ChatPane({
     activePersona?.avatarImageId,
     activePersona?.avatarUrl,
   ]);
-
-  useEffect(() => {
-    const node = messagesEndRef.current;
-    if (!node) return;
-    node.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
 
   useEffect(() => {
     if (!previewTarget || !previewSrc) return;
@@ -665,7 +676,11 @@ export function ChatPane({
         </div>
       </header>
 
-      <section className="messages">
+      <section
+        className="messages"
+        ref={messagesContainerRef}
+        onScroll={onMessagesScroll}
+      >
         {renderedMessages}
         {messages.length === 0 ? (
           <p className="empty-state">
@@ -675,7 +690,16 @@ export function ChatPane({
         <div ref={messagesEndRef} aria-hidden="true" />
       </section>
 
-      <div className="composer-wrapper">
+      <div className="composer-wrapper" ref={composerWrapperRef}>
+        {unreadCount > 0 ? (
+          <button
+            type="button"
+            className="new-messages-btn"
+            onClick={jumpToLatest}
+          >
+            Новые: {unreadCount}
+          </button>
+        ) : null}
         <form className="composer" onSubmit={onSubmitMessage}>
           <textarea
             placeholder="Введите сообщение..."

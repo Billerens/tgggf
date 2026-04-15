@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { GeneratorSession } from "../../types";
+import type { GeneratorSession, Persona } from "../../types";
 import type { TopicGenerationStepResult } from "../generator/useTopicGenerator";
 import { dbApi } from "../../db";
 import {
@@ -55,6 +55,37 @@ function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null
   return plugin;
 }
 
+function parseIdbImageAssetId(value: string | undefined | null) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
+
+function collectPersonaImageAssetIds(personas: Persona[]) {
+  const ids = new Set<string>();
+  const addDirectId = (value: string | undefined | null) => {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (normalized) ids.add(normalized);
+  };
+  const addFromUrl = (value: string | undefined | null) => {
+    const id = parseIdbImageAssetId(value);
+    if (id) ids.add(id);
+  };
+
+  for (const persona of personas) {
+    addDirectId(persona.avatarImageId);
+    addDirectId(persona.fullBodyImageId);
+    addDirectId(persona.fullBodySideImageId);
+    addDirectId(persona.fullBodyBackImageId);
+    addFromUrl(persona.avatarUrl);
+    addFromUrl(persona.fullBodyUrl);
+    addFromUrl(persona.fullBodySideUrl);
+    addFromUrl(persona.fullBodyBackUrl);
+  }
+
+  return Array.from(ids);
+}
+
 async function syncTopicGenerationContextToNative(sessionId: string) {
   const scope = globalThis as unknown as CapacitorLikeScope;
   const plugin = resolveLocalApiPlugin(scope);
@@ -65,6 +96,14 @@ async function syncTopicGenerationContextToNative(sessionId: string) {
     dbApi.getPersonas(),
     dbApi.getAllGeneratorSessions(),
   ]);
+  const activeSession = generatorSessions.find((session) => session.id === sessionId) ?? null;
+  const personasForImageSync =
+    activeSession !== null
+      ? personas.filter((persona) => persona.id === activeSession.personaId)
+      : personas;
+  const imageAssetIds = collectPersonaImageAssetIds(personasForImageSync);
+  const imageAssets =
+    imageAssetIds.length > 0 ? await dbApi.getImageAssets(imageAssetIds) : [];
 
   const response = await plugin.request({
     method: "PUT",
@@ -75,6 +114,7 @@ async function syncTopicGenerationContextToNative(sessionId: string) {
         settings,
         personas,
         generatorSessions,
+        imageAssets,
       },
     },
   });

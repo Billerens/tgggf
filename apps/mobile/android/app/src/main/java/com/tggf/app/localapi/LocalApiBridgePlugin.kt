@@ -9,7 +9,6 @@ import org.json.JSONException
 import org.json.JSONObject
 import org.json.JSONArray
 import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
 import java.lang.ref.WeakReference
 
 @CapacitorPlugin(name = "LocalApi")
@@ -61,9 +60,13 @@ class LocalApiBridgePlugin : Plugin() {
         }
     }
 
-    private val repository by lazy { LocalRepository(context) }
-    private val backgroundJobs by lazy { BackgroundJobRepository(context) }
-    private val backgroundRuntime by lazy { BackgroundRuntimeRepository(context) }
+    private val repositoryDelegate = lazy { LocalRepository(context) }
+    private val backgroundJobsDelegate = lazy { BackgroundJobRepository(context) }
+    private val backgroundRuntimeDelegate = lazy { BackgroundRuntimeRepository(context) }
+
+    private val repository by repositoryDelegate
+    private val backgroundJobs by backgroundJobsDelegate
+    private val backgroundRuntime by backgroundRuntimeDelegate
 
     override fun load() {
         super.load()
@@ -74,6 +77,15 @@ class LocalApiBridgePlugin : Plugin() {
     override fun handleOnDestroy() {
         if (activePluginRef?.get() === this) {
             activePluginRef = null
+        }
+        if (backgroundJobsDelegate.isInitialized()) {
+            backgroundJobs.closeQuietly()
+        }
+        if (backgroundRuntimeDelegate.isInitialized()) {
+            backgroundRuntime.closeQuietly()
+        }
+        if (repositoryDelegate.isInitialized()) {
+            repository.close()
         }
         super.handleOnDestroy()
     }
@@ -100,12 +112,20 @@ class LocalApiBridgePlugin : Plugin() {
             val index = pair.indexOf("=")
             val keyRaw = if (index >= 0) pair.substring(0, index) else pair
             val valueRaw = if (index >= 0) pair.substring(index + 1) else ""
-            val key = URLDecoder.decode(keyRaw, StandardCharsets.UTF_8)
+            val key = decodeUriComponentSafe(keyRaw)
             if (key == name) {
-                return URLDecoder.decode(valueRaw, StandardCharsets.UTF_8).trim()
+                return decodeUriComponentSafe(valueRaw).trim()
             }
         }
         return null
+    }
+
+    private fun decodeUriComponentSafe(raw: String): String {
+        return try {
+            URLDecoder.decode(raw, "UTF-8")
+        } catch (_: Throwable) {
+            raw
+        }
     }
 
     private fun readIntQueryParam(query: String?, name: String, fallback: Int): Int {
@@ -905,6 +925,22 @@ class LocalApiBridgePlugin : Plugin() {
                 JSObject().apply {
                     put("ok", true)
                     put("event", backgroundRuntimeEventToJsObject(created))
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-runtime/events/clear") {
+            val body = call.getObject("body")
+            val taskType = body?.optString("taskType", "")?.trim().orEmpty().ifEmpty { null }
+            val scopeId = body?.optString("scopeId", "")?.trim().orEmpty().ifEmpty { null }
+            val deleted = backgroundRuntime.clearEvents(taskType = taskType, scopeId = scopeId)
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("deleted", deleted)
                 },
             )
             return

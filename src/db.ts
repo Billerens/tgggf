@@ -375,6 +375,94 @@ function toTrimmedString(value: unknown): string {
   return "";
 }
 
+const GROUP_ROOM_MODES: GroupRoom["mode"][] = ["personas_only", "personas_plus_user"];
+const GROUP_ROOM_STATUSES: GroupRoom["status"][] = ["active", "paused", "archived"];
+const GROUP_ROOM_PHASES: GroupRoom["state"]["phase"][] = [
+  "idle",
+  "orchestrating",
+  "generating",
+  "committing",
+  "waiting_user",
+  "paused",
+  "error",
+];
+
+function toOptionalTrimmedString(value: unknown): string | undefined {
+  const normalized = toTrimmedString(value);
+  return normalized || undefined;
+}
+
+function toIsoDateString(value: unknown, fallback: string): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value).toISOString();
+  }
+  const normalized = toTrimmedString(value);
+  if (!normalized) return fallback;
+  const parsed = Date.parse(normalized);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+  return fallback;
+}
+
+function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
+  const source = (room ?? {}) as Partial<GroupRoom> & {
+    state?: Partial<GroupRoom["state"]> | null;
+  };
+  const nowIso = new Date().toISOString();
+
+  const id = toTrimmedString(source.id);
+  const updatedAt = toIsoDateString(source.updatedAt, nowIso);
+  const createdAt = toIsoDateString(source.createdAt, updatedAt);
+  const mode = GROUP_ROOM_MODES.includes(source.mode as GroupRoom["mode"])
+    ? (source.mode as GroupRoom["mode"])
+    : "personas_plus_user";
+  const status = GROUP_ROOM_STATUSES.includes(source.status as GroupRoom["status"])
+    ? (source.status as GroupRoom["status"])
+    : "paused";
+  const waitingForUser = Boolean(source.waitingForUser);
+  const waitingReason = toOptionalTrimmedString(source.waitingReason);
+
+  const stateSource = (source.state ?? {}) as Partial<GroupRoom["state"]>;
+  const stateTurnId = toOptionalTrimmedString(stateSource.turnId);
+  const stateSpeakerPersonaId = toOptionalTrimmedString(stateSource.speakerPersonaId);
+  const stateReason = toOptionalTrimmedString(stateSource.reason);
+  const stateError = toOptionalTrimmedString(stateSource.error);
+  const fallbackPhase: GroupRoom["state"]["phase"] =
+    status === "paused" ? "paused" : waitingForUser ? "waiting_user" : "idle";
+  const statePhase = GROUP_ROOM_PHASES.includes(stateSource.phase as GroupRoom["state"]["phase"])
+    ? (stateSource.phase as GroupRoom["state"]["phase"])
+    : fallbackPhase;
+  const stateUpdatedAt = toIsoDateString(stateSource.updatedAt, updatedAt);
+
+  const lastTickAtRaw = toOptionalTrimmedString(source.lastTickAt);
+  const lastResponseId = toOptionalTrimmedString(source.lastResponseId);
+  const orchestratorUserFocusMessageId = toOptionalTrimmedString(source.orchestratorUserFocusMessageId);
+
+  return {
+    id,
+    title: toTrimmedString(source.title) || "Групповой чат",
+    mode,
+    status,
+    state: {
+      phase: statePhase,
+      updatedAt: stateUpdatedAt,
+      ...(stateTurnId ? { turnId: stateTurnId } : {}),
+      ...(stateSpeakerPersonaId ? { speakerPersonaId: stateSpeakerPersonaId } : {}),
+      ...(stateReason ? { reason: stateReason } : {}),
+      ...(stateError ? { error: stateError } : {}),
+    },
+    waitingForUser,
+    ...(waitingReason ? { waitingReason } : {}),
+    ...(lastTickAtRaw ? { lastTickAt: toIsoDateString(lastTickAtRaw, updatedAt) } : {}),
+    ...(lastResponseId ? { lastResponseId } : {}),
+    ...(orchestratorUserFocusMessageId ? { orchestratorUserFocusMessageId } : {}),
+    orchestratorVersion: toTrimmedString(source.orchestratorVersion) || "v0",
+    createdAt,
+    updatedAt,
+  };
+}
+
 function normalizeAuthConfig(
   current: Partial<EndpointAuthConfig> | undefined,
   fallback: EndpointAuthConfig,
@@ -1241,17 +1329,28 @@ export const dbApi = {
   async getGroupRooms() {
     const db = await getDb();
     const rows = await db.getAll("groupRooms");
-    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const normalized = rows
+      .map((row) => normalizeGroupRoomRecord(row as GroupRoom))
+      .filter((room) => room.id);
+    return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
   async getGroupRoom(roomId: string) {
     const db = await getDb();
-    return db.get("groupRooms", roomId);
+    const row = await db.get("groupRooms", roomId);
+    if (!row) return undefined;
+    const normalized = normalizeGroupRoomRecord(row as GroupRoom);
+    if (!normalized.id) return undefined;
+    return normalized;
   },
 
   async saveGroupRoom(room: GroupRoom) {
     const db = await getDb();
-    await db.put("groupRooms", room);
+    const normalized = normalizeGroupRoomRecord(room);
+    if (!normalized.id) {
+      throw new Error("group_room_id_missing");
+    }
+    await db.put("groupRooms", normalized);
   },
 
   async deleteGroupRoom(roomId: string) {
