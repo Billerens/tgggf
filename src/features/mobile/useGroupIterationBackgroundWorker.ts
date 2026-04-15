@@ -1,5 +1,17 @@
 import { useEffect, useRef } from "react";
-import type { AppSettings, GroupRoom, Persona } from "../../types";
+import type {
+  AppSettings,
+  GroupEvent,
+  GroupMemoryPrivate,
+  GroupMemoryShared,
+  GroupMessage,
+  GroupParticipant,
+  GroupPersonaState,
+  GroupRelationEdge,
+  GroupRoom,
+  GroupSnapshot,
+  Persona,
+} from "../../types";
 import { dbApi } from "../../db";
 import {
   cancelBackgroundJob,
@@ -51,6 +63,7 @@ interface UseGroupIterationBackgroundWorkerParams {
   androidNativeGroupIterationV1: boolean;
   personas: Persona[];
   settings: AppSettings;
+  syncGroupStateFromDb: (preferredRoomId?: string | null) => Promise<void>;
   runActiveGroupIteration: (
     personas: Persona[],
     settings: AppSettings,
@@ -87,6 +100,29 @@ function shouldEnableDesiredState(room: GroupRoom | null) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function hasEntityId(value: unknown): value is { id: string } {
+  return isRecord(value) && typeof value.id === "string" && value.id.trim().length > 0;
+}
+
+function hasRoomRef(value: unknown): value is { roomId: string } {
+  return isRecord(value) && typeof value.roomId === "string" && value.roomId.trim().length > 0;
+}
+
+function matchesRoom(value: unknown, roomId: string | null) {
+  if (!hasRoomRef(value)) return false;
+  return roomId ? value.roomId.trim() === roomId : true;
+}
+
+function readStoreRows(stores: Record<string, unknown>, storeName: string) {
+  const raw = stores[storeName];
+  if (!Array.isArray(raw)) return [] as Record<string, unknown>[];
+  return raw.filter(isRecord);
+}
+
+function castStoreRows<T>(rows: Record<string, unknown>[]): T[] {
+  return rows as unknown as T[];
 }
 
 function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null {
@@ -163,6 +199,7 @@ export function useGroupIterationBackgroundWorker({
   androidNativeGroupIterationV1,
   personas,
   settings,
+  syncGroupStateFromDb,
   runActiveGroupIteration,
 }: UseGroupIterationBackgroundWorkerParams) {
   const activeGroupRoomRef = useEffectRef(activeGroupRoom);
@@ -173,7 +210,9 @@ export function useGroupIterationBackgroundWorker({
   const desiredStateFingerprintRef = useRef<string>("");
   const desiredStatePendingFingerprintRef = useRef<string>("");
   const lastNativeSyncAtRef = useRef<number>(0);
+  const lastNativePullAtRef = useRef<number>(0);
   const syncInFlightRef = useRef<boolean>(false);
+  const pullInFlightRef = useRef<boolean>(false);
   const executionModeLogFingerprintRef = useRef<string>("");
 
   useEffect(() => {
@@ -254,6 +293,128 @@ export function useGroupIterationBackgroundWorker({
         });
     };
 
+    const pullNativeContextIntoWeb = (roomId: string | null, reason: string) => {
+      if (!isAndroidRuntime || !androidNativeGroupIterationV1) return;
+      if (pullInFlightRef.current) return;
+      const now = Date.now();
+      if (now - lastNativePullAtRef.current < 1_500) return;
+      const plugin = resolveLocalApiPlugin(globalThis as unknown as CapacitorLikeScope);
+      if (!plugin) return;
+
+      pullInFlightRef.current = true;
+      lastNativePullAtRef.current = now;
+
+      void (async () => {
+        try {
+          const response = await plugin.request({
+            method: "GET",
+            path: "/api/raw-snapshot",
+          });
+          if (response.status < 200 || response.status >= 300) {
+            throw new Error(`native_group_context_pull_http_${response.status}`);
+          }
+          const body = isRecord(response.body) ? response.body : {};
+          const stores = isRecord(body.stores) ? body.stores : {};
+
+          const rooms = castStoreRows<GroupRoom>(
+            readStoreRows(stores, "groupRooms").filter(hasEntityId),
+          );
+          for (const room of rooms) {
+            await dbApi.saveGroupRoom(room);
+          }
+
+          const participants = castStoreRows<GroupParticipant>(
+            readStoreRows(stores, "groupParticipants").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          if (participants.length > 0) {
+            await dbApi.saveGroupParticipants(participants);
+          }
+
+          const messages = castStoreRows<GroupMessage>(
+            readStoreRows(stores, "groupMessages").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          for (const message of messages) {
+            await dbApi.saveGroupMessage(message);
+          }
+
+          const events = castStoreRows<GroupEvent>(
+            readStoreRows(stores, "groupEvents").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          if (events.length > 0) {
+            await dbApi.appendGroupEvents(events);
+          }
+
+          const personaStates = castStoreRows<GroupPersonaState>(
+            readStoreRows(stores, "groupPersonaStates").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          if (personaStates.length > 0) {
+            await dbApi.saveGroupPersonaStates(personaStates);
+          }
+
+          const relationEdges = castStoreRows<GroupRelationEdge>(
+            readStoreRows(stores, "groupRelationEdges").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          if (relationEdges.length > 0) {
+            await dbApi.saveGroupRelationEdges(relationEdges);
+          }
+
+          const sharedMemories = castStoreRows<GroupMemoryShared>(
+            readStoreRows(stores, "groupSharedMemories").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          if (sharedMemories.length > 0) {
+            await dbApi.saveGroupSharedMemories(sharedMemories);
+          }
+
+          const privateMemories = castStoreRows<GroupMemoryPrivate>(
+            readStoreRows(stores, "groupPrivateMemories").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          if (privateMemories.length > 0) {
+            await dbApi.saveGroupPrivateMemories(privateMemories);
+          }
+
+          const snapshots = castStoreRows<GroupSnapshot>(
+            readStoreRows(stores, "groupSnapshots").filter(
+              (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, roomId),
+            ),
+          );
+          for (const snapshot of snapshots) {
+            await dbApi.saveGroupSnapshot(snapshot);
+          }
+
+          await syncGroupStateFromDb(roomId);
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "native_group_context_pull_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "group_iteration.native_context_pull_failed",
+            message: "Failed to pull native group context into web storage",
+            details: {
+              roomId,
+              reason,
+              error: errorMessage,
+            },
+          });
+        } finally {
+          pullInFlightRef.current = false;
+        }
+      })();
+    };
+
     if (isAndroidRuntime && previousRoomId && previousRoomId !== nextRoomId) {
       syncDesiredState(previousRoomId, false);
       void cancelBackgroundJob(buildGroupIterationJobId(previousRoomId)).catch(() => {
@@ -263,6 +424,7 @@ export function useGroupIterationBackgroundWorker({
 
     if (!activeGroupRoom) {
       if (isAndroidRuntime) {
+        pullNativeContextIntoWeb(null, "no_active_room");
         if (previousRoomId) {
           syncDesiredState(previousRoomId, false);
           void cancelBackgroundJob(buildGroupIterationJobId(previousRoomId)).catch(() => {
@@ -308,6 +470,7 @@ export function useGroupIterationBackgroundWorker({
             syncInFlightRef.current = false;
           });
       }
+      pullNativeContextIntoWeb(roomId, "effect_enter");
     }
     let lastStatusFingerprint = "";
     let lastStatusAt = 0;
@@ -636,6 +799,7 @@ export function useGroupIterationBackgroundWorker({
       const currentRoom = activeGroupRoomRef.current;
       if (currentRoom && currentRoom.id === roomId) {
         syncDesiredState(roomId, shouldEnableDesiredState(currentRoom));
+        pullNativeContextIntoWeb(roomId, "background_tick");
       }
       void ensureNativeQueueJob();
     });
@@ -654,6 +818,7 @@ export function useGroupIterationBackgroundWorker({
     activeGroupRoom?.status,
     isAndroidRuntime,
     androidNativeGroupIterationV1,
+    syncGroupStateFromDb,
   ]);
 }
 

@@ -242,6 +242,7 @@ export default function App() {
     runActiveGroupIteration,
     retryGroupMessageImages,
     regenerateGroupMessageResponse,
+    syncGroupStateFromDb,
   } = useGroupStore();
 
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chats");
@@ -492,6 +493,7 @@ export default function App() {
     personas,
     settings,
     runActiveGroupIteration,
+    syncGroupStateFromDb,
   });
 
   const {

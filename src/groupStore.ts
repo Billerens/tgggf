@@ -104,6 +104,7 @@ interface GroupStoreState {
     settings: AppSettings;
     userName: string;
   }) => Promise<void>;
+  syncGroupStateFromDb: (preferredRoomId?: string | null) => Promise<void>;
   refreshActiveGroupEventLog: () => Promise<void>;
   clearError: () => void;
 }
@@ -767,6 +768,29 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
     if (get().activeGroupRoomId === roomId) {
       set({ groupEvents: events });
     }
+  },
+
+  syncGroupStateFromDb: async (preferredRoomId) => {
+    const rooms = ensureRoomsState(await dbApi.getGroupRooms());
+    const currentRoomId = get().activeGroupRoomId;
+    const requestedRoomId = preferredRoomId?.trim() || currentRoomId;
+    const targetRoomId =
+      requestedRoomId && rooms.some((room) => room.id === requestedRoomId)
+        ? requestedRoomId
+        : rooms[0]?.id ?? null;
+    const artifacts = await loadRoomArtifacts(targetRoomId);
+    set({
+      groupRooms: rooms,
+      activeGroupRoomId: targetRoomId,
+      groupParticipants: artifacts.participants,
+      groupMessages: artifacts.messages,
+      groupEvents: artifacts.events,
+      groupPersonaStates: artifacts.personaStates,
+      groupRelationEdges: artifacts.relationEdges,
+      groupSharedMemories: artifacts.sharedMemories,
+      groupPrivateMemories: artifacts.privateMemories,
+      error: null,
+    });
   },
 
   initializeGroup: async (personas) => {
