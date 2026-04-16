@@ -339,8 +339,14 @@ object ComfyNativeClient {
                     strictPreferredMatch = strictPreferredMatch,
                     pickLatestImageOnly = pickLatestImageOnly,
                 )
+            val localizedUrls =
+                localizeOutputImageUrls(
+                    context = context,
+                    settings = settings,
+                    imageUrls = urls,
+                )
             return ComfyRunResult(
-                imageUrls = urls,
+                imageUrls = if (localizedUrls.isNotEmpty()) localizedUrls else urls,
                 seed = normalizedSeed,
                 model = checkpointName,
             )
