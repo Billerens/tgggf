@@ -115,6 +115,16 @@ class ForegroundSyncService : Service() {
         }
 
         @JvmStatic
+        fun triggerNow(context: Context, reason: String = "manual") {
+            val appContext = context.applicationContext
+            ensureStartedIfEnabled(appContext)
+            BackgroundRuntimeEngine.requestTick(appContext)
+            TopicGenerationNativeExecutor.requestTick(appContext)
+            GroupIterationNativeExecutor.requestTick(appContext)
+            MainActivity.pulseWebViewFromService("trigger_$reason")
+        }
+
+        @JvmStatic
         fun updateWorkerStatus(
             context: Context,
             worker: String,

@@ -26,12 +26,24 @@ data class BackgroundRuntimeEventRecord(
     val createdAtMs: Long,
 )
 
+data class BackgroundDeltaRecord(
+    val id: Long,
+    val taskType: String,
+    val scopeId: String,
+    val kind: String,
+    val entityType: String,
+    val entityId: String?,
+    val payloadJson: String,
+    val createdAtMs: Long,
+)
+
 class BackgroundRuntimeRepository(
     context: Context,
     dbName: String = "tg_gf_background_runtime.db",
 ) : SQLiteOpenHelper(context, dbName, null, DB_VERSION) {
     companion object {
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
+        const val GLOBAL_SCOPE_ID = "global"
 
         private const val TABLE_DESIRED_STATE = "background_desired_state"
         private const val COL_TASK_TYPE = "task_type"
@@ -48,6 +60,13 @@ class BackgroundRuntimeRepository(
         private const val COL_MESSAGE = "message"
         private const val COL_DETAILS_JSON = "details_json"
         private const val COL_CREATED_AT_MS = "created_at_ms"
+
+        private const val TABLE_DELTA = "background_delta"
+        private const val COL_DELTA_ID = "id"
+        private const val COL_KIND = "kind"
+        private const val COL_ENTITY_TYPE = "entity_type"
+        private const val COL_ENTITY_ID = "entity_id"
+        private const val COL_DELTA_PAYLOAD_JSON = "payload_json"
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -96,10 +115,42 @@ class BackgroundRuntimeRepository(
             ON $TABLE_EVENTS ($COL_TASK_TYPE, $COL_SCOPE_ID, $COL_CREATED_AT_MS DESC)
             """.trimIndent(),
         )
+        createDeltaSchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Version 1: no-op.
+        if (oldVersion < 2) {
+            createDeltaSchema(db)
+        }
+    }
+
+    private fun createDeltaSchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS $TABLE_DELTA (
+              $COL_DELTA_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+              $COL_TASK_TYPE TEXT NOT NULL,
+              $COL_SCOPE_ID TEXT NOT NULL,
+              $COL_KIND TEXT NOT NULL,
+              $COL_ENTITY_TYPE TEXT NOT NULL,
+              $COL_ENTITY_ID TEXT NULL,
+              $COL_DELTA_PAYLOAD_JSON TEXT NOT NULL DEFAULT '{}',
+              $COL_CREATED_AT_MS INTEGER NOT NULL
+            )
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_delta_created_at
+            ON $TABLE_DELTA ($COL_CREATED_AT_MS ASC)
+            """.trimIndent(),
+        )
+        db.execSQL(
+            """
+            CREATE INDEX IF NOT EXISTS idx_delta_task_scope_id
+            ON $TABLE_DELTA ($COL_TASK_TYPE, $COL_SCOPE_ID, $COL_DELTA_ID ASC)
+            """.trimIndent(),
+        )
     }
 
     fun upsertDesiredState(
@@ -350,6 +401,151 @@ class BackgroundRuntimeRepository(
         )
     }
 
+    fun appendDelta(
+        taskType: String,
+        scopeId: String,
+        kind: String,
+        entityType: String,
+        entityId: String?,
+        payloadJson: String,
+    ): BackgroundDeltaRecord {
+        val normalizedTaskType = taskType.trim()
+        val normalizedScopeId = scopeId.trim().ifEmpty { GLOBAL_SCOPE_ID }
+        val normalizedKind = kind.trim()
+        val normalizedEntityType = entityType.trim()
+        val normalizedEntityId = entityId?.trim()?.ifEmpty { null }
+        val normalizedPayloadJson = payloadJson.trim().ifEmpty { "{}" }
+        val now = System.currentTimeMillis()
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val values = ContentValues().apply {
+                put(COL_TASK_TYPE, normalizedTaskType)
+                put(COL_SCOPE_ID, normalizedScopeId)
+                put(COL_KIND, normalizedKind)
+                put(COL_ENTITY_TYPE, normalizedEntityType)
+                if (normalizedEntityId == null) {
+                    putNull(COL_ENTITY_ID)
+                } else {
+                    put(COL_ENTITY_ID, normalizedEntityId)
+                }
+                put(COL_DELTA_PAYLOAD_JSON, normalizedPayloadJson)
+                put(COL_CREATED_AT_MS, now)
+            }
+            val rowId = db.insert(TABLE_DELTA, null, values)
+            val inserted = getDeltaByIdInternal(db, rowId)
+            db.setTransactionSuccessful()
+            return requireNotNull(inserted)
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun listDelta(
+        sinceId: Long = 0L,
+        limit: Int = 200,
+        taskType: String? = null,
+        scopeIds: List<String>? = null,
+        includeGlobalScope: Boolean = true,
+    ): List<BackgroundDeltaRecord> {
+        val normalizedSinceId = maxOf(0L, sinceId)
+        val normalizedLimit = limit.coerceIn(1, 1000)
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        clauses.add("$COL_DELTA_ID > ?")
+        args.add(normalizedSinceId.toString())
+
+        val normalizedTaskType = taskType?.trim()?.ifEmpty { null }
+        if (normalizedTaskType != null) {
+            clauses.add("$COL_TASK_TYPE = ?")
+            args.add(normalizedTaskType)
+        }
+
+        val normalizedScopeIds =
+            scopeIds
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?.distinct()
+                .orEmpty()
+        if (normalizedScopeIds.isNotEmpty() || includeGlobalScope) {
+            val targetScopeIds = mutableListOf<String>()
+            targetScopeIds.addAll(normalizedScopeIds)
+            if (includeGlobalScope && !targetScopeIds.contains(GLOBAL_SCOPE_ID)) {
+                targetScopeIds.add(GLOBAL_SCOPE_ID)
+            }
+            if (targetScopeIds.isNotEmpty()) {
+                val placeholders = targetScopeIds.joinToString(",") { "?" }
+                clauses.add("$COL_SCOPE_ID IN ($placeholders)")
+                args.addAll(targetScopeIds)
+            }
+        }
+
+        val selection = clauses.joinToString(" AND ")
+        return readableDatabase.query(
+            TABLE_DELTA,
+            null,
+            selection,
+            args.toTypedArray(),
+            null,
+            null,
+            "$COL_DELTA_ID ASC",
+            normalizedLimit.toString(),
+        ).use { cursor ->
+            mapDeltaCursor(cursor)
+        }
+    }
+
+    fun ackDeltaUpTo(ackedUpToId: Long, taskType: String? = null): Int {
+        val normalizedAckId = maxOf(0L, ackedUpToId)
+        if (normalizedAckId <= 0L) return 0
+        val normalizedTaskType = taskType?.trim()?.ifEmpty { null }
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        clauses.add("$COL_DELTA_ID <= ?")
+        args.add(normalizedAckId.toString())
+        if (normalizedTaskType != null) {
+            clauses.add("$COL_TASK_TYPE = ?")
+            args.add(normalizedTaskType)
+        }
+        return writableDatabase.delete(
+            TABLE_DELTA,
+            clauses.joinToString(" AND "),
+            args.toTypedArray(),
+        )
+    }
+
+    fun latestDeltaId(): Long {
+        return readableDatabase.rawQuery(
+            """
+            SELECT MAX($COL_DELTA_ID)
+            FROM $TABLE_DELTA
+            """.trimIndent(),
+            null,
+        ).use { cursor ->
+            if (!cursor.moveToFirst() || cursor.isNull(0)) {
+                0L
+            } else {
+                cursor.getLong(0)
+            }
+        }
+    }
+
+    private fun getDeltaByIdInternal(db: SQLiteDatabase, id: Long): BackgroundDeltaRecord? {
+        if (id <= 0L) return null
+        return db.query(
+            TABLE_DELTA,
+            null,
+            "$COL_DELTA_ID = ?",
+            arrayOf(id.toString()),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            mapDeltaCursor(cursor).firstOrNull()
+        }
+    }
+
     private fun mapDesiredStateCursor(cursor: Cursor): List<BackgroundDesiredStateRecord> {
         val taskTypeIndex = cursor.getColumnIndexOrThrow(COL_TASK_TYPE)
         val scopeIdIndex = cursor.getColumnIndexOrThrow(COL_SCOPE_ID)
@@ -393,6 +589,33 @@ class BackgroundRuntimeRepository(
                     level = cursor.getString(levelIndex),
                     message = cursor.getString(messageIndex),
                     detailsJson = if (cursor.isNull(detailsIndex)) null else cursor.getString(detailsIndex),
+                    createdAtMs = cursor.getLong(createdAtIndex),
+                ),
+            )
+        }
+        return rows
+    }
+
+    private fun mapDeltaCursor(cursor: Cursor): List<BackgroundDeltaRecord> {
+        val idIndex = cursor.getColumnIndexOrThrow(COL_DELTA_ID)
+        val taskTypeIndex = cursor.getColumnIndexOrThrow(COL_TASK_TYPE)
+        val scopeIdIndex = cursor.getColumnIndexOrThrow(COL_SCOPE_ID)
+        val kindIndex = cursor.getColumnIndexOrThrow(COL_KIND)
+        val entityTypeIndex = cursor.getColumnIndexOrThrow(COL_ENTITY_TYPE)
+        val entityIdIndex = cursor.getColumnIndexOrThrow(COL_ENTITY_ID)
+        val payloadIndex = cursor.getColumnIndexOrThrow(COL_DELTA_PAYLOAD_JSON)
+        val createdAtIndex = cursor.getColumnIndexOrThrow(COL_CREATED_AT_MS)
+        val rows = mutableListOf<BackgroundDeltaRecord>()
+        while (cursor.moveToNext()) {
+            rows.add(
+                BackgroundDeltaRecord(
+                    id = cursor.getLong(idIndex),
+                    taskType = cursor.getString(taskTypeIndex),
+                    scopeId = cursor.getString(scopeIdIndex),
+                    kind = cursor.getString(kindIndex),
+                    entityType = cursor.getString(entityTypeIndex),
+                    entityId = if (cursor.isNull(entityIdIndex)) null else cursor.getString(entityIdIndex),
+                    payloadJson = cursor.getString(payloadIndex) ?: "{}",
                     createdAtMs = cursor.getLong(createdAtIndex),
                 ),
             )

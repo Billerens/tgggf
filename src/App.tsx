@@ -355,37 +355,9 @@ export default function App() {
     pushSystemLog({
       level: "info",
       eventType: "group_iteration.flag_state",
-      message:
-        "android flags: " +
-        `rolloutStage=${settings.androidNativeRolloutStage}, ` +
-        `iterationV1=${settings.androidNativeGroupIterationV1}, ` +
-        `imagesV1=${settings.androidNativeGroupImagesV1}, ` +
-        `topicGenerationV1=${settings.androidNativeTopicGenerationV1}, ` +
-        `topicThemedPromptV1=${settings.androidNativeTopicThemedPromptV1}, ` +
-        `structuredStorageV1=${settings.androidNativeGroupStructuredStorageV1}, ` +
-        `dualWrite=${settings.androidNativeGroupStructuredStorageDualWrite}`,
-      details: {
-        androidNativeRolloutStage: settings.androidNativeRolloutStage,
-        androidNativeGroupIterationV1: settings.androidNativeGroupIterationV1,
-        androidNativeGroupImagesV1: settings.androidNativeGroupImagesV1,
-        androidNativeTopicGenerationV1: settings.androidNativeTopicGenerationV1,
-        androidNativeTopicThemedPromptV1: settings.androidNativeTopicThemedPromptV1,
-        androidNativeGroupStructuredStorageV1:
-          settings.androidNativeGroupStructuredStorageV1,
-        androidNativeGroupStructuredStorageDualWrite:
-          settings.androidNativeGroupStructuredStorageDualWrite,
-      },
+      message: "android background runtime mode: native_always_on",
     });
-  }, [
-    isAndroidRuntime,
-    settings.androidNativeRolloutStage,
-    settings.androidNativeGroupIterationV1,
-    settings.androidNativeGroupImagesV1,
-    settings.androidNativeTopicGenerationV1,
-    settings.androidNativeTopicThemedPromptV1,
-    settings.androidNativeGroupStructuredStorageV1,
-    settings.androidNativeGroupStructuredStorageDualWrite,
-  ]);
+  }, [isAndroidRuntime]);
 
   const { pwaInstallStatus, onInstallPwa } = useAppInstallPrompt();
   const windowsArtifactUrl =
@@ -497,9 +469,7 @@ export default function App() {
   );
   useGroupIterationBackgroundWorker({
     activeGroupRoom,
-    groupRooms,
     isAndroidRuntime,
-    androidNativeGroupIterationV1: settings.androidNativeGroupIterationV1,
     personas,
     settings,
     runActiveGroupIteration,
@@ -584,7 +554,6 @@ export default function App() {
   });
   const { runGenerationStep, startGeneration, stopGeneration } = useTopicGenerator({
     isAndroidRuntime,
-    androidNativeTopicGenerationV1: settings.androidNativeTopicGenerationV1,
     settings,
     personas,
     generationPersonaId,
@@ -604,7 +573,6 @@ export default function App() {
   });
   useTopicGenerationBackgroundWorker({
     isAndroidRuntime,
-    androidNativeTopicGenerationV1: settings.androidNativeTopicGenerationV1,
     generationSession,
     runGenerationStep,
     syncGenerationSessionsFromDb,

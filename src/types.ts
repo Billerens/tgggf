@@ -60,7 +60,6 @@ export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
 export type AuthMode = "none" | "bearer" | "token" | "basic" | "custom";
 export type LlmProvider = "lmstudio" | "openrouter" | "huggingface";
 export type EnhanceDetailLevel = "soft" | "medium" | "strong";
-export type AndroidNativeRolloutStage = "internal" | "beta" | "prod";
 
 export interface EnhanceDetailLevelConfig {
   i2iBase: number;
@@ -480,13 +479,6 @@ export interface AppSettings {
   userGender: UserGender;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
-  androidNativeRolloutStage: AndroidNativeRolloutStage;
-  androidNativeGroupIterationV1: boolean;
-  androidNativeGroupImagesV1: boolean;
-  androidNativeTopicGenerationV1: boolean;
-  androidNativeTopicThemedPromptV1: boolean;
-  androidNativeGroupStructuredStorageV1: boolean;
-  androidNativeGroupStructuredStorageDualWrite: boolean;
   enhanceDetailLevelAll: EnhanceDetailLevel;
   enhanceDetailLevelPart: EnhanceDetailLevel;
   enhanceDetailStrengthTable: EnhanceDetailStrengthTable;

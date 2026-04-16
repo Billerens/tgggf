@@ -1,7 +1,6 @@
 package com.tggf.app.localapi
 
 import android.content.Context
-import org.json.JSONObject
 
 class LocalRepository(
     context: Context,
@@ -28,6 +27,7 @@ class LocalRepository(
     private val groupSharedMemoriesJsonKey = "group_shared_memories_json"
     private val groupPrivateMemoriesJsonKey = "group_private_memories_json"
     private val groupSnapshotsJsonKey = "group_snapshots_json"
+    private val backgroundEngineV2ResetMarkerKey = "background_engine_v2_reset_done"
     private val structuredGroupStoreNames =
         setOf(
             "groupRooms",
@@ -60,20 +60,16 @@ class LocalRepository(
         "groupSnapshots" to groupSnapshotsJsonKey
     )
 
+    init {
+        runOneTimeBackgroundEngineV2Reset()
+    }
+
     fun health(): Map<String, Any> {
-        val structuredEnabled = isStructuredGroupStorageEnabled()
-        val dualWriteEnabled = isStructuredGroupStorageDualWriteEnabled()
         return mapOf(
             "ok" to true,
             "service" to "android-local-api",
-            "storage" to
-                if (structuredEnabled) {
-                    "sqlite_group_runtime_primary"
-                } else {
-                    "shared_preferences_json"
-                },
-            "groupStoragePrimary" to if (structuredEnabled) "sqlite" else "shared_preferences",
-            "groupStorageCompatDualWrite" to dualWriteEnabled,
+            "storage" to "sqlite_group_runtime_primary",
+            "groupStoragePrimary" to "sqlite",
             "dbPath" to dbPath
         )
     }
@@ -117,19 +113,8 @@ class LocalRepository(
     fun readStoreJson(storeName: String): String? {
         val key = storeKeyByName[storeName] ?: return null
         val normalizedStoreName = storeName.trim()
-        if (normalizedStoreName.isNotEmpty() && isStructuredGroupStore(normalizedStoreName) && isStructuredGroupStorageEnabled()) {
-            val sqliteValue = groupRuntimeStoreRepository.readStoreJson(normalizedStoreName)
-            if (!sqliteValue.isNullOrBlank()) {
-                return sqliteValue
-            }
-
-            val legacyValue = prefs.getString(key, null)
-            if (!legacyValue.isNullOrBlank()) {
-                // Lazy migration path: backfill SQLite on first read of legacy payload.
-                groupRuntimeStoreRepository.writeStoreJson(normalizedStoreName, legacyValue)
-                return legacyValue
-            }
-            return null
+        if (normalizedStoreName.isNotEmpty() && isStructuredGroupStore(normalizedStoreName)) {
+            return groupRuntimeStoreRepository.readStoreJson(normalizedStoreName)
         }
         return prefs.getString(key, null)
     }
@@ -137,11 +122,8 @@ class LocalRepository(
     fun writeStoreJson(storeName: String, value: String) {
         val key = storeKeyByName[storeName] ?: return
         val normalizedStoreName = storeName.trim()
-        if (normalizedStoreName.isNotEmpty() && isStructuredGroupStore(normalizedStoreName) && isStructuredGroupStorageEnabled()) {
+        if (normalizedStoreName.isNotEmpty() && isStructuredGroupStore(normalizedStoreName)) {
             groupRuntimeStoreRepository.writeStoreJson(normalizedStoreName, value)
-            if (isStructuredGroupStorageDualWriteEnabled()) {
-                prefs.edit().putString(key, value).apply()
-            }
             return
         }
         prefs.edit().putString(key, value).apply()
@@ -160,23 +142,16 @@ class LocalRepository(
         return structuredGroupStoreNames.contains(storeName)
     }
 
-    private fun isStructuredGroupStorageEnabled(): Boolean {
-        val settings = parseSettingsJson()
-        return settings.optBoolean("androidNativeGroupStructuredStorageV1", true)
-    }
-
-    private fun isStructuredGroupStorageDualWriteEnabled(): Boolean {
-        val settings = parseSettingsJson()
-        return settings.optBoolean("androidNativeGroupStructuredStorageDualWrite", true)
-    }
-
-    private fun parseSettingsJson(): JSONObject {
-        val raw = prefs.getString(settingsJsonKey, null)
-        if (raw.isNullOrBlank()) return JSONObject()
-        return try {
-            JSONObject(raw)
-        } catch (_: Exception) {
-            JSONObject()
+    private fun runOneTimeBackgroundEngineV2Reset() {
+        if (prefs.getBoolean(backgroundEngineV2ResetMarkerKey, false)) return
+        val editor = prefs.edit()
+        for (key in storeKeyByName.values.toSet()) {
+            editor.remove(key)
+        }
+        editor.putBoolean(backgroundEngineV2ResetMarkerKey, true)
+        editor.apply()
+        for (storeName in structuredGroupStoreNames) {
+            groupRuntimeStoreRepository.clearStore(storeName)
         }
     }
 

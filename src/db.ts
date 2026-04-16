@@ -717,47 +717,6 @@ function normalizeSettings(
   }
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
-  const allowedRolloutStages = ["internal", "beta", "prod"] as const;
-  if (!allowedRolloutStages.includes(merged.androidNativeRolloutStage)) {
-    merged.androidNativeRolloutStage =
-      DEFAULT_SETTINGS.androidNativeRolloutStage;
-  }
-  merged.androidNativeGroupIterationV1 = Boolean(
-    merged.androidNativeGroupIterationV1,
-  );
-  const hasNativeGroupImagesOverride = Boolean(
-    current &&
-    Object.prototype.hasOwnProperty.call(current, "androidNativeGroupImagesV1"),
-  );
-  merged.androidNativeGroupImagesV1 = hasNativeGroupImagesOverride
-    ? Boolean(merged.androidNativeGroupImagesV1)
-    : merged.androidNativeGroupIterationV1;
-  const hasNativeTopicGenerationOverride = Boolean(
-    current &&
-    Object.prototype.hasOwnProperty.call(
-      current,
-      "androidNativeTopicGenerationV1",
-    ),
-  );
-  merged.androidNativeTopicGenerationV1 = hasNativeTopicGenerationOverride
-    ? Boolean(merged.androidNativeTopicGenerationV1)
-    : merged.androidNativeGroupIterationV1;
-  const hasNativeTopicThemedPromptOverride = Boolean(
-    current &&
-    Object.prototype.hasOwnProperty.call(
-      current,
-      "androidNativeTopicThemedPromptV1",
-    ),
-  );
-  merged.androidNativeTopicThemedPromptV1 = hasNativeTopicThemedPromptOverride
-    ? Boolean(merged.androidNativeTopicThemedPromptV1)
-    : merged.androidNativeTopicGenerationV1;
-  merged.androidNativeGroupStructuredStorageV1 = Boolean(
-    merged.androidNativeGroupStructuredStorageV1,
-  );
-  merged.androidNativeGroupStructuredStorageDualWrite = Boolean(
-    merged.androidNativeGroupStructuredStorageDualWrite,
-  );
   if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelAll)) {
     merged.enhanceDetailLevelAll = DEFAULT_SETTINGS.enhanceDetailLevelAll;
   }
@@ -960,13 +919,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   userGender: "unspecified",
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
-  androidNativeRolloutStage: "internal",
-  androidNativeGroupIterationV1: false,
-  androidNativeGroupImagesV1: false,
-  androidNativeTopicGenerationV1: false,
-  androidNativeTopicThemedPromptV1: false,
-  androidNativeGroupStructuredStorageV1: true,
-  androidNativeGroupStructuredStorageDualWrite: true,
   enhanceDetailLevelAll: "medium",
   enhanceDetailLevelPart: "strong",
   enhanceDetailStrengthTable: normalizeEnhanceDetailStrengthTable(undefined),

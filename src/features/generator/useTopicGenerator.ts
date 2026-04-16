@@ -10,7 +10,6 @@ import { waitMs, stableSeedFromText } from "../look/lookHelpers";
 
 interface UseTopicGeneratorParams {
   isAndroidRuntime: boolean;
-  androidNativeTopicGenerationV1: boolean;
   settings: AppSettings;
   personas: Persona[];
   generationPersonaId: string;
@@ -37,7 +36,6 @@ export type TopicGenerationStepResult =
 
 export function useTopicGenerator({
   isAndroidRuntime,
-  androidNativeTopicGenerationV1,
   settings,
   personas,
   generationPersonaId,
@@ -305,7 +303,7 @@ export function useTopicGenerator({
     setGenerationIsRunning(true);
     setGenerationPendingImageCount(0);
 
-    if (isAndroidRuntime && androidNativeTopicGenerationV1) {
+    if (isAndroidRuntime) {
       return;
     }
 
@@ -440,7 +438,6 @@ export function useTopicGenerator({
     generationDelaySeconds,
     generationInfinite,
     isAndroidRuntime,
-    androidNativeTopicGenerationV1,
     generationPersonaId,
     generationRunRef,
     generationSessionId,

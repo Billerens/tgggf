@@ -46,26 +46,6 @@ class LocalApiBridgePlugin : Plugin() {
             plugin.notifyListeners("backgroundTick", payload)
         }
 
-        @JvmStatic
-        fun emitGroupIterationRunRequest(
-            source: String,
-            roomId: String,
-            jobId: String,
-            intervalMs: Long,
-            leaseUntilMs: Long,
-        ) {
-            val plugin = activePluginRef?.get() ?: return
-            val payload = JSObject().apply {
-                put("ok", true)
-                put("source", source)
-                put("roomId", roomId)
-                put("jobId", jobId)
-                put("intervalMs", intervalMs)
-                put("leaseUntilMs", leaseUntilMs)
-                put("requestedAtMs", System.currentTimeMillis())
-            }
-            plugin.notifyListeners("groupIterationRunRequest", payload)
-        }
     }
 
     private val repositoryDelegate = lazy { LocalRepository(context) }
@@ -144,6 +124,25 @@ class LocalApiBridgePlugin : Plugin() {
     private fun readLongQueryParam(query: String?, name: String, fallback: Long): Long {
         val raw = readQueryParam(query, name) ?: return fallback
         return raw.toLongOrNull() ?: fallback
+    }
+
+    private fun readBooleanQueryParam(query: String?, name: String, fallback: Boolean): Boolean {
+        val raw = readQueryParam(query, name)?.trim()?.lowercase() ?: return fallback
+        return when (raw) {
+            "1", "true", "yes", "on" -> true
+            "0", "false", "no", "off" -> false
+            else -> fallback
+        }
+    }
+
+    private fun readScopeIdsQueryParam(query: String?, name: String): List<String> {
+        val raw = readQueryParam(query, name) ?: return emptyList()
+        if (raw.isBlank()) return emptyList()
+        return raw
+            .split(",")
+            .map { token -> token.trim() }
+            .filter { token -> token.isNotEmpty() }
+            .distinct()
     }
 
     private fun parsePayloadJson(raw: Any?): String {
@@ -315,6 +314,19 @@ class LocalApiBridgePlugin : Plugin() {
         }
     }
 
+    private fun backgroundDeltaToJsObject(record: BackgroundDeltaRecord): JSObject {
+        return JSObject().apply {
+            put("id", record.id)
+            put("taskType", record.taskType)
+            put("scopeId", record.scopeId)
+            put("kind", record.kind)
+            put("entityType", record.entityType)
+            put("entityId", record.entityId)
+            put("payload", parsePayloadToAny(record.payloadJson))
+            put("createdAtMs", record.createdAtMs)
+        }
+    }
+
     private fun respond(call: PluginCall, status: Int, body: Any?) {
         val payload = JSObject()
         payload.put("status", status)
@@ -476,6 +488,30 @@ class LocalApiBridgePlugin : Plugin() {
             stores.put(storeName, readStoreArray(storeName))
         }
         return stores
+    }
+
+    private fun applyStoresPayload(storesJson: JSONObject, mode: String) {
+        val storeNames = repository.knownStoreNames().toList().sorted()
+        if (mode == "replace") {
+            for (storeName in storeNames) {
+                repository.clearStoreJson(storeName)
+            }
+        }
+        for (storeName in storeNames) {
+            if (!storesJson.has(storeName)) {
+                if (mode == "replace") {
+                    repository.clearStoreJson(storeName)
+                }
+                continue
+            }
+            val rawValue = storesJson.opt(storeName)
+            val arrayValue = when (rawValue) {
+                is JSONArray -> rawValue
+                is JSONObject -> JSONArray().put(rawValue)
+                else -> JSONArray()
+            }
+            writeStoreArray(storeName, arrayValue)
+        }
     }
 
     private fun readPersonasArray(): JSONArray {
@@ -948,6 +984,22 @@ class LocalApiBridgePlugin : Plugin() {
                 enabled = enabled,
                 payloadJson = payloadJson,
             )
+            if (!enabled) {
+                when (taskType) {
+                    ForegroundSyncService.WORKER_TOPIC_GENERATION ->
+                        TopicGenerationNativeExecutor.requestCancellation(scopeId)
+                    ForegroundSyncService.WORKER_GROUP_ITERATION ->
+                        GroupIterationNativeExecutor.requestCancellation(scopeId)
+                }
+                backgroundJobs.cancelJob("$taskType:$scopeId")
+            } else {
+                when (taskType) {
+                    ForegroundSyncService.WORKER_TOPIC_GENERATION ->
+                        TopicGenerationNativeExecutor.clearCancellation(scopeId)
+                    ForegroundSyncService.WORKER_GROUP_ITERATION ->
+                        GroupIterationNativeExecutor.clearCancellation(scopeId)
+                }
+            }
             backgroundRuntime.appendEvent(
                 taskType = taskType,
                 scopeId = scopeId,
@@ -967,6 +1019,85 @@ class LocalApiBridgePlugin : Plugin() {
                 JSObject().apply {
                     put("ok", true)
                     put("state", backgroundDesiredStateToJsObject(updated))
+                },
+            )
+            ForegroundSyncService.triggerNow(context, "desired_state")
+            return
+        }
+
+        if (method == "GET" && path == "/api/background-runtime/delta") {
+            val sinceId = readLongQueryParam(query, "sinceId", 0L)
+            val limit = readIntQueryParam(query, "limit", 200)
+            val taskType = readQueryParam(query, "taskType")
+            val scopeIds = readScopeIdsQueryParam(query, "scopeIds")
+            val includeGlobal = readBooleanQueryParam(query, "includeGlobal", true)
+            val rows =
+                backgroundRuntime.listDelta(
+                    sinceId = sinceId,
+                    limit = limit,
+                    taskType = taskType,
+                    scopeIds = scopeIds,
+                    includeGlobalScope = includeGlobal,
+                )
+            var nextSinceId = maxOf(0L, sinceId)
+            val items = JSONArray().apply {
+                for (row in rows) {
+                    put(backgroundDeltaToJsObject(row))
+                    if (row.id > nextSinceId) {
+                        nextSinceId = row.id
+                    }
+                }
+            }
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("items", items)
+                    put("nextSinceId", nextSinceId)
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-runtime/delta/ack") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Delta ack payload must be an object")
+                    },
+                )
+                return
+            }
+            val ackedUpToId = body.optLong("ackedUpToId", 0L)
+            val taskType = body.optString("taskType", "").trim().ifEmpty { null }
+            val deletedCount = backgroundRuntime.ackDeltaUpTo(ackedUpToId, taskType)
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("ackedUpToId", maxOf(0L, ackedUpToId))
+                    put("taskType", taskType)
+                    put("deletedCount", deletedCount)
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/background-runtime/trigger") {
+            val body = call.getObject("body")
+            val reason = body?.optString("reason", "")?.trim().orEmpty().ifEmpty { "manual" }
+            ForegroundSyncService.triggerNow(context, reason)
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
                 },
             )
             return
@@ -1396,6 +1527,50 @@ class LocalApiBridgePlugin : Plugin() {
             return
         }
 
+        if (method == "PUT" && path == "/api/background-runtime/context") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Runtime context payload must be an object")
+                    },
+                )
+                return
+            }
+            val bodyJson = try {
+                JSONObject(body.toString())
+            } catch (_: JSONException) {
+                null
+            }
+            val storesJson = bodyJson?.optJSONObject("stores")
+            if (storesJson == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Runtime context payload must include object stores")
+                    },
+                )
+                return
+            }
+            val modeRaw = bodyJson.optString("mode", "merge").trim().lowercase()
+            val mode = if (modeRaw == "replace") "replace" else "merge"
+            applyStoresPayload(storesJson, mode)
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                },
+            )
+            ForegroundSyncService.triggerNow(context, "runtime_context")
+            return
+        }
+
         if (method == "PUT" && path == "/api/raw-snapshot") {
             val body = call.getObject("body")
             if (body == null) {
@@ -1428,27 +1603,7 @@ class LocalApiBridgePlugin : Plugin() {
             }
             val modeRaw = bodyJson.optString("mode", "merge").trim().lowercase()
             val mode = if (modeRaw == "replace") "replace" else "merge"
-            val storeNames = repository.knownStoreNames().toList().sorted()
-            if (mode == "replace") {
-                for (storeName in storeNames) {
-                    repository.clearStoreJson(storeName)
-                }
-            }
-            for (storeName in storeNames) {
-                if (!storesJson.has(storeName)) {
-                    if (mode == "replace") {
-                        repository.clearStoreJson(storeName)
-                    }
-                    continue
-                }
-                val rawValue = storesJson.opt(storeName)
-                val arrayValue = when (rawValue) {
-                    is JSONArray -> rawValue
-                    is JSONObject -> JSONArray().put(rawValue)
-                    else -> JSONArray()
-                }
-                writeStoreArray(storeName, arrayValue)
-            }
+            applyStoresPayload(storesJson, mode)
             respond(
                 call,
                 200,

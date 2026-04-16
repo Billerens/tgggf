@@ -5,6 +5,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.Collections
 import java.time.Instant
 import java.util.UUID
 import kotlin.math.ceil
@@ -16,6 +17,7 @@ object GroupIterationNativeExecutor {
     private const val GROUP_ITERATION_JOB_PREFIX = "group_iteration:"
     private const val GROUP_ITERATION_LEASE_MS = 120_000L
     private const val GROUP_ITERATION_DEFAULT_INTERVAL_MS = 4_200L
+    private const val GROUP_ITERATION_RETRY_DELAY_MS = 6_500L
     private const val GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS = 8_000L
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
     private val DETERMINISTIC_HARD_BLOCK_REASONS =
@@ -51,10 +53,25 @@ object GroupIterationNativeExecutor {
     )
 
     private val inFlight = AtomicBoolean(false)
+    private val cancelledScopes = Collections.synchronizedSet(mutableSetOf<String>())
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "tg-gf-group-native").apply {
             isDaemon = true
         }
+    }
+
+    @JvmStatic
+    fun requestCancellation(scopeId: String) {
+        val normalized = scopeId.trim()
+        if (normalized.isEmpty()) return
+        cancelledScopes.add(normalized)
+    }
+
+    @JvmStatic
+    fun clearCancellation(scopeId: String) {
+        val normalized = scopeId.trim()
+        if (normalized.isEmpty()) return
+        cancelledScopes.remove(normalized)
     }
 
     @JvmStatic
@@ -121,12 +138,6 @@ object GroupIterationNativeExecutor {
             }
         val hasEnabledRoom = enabledStates.isNotEmpty()
         val scopeId = enabledStates.firstOrNull()?.scopeId?.trim().orEmpty()
-        val enabledScopeIds = enabledStates.map { row -> row.scopeId.trim() }.filter { it.isNotEmpty() }.toSet()
-        recoverLeasedJobsWithoutBridgeAck(
-            runtime = runtime,
-            jobs = jobs,
-            enabledScopeIds = enabledScopeIds,
-        )
         val room =
             if (scopeId.isBlank()) {
                 null
@@ -134,16 +145,6 @@ object GroupIterationNativeExecutor {
                 findRoomById(readStoreArray(repository, "groupRooms"), scopeId)
             }
         val blockingReason = resolveRoomBlockingReason(room)
-        val hasLeasedJobs =
-            jobs.countJobs(
-                status = BackgroundJobRepository.STATUS_LEASED,
-                type = GROUP_ITERATION_JOB_TYPE,
-            ) > 0
-        val hasPendingJobs =
-            jobs.countJobs(
-                status = BackgroundJobRepository.STATUS_PENDING,
-                type = GROUP_ITERATION_JOB_TYPE,
-            ) > 0
         val state =
             when {
                 !hasEnabledRoom -> "idle"
@@ -154,7 +155,6 @@ object GroupIterationNativeExecutor {
             when {
                 !hasEnabledRoom -> "no_active_room"
                 blockingReason.isNotBlank() -> blockingReason
-                hasLeasedJobs && !hasPendingJobs -> "awaiting_bridge_ack"
                 else -> "awaiting_due_job"
             }
         ForegroundSyncService.updateWorkerStatus(
@@ -167,61 +167,6 @@ object GroupIterationNativeExecutor {
             claimed = false,
             lastError = "",
         )
-    }
-
-    private fun recoverLeasedJobsWithoutBridgeAck(
-        runtime: BackgroundRuntimeRepository,
-        jobs: BackgroundJobRepository,
-        enabledScopeIds: Set<String>,
-    ) {
-        val leasedJobs =
-            jobs.listJobs(status = BackgroundJobRepository.STATUS_LEASED, limit = 120).filter { row ->
-                row.type == GROUP_ITERATION_JOB_TYPE
-            }
-        if (leasedJobs.isEmpty()) return
-
-        val retryAtMs = System.currentTimeMillis() + GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS
-        for (job in leasedJobs) {
-            val roomId =
-                parseRoomIdFromJobId(job.id).ifBlank {
-                    parseJsonObject(job.payloadJson).optString("roomId", "").trim()
-                }
-            if (roomId.isBlank() || !enabledScopeIds.contains(roomId)) {
-                jobs.cancelJob(job.id)
-                appendRuntimeEvent(
-                    runtime = runtime,
-                    scopeId = roomId.ifBlank { "unknown" },
-                    jobId = job.id,
-                    stage = "bridge_ack_cancelled",
-                    level = "info",
-                    message = "Cancelled leased group job because desired-state is disabled",
-                    details = null,
-                )
-                continue
-            }
-
-            val released =
-                jobs.rescheduleJob(
-                    id = job.id,
-                    runAtMs = retryAtMs,
-                    incrementAttempts = false,
-                    lastError = null,
-                )
-            if (released) {
-                appendRuntimeEvent(
-                    runtime = runtime,
-                    scopeId = roomId,
-                    jobId = job.id,
-                    stage = "bridge_ack_released",
-                    level = "info",
-                    message = "Released leased group job without bridge ACK",
-                    details = JSONObject().apply {
-                        put("retryAtMs", retryAtMs)
-                        put("ackTimeoutMs", GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS)
-                    },
-                )
-            }
-        }
     }
 
     private fun processClaimedJob(
@@ -317,47 +262,28 @@ object GroupIterationNativeExecutor {
             return
         }
 
-        val nativeHeadlessEnabled = isNativeHeadlessModeEnabled(repository)
-        if (nativeHeadlessEnabled) {
-            val headlessCompleted =
-                try {
-                    executeHeadlessIteration(
-                        context = context,
-                        repository = repository,
-                        jobs = jobs,
-                        runtime = runtime,
-                        job = job,
-                        roomId = roomId,
-                        intervalMs = intervalMs,
-                    )
-                    true
-                } catch (error: Exception) {
-                    appendRuntimeEvent(
-                        runtime = runtime,
-                        scopeId = roomId,
-                        jobId = job.id,
-                        stage = "headless_iteration_failed",
-                        level = "warn",
-                        message = "Native headless iteration failed, falling back to bridge dispatch",
-                        details = JSONObject().apply {
-                            put("error", error.message ?: "unknown_error")
-                        },
-                    )
-                    ForegroundSyncService.updateWorkerStatus(
-                        context = context,
-                        worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
-                        state = "running",
-                        scopeId = roomId,
-                        detail = "headless_failed_bridge_fallback",
-                        progress = false,
-                        claimed = true,
-                        lastError = error.message ?: "headless_failed",
-                    )
-                    false
-                }
-            if (headlessCompleted) {
-                return
-            }
+        if (isScopeCancellationRequested(roomId)) {
+            jobs.cancelJob(job.id)
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = roomId,
+                jobId = job.id,
+                stage = "cancelled",
+                level = "info",
+                message = "Group iteration cancelled by desired-state",
+                details = null,
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+                state = "idle",
+                scopeId = roomId,
+                detail = "cancelled",
+                progress = false,
+                claimed = false,
+                lastError = "",
+            )
+            return
         }
 
         val blockingReason = resolveRoomBlockingReason(room)
@@ -392,75 +318,46 @@ object GroupIterationNativeExecutor {
             return
         }
 
-        val requestedAtMs = System.currentTimeMillis()
-        LocalApiBridgePlugin.emitGroupIterationRunRequest(
-            source = "native_group_executor",
-            roomId = roomId,
-            jobId = job.id,
-            intervalMs = intervalMs,
-            leaseUntilMs = job.leaseUntilMs ?: requestedAtMs + GROUP_ITERATION_LEASE_MS,
-        )
-        ForegroundSyncService.updateWorkerStatus(
-            context = context,
-            worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
-            state = "running",
-            scopeId = roomId,
-            detail = "native_dispatched",
-            progress = false,
-            claimed = true,
-            lastError = "",
-        )
-        appendRuntimeEvent(
-            runtime = runtime,
-            scopeId = roomId,
-            jobId = job.id,
-            stage = "dispatch_requested",
-            level = "info",
-            message = "Dispatched group iteration run request to web bridge",
-            details = JSONObject().apply {
-                put("intervalMs", intervalMs)
-                put("requestedAtMs", requestedAtMs)
-            },
-        )
-        val fallbackRunAtMs = System.currentTimeMillis() + GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS
-        val scheduledFallback =
+        try {
+            executeHeadlessIteration(
+                context = context,
+                repository = repository,
+                jobs = jobs,
+                runtime = runtime,
+                job = job,
+                roomId = roomId,
+                intervalMs = intervalMs,
+            )
+        } catch (error: Exception) {
+            val errorMessage = error.message ?: "headless_failed"
             jobs.rescheduleJob(
                 id = job.id,
-                runAtMs = fallbackRunAtMs,
-                incrementAttempts = false,
-                lastError = null,
+                runAtMs = System.currentTimeMillis() + GROUP_ITERATION_RETRY_DELAY_MS,
+                incrementAttempts = true,
+                lastError = errorMessage,
             )
-        if (scheduledFallback) {
             appendRuntimeEvent(
                 runtime = runtime,
                 scopeId = roomId,
                 jobId = job.id,
-                stage = "dispatch_watchdog_scheduled",
-                level = "info",
-                message = "Scheduled fallback reschedule in case bridge ACK is missing",
+                stage = "headless_iteration_failed",
+                level = "error",
+                message = "Native headless iteration failed",
                 details = JSONObject().apply {
-                    put("fallbackRunAtMs", fallbackRunAtMs)
-                    put("ackTimeoutMs", GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS)
+                    put("error", errorMessage)
                 },
             )
-        } else {
-            appendRuntimeEvent(
-                runtime = runtime,
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+                state = "error",
                 scopeId = roomId,
-                jobId = job.id,
-                stage = "dispatch_watchdog_schedule_failed",
-                level = "warn",
-                message = "Failed to schedule fallback reschedule for dispatched job",
-                details = JSONObject().apply {
-                    put("ackTimeoutMs", GROUP_ITERATION_BRIDGE_ACK_TIMEOUT_MS)
-                },
+                detail = "headless_failed",
+                progress = false,
+                claimed = true,
+                lastError = errorMessage,
             )
         }
-    }
-
-    private fun isNativeHeadlessModeEnabled(repository: LocalRepository): Boolean {
-        val settings = parseJsonObject(repository.readSettingsJson())
-        return settings.optBoolean("androidNativeGroupIterationV1", false)
     }
 
     private fun executeHeadlessIteration(
@@ -472,6 +369,29 @@ object GroupIterationNativeExecutor {
         roomId: String,
         intervalMs: Long,
     ) {
+        if (isScopeCancellationRequested(roomId)) {
+            jobs.cancelJob(job.id)
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = roomId,
+                jobId = job.id,
+                stage = "cancelled",
+                level = "info",
+                message = "Skipped headless iteration because scope is cancelled",
+                details = null,
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+                state = "idle",
+                scopeId = roomId,
+                detail = "cancelled",
+                progress = false,
+                claimed = false,
+                lastError = "",
+            )
+            return
+        }
         val rooms = readStoreArray(repository, "groupRooms")
         val roomIndex = findObjectIndexById(rooms, roomId)
         if (roomIndex < 0) {
@@ -1150,6 +1070,19 @@ object GroupIterationNativeExecutor {
         if (persistedMessageId != null) {
             repository.writeStoreJson("groupMessages", messages.toString())
         }
+        appendStatePatch(
+            runtime = runtime,
+            scopeId = roomId,
+            jobId = job.id,
+            stores =
+                JSONObject().apply {
+                    put("groupRooms", JSONArray(rooms.toString()))
+                    put("groupEvents", JSONArray(events.toString()))
+                    if (persistedMessageId != null) {
+                        put("groupMessages", JSONArray(messages.toString()))
+                    }
+                },
+        )
 
         jobs.rescheduleJob(
             id = job.id,
@@ -2238,6 +2171,32 @@ object GroupIterationNativeExecutor {
         }
     }
 
+    private fun isScopeCancellationRequested(scopeId: String): Boolean {
+        val normalized = scopeId.trim()
+        if (normalized.isEmpty()) return false
+        return cancelledScopes.contains(normalized)
+    }
+
+    private fun appendStatePatch(
+        runtime: BackgroundRuntimeRepository,
+        scopeId: String,
+        jobId: String?,
+        stores: JSONObject,
+    ) {
+        val normalizedScopeId = scopeId.ifBlank { BackgroundRuntimeRepository.GLOBAL_SCOPE_ID }
+        runtime.appendDelta(
+            taskType = GROUP_ITERATION_JOB_TYPE,
+            scopeId = normalizedScopeId,
+            kind = "state_patch",
+            entityType = "stores",
+            entityId = jobId?.trim()?.ifEmpty { null },
+            payloadJson =
+                JSONObject().apply {
+                    put("stores", stores)
+                }.toString(),
+        )
+    }
+
     private fun resolveRoomBlockingReason(room: JSONObject?): String {
         if (room == null) return "room_missing"
         val status = room.optString("status", "paused").trim().lowercase()
@@ -2288,14 +2247,33 @@ object GroupIterationNativeExecutor {
         message: String,
         details: JSONObject?,
     ) {
+        val normalizedScopeId = scopeId.ifBlank { "unknown" }
         runtime.appendEvent(
             taskType = GROUP_ITERATION_JOB_TYPE,
-            scopeId = scopeId.ifBlank { "unknown" },
+            scopeId = normalizedScopeId,
             jobId = jobId,
             stage = stage,
             level = level,
             message = message,
             detailsJson = details?.toString(),
+        )
+        runtime.appendDelta(
+            taskType = GROUP_ITERATION_JOB_TYPE,
+            scopeId = normalizedScopeId,
+            kind = "worker_action",
+            entityType = stage,
+            entityId = jobId?.trim()?.ifEmpty { null },
+            payloadJson =
+                JSONObject().apply {
+                    put("level", level)
+                    put("message", message)
+                    if (jobId != null) {
+                        put("jobId", jobId)
+                    }
+                    if (details != null) {
+                        put("details", details)
+                    }
+                }.toString(),
         )
     }
 }

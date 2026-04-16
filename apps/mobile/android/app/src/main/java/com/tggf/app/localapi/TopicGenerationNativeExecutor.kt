@@ -8,6 +8,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import java.util.Collections
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
@@ -20,16 +21,37 @@ object TopicGenerationNativeExecutor {
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
 
     private val inFlight = AtomicBoolean(false)
+    private val cancelledScopes = Collections.synchronizedSet(mutableSetOf<String>())
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "tg-gf-topic-native").apply {
             isDaemon = true
         }
     }
 
+    @JvmStatic
+    fun requestCancellation(scopeId: String) {
+        val normalized = scopeId.trim()
+        if (normalized.isEmpty()) return
+        cancelledScopes.add(normalized)
+    }
+
+    @JvmStatic
+    fun clearCancellation(scopeId: String) {
+        val normalized = scopeId.trim()
+        if (normalized.isEmpty()) return
+        cancelledScopes.remove(normalized)
+    }
+
     data class ComfyRunResult(
         val imageUrls: List<String>,
         val seed: Long,
         val model: String?,
+    )
+
+    private data class TopicPromptResolution(
+        val prompt: String,
+        val source: String,
+        val themeTags: List<String>,
     )
 
     @JvmStatic
@@ -205,6 +227,29 @@ object TopicGenerationNativeExecutor {
         }
 
         val session = sessions.optJSONObject(sessionIndex) ?: JSONObject()
+        if (isScopeCancellationRequested(sessionId)) {
+            jobs.cancelJob(job.id)
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stage = "cancelled",
+                level = "info",
+                message = "Topic generation job cancelled by desired-state",
+                details = null,
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
+                state = "idle",
+                scopeId = sessionId,
+                detail = "cancelled",
+                progress = false,
+                claimed = false,
+                lastError = "",
+            )
+            return
+        }
         if (!session.optString("status", "stopped").equals("running", ignoreCase = true)) {
             val statusDelayMs =
                 max(0L, (session.optDouble("delaySeconds", 0.0) * 1_000.0).toLong())
@@ -255,6 +300,15 @@ object TopicGenerationNativeExecutor {
             session.put("updatedAt", nowIsoUtc())
             sessions.put(sessionIndex, session)
             repository.writeStoreJson("generatorSessions", sessions.toString())
+            appendStatePatch(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stores =
+                    JSONObject().apply {
+                        put("generatorSessions", JSONArray(sessions.toString()))
+                    },
+            )
             jobs.cancelJob(job.id)
             syncDesiredState(
                 runtimeRepository = runtimeRepository,
@@ -312,7 +366,17 @@ object TopicGenerationNativeExecutor {
 
         val settings = parseJsonObject(repository.readSettingsJson())
         val iteration = completedCount + 1
-        val prompt = buildFallbackPrompt(session, persona, iteration)
+        val promptResolution =
+            resolveTopicPrompt(
+                runtimeRepository = runtimeRepository,
+                session = session,
+                persona = persona,
+                settings = settings,
+                iteration = iteration,
+                scopeId = sessionId,
+                jobId = job.id,
+            )
+        val prompt = promptResolution.prompt
 
         ForegroundSyncService.updateWorkerStatus(
             context = context,
@@ -338,6 +402,9 @@ object TopicGenerationNativeExecutor {
         )
 
         try {
+            if (isScopeCancellationRequested(sessionId)) {
+                throw IllegalStateException("cancelled")
+            }
             val comfyResult = runBaseComfyGeneration(
                 context = context,
                 settings = settings,
@@ -353,18 +420,27 @@ object TopicGenerationNativeExecutor {
             val nowIso = nowIsoUtc()
             val meta = JSONObject().apply {
                 put("prompt", prompt)
+                put("promptSource", promptResolution.source)
                 put("seed", comfyResult.seed)
                 put("flow", "base")
+                if (promptResolution.themeTags.isNotEmpty()) {
+                    put("themeTags", JSONArray(promptResolution.themeTags))
+                }
                 if (!comfyResult.model.isNullOrBlank()) {
                     put("model", comfyResult.model)
                 }
             }
-            appendImageAssets(repository, comfyResult.imageUrls, meta, nowIso)
+            val imageAssets =
+                appendImageAssets(repository, comfyResult.imageUrls, meta, nowIso)
 
             val entry = JSONObject().apply {
                 put("id", UUID.randomUUID().toString())
                 put("iteration", iteration)
                 put("prompt", prompt)
+                put("promptSource", promptResolution.source)
+                if (promptResolution.themeTags.isNotEmpty()) {
+                    put("themeTags", JSONArray(promptResolution.themeTags))
+                }
                 put("imageUrls", JSONArray(comfyResult.imageUrls))
                 put("createdAt", nowIso)
                 val imageMetaByUrl = JSONObject()
@@ -388,6 +464,16 @@ object TopicGenerationNativeExecutor {
             session.put("updatedAt", nowIso)
             sessions.put(sessionIndex, session)
             repository.writeStoreJson("generatorSessions", sessions.toString())
+            appendStatePatch(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stores =
+                    JSONObject().apply {
+                        put("generatorSessions", JSONArray(sessions.toString()))
+                        put("imageAssets", JSONArray(imageAssets.toString()))
+                    },
+            )
 
             if (nextStatus == "completed") {
                 jobs.cancelJob(job.id)
@@ -464,10 +550,42 @@ object TopicGenerationNativeExecutor {
                 )
             }
         } catch (error: Exception) {
+            if (isScopeCancellationRequested(sessionId)) {
+                jobs.cancelJob(job.id)
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stage = "cancelled",
+                    level = "info",
+                    message = "Topic generation cancelled while processing iteration",
+                    details = null,
+                )
+                ForegroundSyncService.updateWorkerStatus(
+                    context = context,
+                    worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
+                    state = "idle",
+                    scopeId = sessionId,
+                    detail = "cancelled",
+                    progress = false,
+                    claimed = false,
+                    lastError = "",
+                )
+                return
+            }
             val errorMessage = error.message?.trim().takeUnless { it.isNullOrBlank() }
                 ?: "Ошибка native topic generation"
             markSessionError(sessions, sessionIndex, errorMessage)
             repository.writeStoreJson("generatorSessions", sessions.toString())
+            appendStatePatch(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stores =
+                    JSONObject().apply {
+                        put("generatorSessions", JSONArray(sessions.toString()))
+                    },
+            )
             jobs.cancelJob(job.id)
             syncDesiredState(
                 runtimeRepository = runtimeRepository,
@@ -603,7 +721,7 @@ object TopicGenerationNativeExecutor {
         imageUrls: List<String>,
         meta: JSONObject,
         createdAt: String,
-    ) {
+    ): JSONArray {
         val imageAssets = readStoreArray(repository, "imageAssets")
         for (url in imageUrls) {
             imageAssets.put(
@@ -616,6 +734,7 @@ object TopicGenerationNativeExecutor {
             )
         }
         repository.writeStoreJson("imageAssets", imageAssets.toString())
+        return imageAssets
     }
 
     private fun markSessionError(sessions: JSONArray, index: Int, message: String) {
@@ -732,6 +851,113 @@ object TopicGenerationNativeExecutor {
             .trim()
     }
 
+    private fun resolveTopicPrompt(
+        runtimeRepository: BackgroundRuntimeRepository,
+        session: JSONObject,
+        persona: JSONObject,
+        settings: JSONObject,
+        iteration: Int,
+        scopeId: String,
+        jobId: String?,
+    ): TopicPromptResolution {
+        val fallback = buildFallbackPrompt(session, persona, iteration)
+        val topic = session.optString("topic", "").trim()
+        if (topic.isBlank()) {
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = scopeId,
+                jobId = jobId,
+                stage = "topic_prompt_fallback",
+                level = "warn",
+                message = "Topic is empty, fallback prompt applied",
+                details =
+                    JSONObject().apply {
+                        put("reason", "topic_missing")
+                    },
+            )
+            return TopicPromptResolution(
+                prompt = fallback,
+                source = "fallback",
+                themeTags = emptyList(),
+            )
+        }
+
+        return try {
+            val llmPrompt =
+                NativeLlmClient.generateThemedComfyPromptForTopic(
+                    settings = settings,
+                    persona = persona,
+                    topic = topic,
+                    iteration = iteration,
+                )
+            val normalizedPrompt = llmPrompt?.prompt?.trim().orEmpty()
+            if (normalizedPrompt.isBlank()) {
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = scopeId,
+                    jobId = jobId,
+                    stage = "topic_prompt_fallback",
+                    level = "warn",
+                    message = "Native LLM returned empty themed prompt, fallback applied",
+                    details =
+                        JSONObject().apply {
+                            put("reason", "empty_llm_prompt")
+                        },
+                )
+                TopicPromptResolution(
+                    prompt = fallback,
+                    source = "fallback",
+                    themeTags = emptyList(),
+                )
+            } else {
+                val themeTags =
+                    llmPrompt?.themeTags
+                        ?.map { it.trim() }
+                        ?.filter { it.isNotEmpty() }
+                        ?: emptyList()
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = scopeId,
+                    jobId = jobId,
+                    stage = "topic_prompt_llm",
+                    level = "info",
+                    message = "Native LLM themed prompt generated",
+                    details =
+                        JSONObject().apply {
+                            put("themeTagCount", themeTags.size)
+                            if (themeTags.isNotEmpty()) {
+                                put("themeTags", JSONArray(themeTags))
+                            }
+                        },
+                )
+                TopicPromptResolution(
+                    prompt = normalizedPrompt,
+                    source = "llm",
+                    themeTags = themeTags,
+                )
+            }
+        } catch (error: Exception) {
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = scopeId,
+                jobId = jobId,
+                stage = "topic_prompt_fallback",
+                level = "warn",
+                message = "Native LLM themed prompt failed, fallback applied",
+                details =
+                    JSONObject().apply {
+                        put("reason", "llm_error")
+                        put("error", error.message?.trim().orEmpty())
+                    },
+            )
+            TopicPromptResolution(
+                prompt = fallback,
+                source = "fallback",
+                themeTags = emptyList(),
+            )
+        }
+    }
+
     private fun collectAppearanceTokens(node: JSONObject, out: MutableList<String>) {
         val keys = node.keys()
         while (keys.hasNext()) {
@@ -790,6 +1016,11 @@ object TopicGenerationNativeExecutor {
         delayMs: Long,
     ) {
         if (sessionId.isBlank()) return
+        if (enabled) {
+            clearCancellation(sessionId)
+        } else {
+            requestCancellation(sessionId)
+        }
         runtimeRepository.upsertDesiredState(
             taskType = TOPIC_GENERATION_JOB_TYPE,
             scopeId = sessionId.trim(),
@@ -798,6 +1029,32 @@ object TopicGenerationNativeExecutor {
                 JSONObject().apply {
                     put("sessionId", sessionId.trim())
                     put("delayMs", max(0L, delayMs))
+                }.toString(),
+        )
+    }
+
+    private fun isScopeCancellationRequested(scopeId: String): Boolean {
+        val normalized = scopeId.trim()
+        if (normalized.isEmpty()) return false
+        return cancelledScopes.contains(normalized)
+    }
+
+    private fun appendStatePatch(
+        runtimeRepository: BackgroundRuntimeRepository,
+        scopeId: String,
+        jobId: String?,
+        stores: JSONObject,
+    ) {
+        val normalizedScopeId = scopeId.ifBlank { BackgroundRuntimeRepository.GLOBAL_SCOPE_ID }
+        runtimeRepository.appendDelta(
+            taskType = TOPIC_GENERATION_JOB_TYPE,
+            scopeId = normalizedScopeId,
+            kind = "state_patch",
+            entityType = "stores",
+            entityId = jobId?.trim()?.ifEmpty { null },
+            payloadJson =
+                JSONObject().apply {
+                    put("stores", stores)
                 }.toString(),
         )
     }
@@ -811,14 +1068,33 @@ object TopicGenerationNativeExecutor {
         message: String,
         details: JSONObject? = null,
     ) {
+        val normalizedScopeId = scopeId.ifBlank { "unknown" }
         runtimeRepository.appendEvent(
             taskType = TOPIC_GENERATION_JOB_TYPE,
-            scopeId = scopeId.ifBlank { "unknown" },
+            scopeId = normalizedScopeId,
             jobId = jobId,
             stage = stage,
             level = level,
             message = message,
             detailsJson = details?.toString(),
+        )
+        runtimeRepository.appendDelta(
+            taskType = TOPIC_GENERATION_JOB_TYPE,
+            scopeId = normalizedScopeId,
+            kind = "worker_action",
+            entityType = stage,
+            entityId = jobId?.trim()?.ifEmpty { null },
+            payloadJson =
+                JSONObject().apply {
+                    put("level", level)
+                    put("message", message)
+                    if (jobId != null) {
+                        put("jobId", jobId)
+                    }
+                    if (details != null) {
+                        put("details", details)
+                    }
+                }.toString(),
         )
     }
 }
