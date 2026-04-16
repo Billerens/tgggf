@@ -1,5 +1,11 @@
 package com.tggf.app.localapi
 
+import android.content.ContentValues
+import android.media.MediaScannerConnection
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.util.Base64
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -10,6 +16,8 @@ import org.json.JSONObject
 import org.json.JSONArray
 import java.net.URLDecoder
 import java.lang.ref.WeakReference
+import java.io.File
+import java.io.FileOutputStream
 
 @CapacitorPlugin(name = "LocalApi")
 class LocalApiBridgePlugin : Plugin() {
@@ -168,6 +176,99 @@ class LocalApiBridgePlugin : Plugin() {
             }
         }
         return normalized
+    }
+
+    private fun sanitizeExportFileName(rawFileName: String): String {
+        val fallback = "tg-gf-export-${System.currentTimeMillis()}.json"
+        val trimmed = rawFileName.trim()
+        if (trimmed.isEmpty()) return fallback
+        val sanitized = trimmed.replace(Regex("""[\\/:*?"<>|]"""), "_")
+        return if (sanitized.isEmpty()) fallback else sanitized
+    }
+
+    private fun resolveExportMimeType(fileName: String, rawMimeType: String): String {
+        val normalized = rawMimeType.trim()
+        if (normalized.isNotEmpty()) return normalized
+        val lower = fileName.lowercase()
+        return when {
+            lower.endsWith(".zip") -> "application/zip"
+            lower.endsWith(".json") -> "application/json"
+            else -> "application/octet-stream"
+        }
+    }
+
+    private fun decodeExportBase64Payload(rawPayload: String): ByteArray? {
+        val normalized = rawPayload.trim()
+        if (normalized.isEmpty()) return null
+        val payload =
+            if (normalized.startsWith("data:", ignoreCase = true)) {
+                val commaIndex = normalized.indexOf(',')
+                if (commaIndex >= 0 && commaIndex + 1 < normalized.length) {
+                    normalized.substring(commaIndex + 1)
+                } else {
+                    ""
+                }
+            } else {
+                normalized
+            }
+        if (payload.isEmpty()) return null
+        return try {
+            Base64.decode(payload, Base64.DEFAULT)
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+    }
+
+    private fun writeExportBytesToDevice(
+        fileName: String,
+        mimeType: String,
+        bytes: ByteArray,
+    ): String? {
+        if (bytes.isEmpty()) return null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+            return try {
+                resolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(bytes)
+                    stream.flush()
+                } ?: throw IllegalStateException("download_output_stream_unavailable")
+                val publishValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                resolver.update(uri, publishValues, null, null)
+                uri.toString()
+            } catch (_: Exception) {
+                resolver.delete(uri, null, null)
+                null
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!downloadsDir.exists() && !downloadsDir.mkdirs()) return null
+        val targetFile = File(downloadsDir, fileName)
+        return try {
+            FileOutputStream(targetFile).use { stream ->
+                stream.write(bytes)
+                stream.flush()
+            }
+            MediaScannerConnection.scanFile(
+                context,
+                arrayOf(targetFile.absolutePath),
+                arrayOf(mimeType),
+                null,
+            )
+            targetFile.absolutePath
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun backgroundJobToJsObject(job: BackgroundJobRecord): JSObject {
@@ -1353,6 +1454,75 @@ class LocalApiBridgePlugin : Plugin() {
                 200,
                 JSObject().apply {
                     put("ok", true)
+                },
+            )
+            return
+        }
+
+        if (method == "PUT" && path == "/api/export-file") {
+            val body = call.getObject("body")
+            if (body == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Export payload must be an object")
+                    },
+                )
+                return
+            }
+            val rawFileName = body.optString("fileName", "")
+            val rawMimeType = body.optString("mimeType", "")
+            val rawDataBase64 = body.optString("dataBase64", "")
+            if (rawDataBase64.trim().isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Export payload must include dataBase64")
+                    },
+                )
+                return
+            }
+
+            val fileName = sanitizeExportFileName(rawFileName)
+            val mimeType = resolveExportMimeType(fileName, rawMimeType)
+            val bytes = decodeExportBase64Payload(rawDataBase64)
+            if (bytes == null) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Export dataBase64 is invalid")
+                    },
+                )
+                return
+            }
+
+            val savedAs = writeExportBytesToDevice(fileName, mimeType, bytes)
+            if (savedAs.isNullOrBlank()) {
+                respond(
+                    call,
+                    500,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "Failed to persist export file on device")
+                    },
+                )
+                return
+            }
+
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("fileName", fileName)
+                    put("mimeType", mimeType)
+                    put("savedAs", savedAs)
                 },
             )
             return

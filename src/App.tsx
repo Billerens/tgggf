@@ -57,8 +57,10 @@ import {
 } from "./features/mobile/foregroundService";
 import { useGroupIterationBackgroundWorker } from "./features/mobile/useGroupIterationBackgroundWorker";
 import { useTopicGenerationBackgroundWorker } from "./features/mobile/useTopicGenerationBackgroundWorker";
+import { downloadExportFileOnAndroid } from "./features/mobile/exportDownload";
 import { useGroupStore } from "./groupStore";
 import {
+  type BackupExportSelection,
   buildBackupPayload,
   exportBackupFile,
   exportRawBackupFile,
@@ -280,6 +282,7 @@ export default function App() {
   const [readyExportFile, setReadyExportFile] = useState<{
     fileName: string;
     url: string;
+    blob: Blob;
   } | null>(null);
   const [exportableChats, setExportableChats] = useState<ChatSession[]>([]);
 
@@ -789,9 +792,8 @@ export default function App() {
   }, [exportableChats, personas]);
 
   const onExportData = async (params: {
-    scope: "all" | "personas" | "all_chats" | "chat" | "generation_sessions";
     format: BackupExportFormat;
-    chatId?: string;
+    selection: BackupExportSelection;
   }) => {
     setExportBusy(true);
     setDataTransferMessage(null);
@@ -814,8 +816,7 @@ export default function App() {
         );
       } else {
         payload = await buildBackupPayload({
-          scope: params.scope,
-          chatId: params.chatId,
+          selection: params.selection,
         });
         preparedFile = await exportBackupFile(
           payload,
@@ -826,11 +827,12 @@ export default function App() {
       setReadyExportFile({
         fileName: preparedFile.fileName,
         url: downloadUrl,
+        blob: preparedFile.blob,
       });
       const meta = payload?.meta;
       setDataTransferMessage(
         [
-          `Экспорт готов: ${isRaw ? "raw_idb_snapshot" : payload?.exportScope || params.scope}`,
+          `Экспорт готов: ${isRaw ? "raw_idb_snapshot" : payload?.exportScope || "custom"}`,
           `Файл подготовлен: ${preparedFile.fileName}. Нажми "Скачать экспорт".`,
           isRaw
             ? "RAW snapshot: все stores из IndexedDB сохранены без логической нормализации."
@@ -843,6 +845,51 @@ export default function App() {
       setExportBusy(false);
     }
   };
+
+  const onDownloadExport = useCallback(async () => {
+    if (!readyExportFile) return;
+
+    if (isAndroidRuntime) {
+      try {
+        const saved = await downloadExportFileOnAndroid({
+          fileName: readyExportFile.fileName,
+          blob: readyExportFile.blob,
+        });
+        const savedSuffix = saved.savedAs ? `\nСохранено: ${saved.savedAs}` : "";
+        setDataTransferMessage((prev) =>
+          [
+            prev?.trim() || "",
+            `Экспорт сохранен на устройстве.${savedSuffix}`,
+          ]
+            .filter((line) => line.trim().length > 0)
+            .join("\n"),
+        );
+        return;
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : "android_export_download_failed";
+        pushSystemLog({
+          level: "warn",
+          eventType: "backup.android_download_failed",
+          message: "Android native export download failed, fallback to browser link",
+          details: {
+            fileName: readyExportFile.fileName,
+            error: errorMessage,
+          },
+        });
+      }
+    }
+
+    if (typeof document === "undefined") return;
+    const anchor = document.createElement("a");
+    anchor.href = readyExportFile.url;
+    anchor.download = readyExportFile.fileName;
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  }, [isAndroidRuntime, readyExportFile]);
 
   const onImportData = async (file: File, mode: BackupImportMode) => {
     setImportBusy(true);
@@ -1230,6 +1277,7 @@ export default function App() {
           systemLogs={systemLogs}
           exportDownloadUrl={readyExportFile?.url ?? null}
           exportDownloadFileName={readyExportFile?.fileName ?? null}
+          onDownloadExport={onDownloadExport}
           onClearSystemLogs={clearSystemLogs}
           setSettingsDraft={setSettingsDraft}
           onInstallPwa={() => void onInstallPwa()}

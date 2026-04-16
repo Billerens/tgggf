@@ -25,10 +25,21 @@ export type BackupExportScope =
   | "personas"
   | "all_chats"
   | "chat"
-  | "generation_sessions";
+  | "generation_sessions"
+  | "custom";
 
 export type BackupExportFormat = "json" | "zip" | "raw_json" | "raw_zip";
 export type BackupImportMode = "merge" | "replace";
+
+export interface BackupExportSelection {
+  includeSettings: boolean;
+  includePersonas: boolean;
+  includeChats: boolean;
+  selectedChatId?: string;
+  includeGenerationSessions: boolean;
+  includeGroupData: boolean;
+  includeImageAssets: boolean;
+}
 
 interface BackupDataBundle {
   settings?: AppSettings;
@@ -87,8 +98,9 @@ interface RawSnapshotBackupPayload {
 export type ParsedBackupPayload = AppBackupPayload | RawSnapshotBackupPayload;
 
 interface BuildBackupPayloadOptions {
-  scope: BackupExportScope;
+  scope?: Exclude<BackupExportScope, "custom">;
   chatId?: string;
+  selection?: BackupExportSelection;
 }
 
 interface ExportBackupFileOptions {
@@ -167,6 +179,20 @@ function collectImageAssetIdsFromGeneratorSessions(sessions: GeneratorSession[])
   return toUniqueIds(ids);
 }
 
+function collectImageAssetIdsFromGroupMessages(messages: GroupMessage[]) {
+  const ids: string[] = [];
+  for (const message of messages) {
+    for (const attachment of message.imageAttachments ?? []) {
+      ids.push(attachment.imageId || "", parseImageAssetId(attachment.url || ""));
+    }
+    const metaByUrl = message.imageMetaByUrl ?? {};
+    for (const url of Object.keys(metaByUrl)) {
+      ids.push(parseImageAssetId(url));
+    }
+  }
+  return toUniqueIds(ids);
+}
+
 function uniqueByKey<T>(items: T[], getKey: (item: T) => string) {
   const map = new Map<string, T>();
   for (const item of items) {
@@ -213,7 +239,8 @@ function scopeToFilePart(scope: BackupExportScope) {
   if (scope === "personas") return "personas";
   if (scope === "all_chats") return "chats";
   if (scope === "chat") return "chat";
-  return "generation";
+  if (scope === "generation_sessions") return "generation";
+  return "custom";
 }
 
 function ensureObject(value: unknown, errorMessage: string) {
@@ -280,6 +307,7 @@ function buildRawMeta(stores: Record<string, unknown[]>): AppBackupPayload["meta
 export async function buildBackupPayload({
   scope,
   chatId,
+  selection,
 }: BuildBackupPayloadOptions): Promise<AppBackupPayload> {
   const [
     allPersonas,
@@ -320,103 +348,213 @@ export async function buildBackupPayload({
   let groupPrivateMemories: GroupMemoryPrivate[] = [];
   let groupSnapshots: GroupSnapshot[] = [];
   let includeSettings = false;
+  let exportScope: BackupExportScope = "all";
 
-  if (scope === "all") {
-    includeSettings = true;
-    personas = allPersonas;
-    chats = allChats;
-    messages = allMessages;
-    personaStates = allStates;
-    memories = allMemories;
-    generatorSessions = allGeneratorSessions;
-    imageAssets = allImageAssets;
-    groupRooms = allGroupRooms;
-    if (groupRooms.length > 0) {
-      const roomArtifacts = await Promise.all(
-        groupRooms.map(async (room) => {
-          const roomId = room.id;
-          const [
-            participants,
-            roomMessages,
-            events,
-            states,
-            relationEdges,
-            sharedMemories,
-            privateMemories,
-            snapshots,
-          ] = await Promise.all([
-            dbApi.getGroupParticipants(roomId),
-            dbApi.getGroupMessages(roomId),
-            dbApi.getGroupEvents(roomId),
-            dbApi.getGroupPersonaStates(roomId),
-            dbApi.getGroupRelationEdges(roomId),
-            dbApi.getGroupSharedMemories(roomId),
-            dbApi.getGroupPrivateMemories(roomId),
-            dbApi.getGroupSnapshots(roomId),
-          ]);
-          return {
-            participants,
-            roomMessages,
-            events,
-            states,
-            relationEdges,
-            sharedMemories,
-            privateMemories,
-            snapshots,
-          };
-        }),
-      );
-      groupParticipants = roomArtifacts.flatMap((item) => item.participants);
-      groupMessages = roomArtifacts.flatMap((item) => item.roomMessages);
-      groupEvents = roomArtifacts.flatMap((item) => item.events);
-      groupPersonaStates = roomArtifacts.flatMap((item) => item.states);
-      groupRelationEdges = roomArtifacts.flatMap((item) => item.relationEdges);
-      groupSharedMemories = roomArtifacts.flatMap((item) => item.sharedMemories);
-      groupPrivateMemories = roomArtifacts.flatMap((item) => item.privateMemories);
-      groupSnapshots = roomArtifacts.flatMap((item) => item.snapshots);
+  const loadGroupArtifacts = async (rooms: GroupRoom[]) => {
+    if (rooms.length === 0) {
+      return {
+        participants: [] as GroupParticipant[],
+        roomMessages: [] as GroupMessage[],
+        events: [] as GroupEvent[],
+        states: [] as GroupPersonaState[],
+        relationEdges: [] as GroupRelationEdge[],
+        sharedMemories: [] as GroupMemoryShared[],
+        privateMemories: [] as GroupMemoryPrivate[],
+        snapshots: [] as GroupSnapshot[],
+      };
     }
-  } else if (scope === "personas") {
-    personas = allPersonas;
-  } else if (scope === "all_chats") {
-    chats = allChats;
-    const chatIdSet = new Set(chats.map((chat) => chat.id));
-    messages = allMessages.filter((message) => chatIdSet.has(message.chatId));
-    personaStates = allStates.filter((state) => chatIdSet.has(state.chatId));
-    memories = allMemories.filter((memory) => chatIdSet.has(memory.chatId));
-    const personaIds = toUniqueIds(chats.map((chat) => chat.personaId));
-    const personaIdSet = new Set(personaIds);
-    personas = allPersonas.filter((persona) => personaIdSet.has(persona.id));
-  } else if (scope === "chat") {
-    const normalizedChatId = (chatId ?? "").trim();
-    if (!normalizedChatId) {
-      throw new Error("Для экспорта чата нужно выбрать чат.");
-    }
-    const selectedChat = allChats.find((chat) => chat.id === normalizedChatId);
-    if (!selectedChat) {
-      throw new Error("Выбранный чат не найден.");
-    }
-    chats = [selectedChat];
-    messages = allMessages.filter((message) => message.chatId === normalizedChatId);
-    personaStates = allStates.filter((state) => state.chatId === normalizedChatId);
-    memories = allMemories.filter((memory) => memory.chatId === normalizedChatId);
-    personas = allPersonas.filter((persona) => persona.id === selectedChat.personaId);
-  } else if (scope === "generation_sessions") {
-    generatorSessions = allGeneratorSessions;
-    const personaIds = toUniqueIds(
-      generatorSessions.map((session) => session.personaId),
+    const roomArtifacts = await Promise.all(
+      rooms.map(async (room) => {
+        const roomId = room.id;
+        const [
+          participants,
+          roomMessages,
+          events,
+          states,
+          relationEdges,
+          sharedMemories,
+          privateMemories,
+          snapshots,
+        ] = await Promise.all([
+          dbApi.getGroupParticipants(roomId),
+          dbApi.getGroupMessages(roomId),
+          dbApi.getGroupEvents(roomId),
+          dbApi.getGroupPersonaStates(roomId),
+          dbApi.getGroupRelationEdges(roomId),
+          dbApi.getGroupSharedMemories(roomId),
+          dbApi.getGroupPrivateMemories(roomId),
+          dbApi.getGroupSnapshots(roomId),
+        ]);
+        return {
+          participants,
+          roomMessages,
+          events,
+          states,
+          relationEdges,
+          sharedMemories,
+          privateMemories,
+          snapshots,
+        };
+      }),
     );
-    const personaIdSet = new Set(personaIds);
-    personas = allPersonas.filter((persona) => personaIdSet.has(persona.id));
-  }
+    return {
+      participants: roomArtifacts.flatMap((item) => item.participants),
+      roomMessages: roomArtifacts.flatMap((item) => item.roomMessages),
+      events: roomArtifacts.flatMap((item) => item.events),
+      states: roomArtifacts.flatMap((item) => item.states),
+      relationEdges: roomArtifacts.flatMap((item) => item.relationEdges),
+      sharedMemories: roomArtifacts.flatMap((item) => item.sharedMemories),
+      privateMemories: roomArtifacts.flatMap((item) => item.privateMemories),
+      snapshots: roomArtifacts.flatMap((item) => item.snapshots),
+    };
+  };
 
-  if (scope !== "all") {
-    const referencedImageIds = toUniqueIds([
-      ...collectImageAssetIdsFromPersonas(personas),
-      ...collectImageAssetIdsFromMessages(messages),
-      ...collectImageAssetIdsFromGeneratorSessions(generatorSessions),
-    ]);
-    const imageIdSet = new Set(referencedImageIds);
-    imageAssets = allImageAssets.filter((asset) => imageIdSet.has(asset.id));
+  if (selection) {
+    exportScope = "custom";
+    includeSettings = Boolean(selection.includeSettings);
+    const linkedPersonaIds = new Set<string>();
+
+    if (selection.includePersonas) {
+      personas = allPersonas;
+    }
+
+    if (selection.includeChats) {
+      const normalizedChatId = (selection.selectedChatId ?? "").trim();
+      if (normalizedChatId) {
+        const selectedChat = allChats.find((chat) => chat.id === normalizedChatId);
+        if (!selectedChat) {
+          throw new Error("Выбранный чат не найден.");
+        }
+        chats = [selectedChat];
+      } else {
+        chats = allChats;
+      }
+      const chatIdSet = new Set(chats.map((chat) => chat.id));
+      messages = allMessages.filter((message) => chatIdSet.has(message.chatId));
+      personaStates = allStates.filter((state) => chatIdSet.has(state.chatId));
+      memories = allMemories.filter((memory) => chatIdSet.has(memory.chatId));
+      for (const chat of chats) {
+        linkedPersonaIds.add(chat.personaId);
+      }
+    }
+
+    if (selection.includeGenerationSessions) {
+      generatorSessions = allGeneratorSessions;
+      for (const session of generatorSessions) {
+        linkedPersonaIds.add(session.personaId);
+      }
+    }
+
+    if (selection.includeGroupData) {
+      groupRooms = allGroupRooms;
+      const groupArtifacts = await loadGroupArtifacts(groupRooms);
+      groupParticipants = groupArtifacts.participants;
+      groupMessages = groupArtifacts.roomMessages;
+      groupEvents = groupArtifacts.events;
+      groupPersonaStates = groupArtifacts.states;
+      groupRelationEdges = groupArtifacts.relationEdges;
+      groupSharedMemories = groupArtifacts.sharedMemories;
+      groupPrivateMemories = groupArtifacts.privateMemories;
+      groupSnapshots = groupArtifacts.snapshots;
+      for (const participant of groupParticipants) {
+        linkedPersonaIds.add(participant.personaId);
+      }
+    }
+
+    if (linkedPersonaIds.size > 0) {
+      const linkedPersonas = allPersonas.filter((persona) =>
+        linkedPersonaIds.has(persona.id),
+      );
+      personas = selection.includePersonas
+        ? uniqueByKey([...personas, ...linkedPersonas], (persona) => persona.id)
+        : linkedPersonas;
+    }
+
+    if (selection.includeImageAssets) {
+      const hasStructuredSelection =
+        selection.includePersonas ||
+        selection.includeChats ||
+        selection.includeGenerationSessions ||
+        selection.includeGroupData;
+      if (!hasStructuredSelection) {
+        imageAssets = allImageAssets;
+      } else {
+        const referencedImageIds = toUniqueIds([
+          ...collectImageAssetIdsFromPersonas(personas),
+          ...collectImageAssetIdsFromMessages(messages),
+          ...collectImageAssetIdsFromGeneratorSessions(generatorSessions),
+          ...collectImageAssetIdsFromGroupMessages(groupMessages),
+        ]);
+        const imageIdSet = new Set(referencedImageIds);
+        imageAssets = allImageAssets.filter((asset) => imageIdSet.has(asset.id));
+      }
+    }
+  } else {
+    const legacyScope: Exclude<BackupExportScope, "custom"> = scope ?? "all";
+    exportScope = legacyScope;
+
+    if (legacyScope === "all") {
+      includeSettings = true;
+      personas = allPersonas;
+      chats = allChats;
+      messages = allMessages;
+      personaStates = allStates;
+      memories = allMemories;
+      generatorSessions = allGeneratorSessions;
+      imageAssets = allImageAssets;
+      groupRooms = allGroupRooms;
+      const groupArtifacts = await loadGroupArtifacts(groupRooms);
+      groupParticipants = groupArtifacts.participants;
+      groupMessages = groupArtifacts.roomMessages;
+      groupEvents = groupArtifacts.events;
+      groupPersonaStates = groupArtifacts.states;
+      groupRelationEdges = groupArtifacts.relationEdges;
+      groupSharedMemories = groupArtifacts.sharedMemories;
+      groupPrivateMemories = groupArtifacts.privateMemories;
+      groupSnapshots = groupArtifacts.snapshots;
+    } else if (legacyScope === "personas") {
+      personas = allPersonas;
+    } else if (legacyScope === "all_chats") {
+      chats = allChats;
+      const chatIdSet = new Set(chats.map((chat) => chat.id));
+      messages = allMessages.filter((message) => chatIdSet.has(message.chatId));
+      personaStates = allStates.filter((state) => chatIdSet.has(state.chatId));
+      memories = allMemories.filter((memory) => chatIdSet.has(memory.chatId));
+      const personaIds = toUniqueIds(chats.map((chat) => chat.personaId));
+      const personaIdSet = new Set(personaIds);
+      personas = allPersonas.filter((persona) => personaIdSet.has(persona.id));
+    } else if (legacyScope === "chat") {
+      const normalizedChatId = (chatId ?? "").trim();
+      if (!normalizedChatId) {
+        throw new Error("Для экспорта чата нужно выбрать чат.");
+      }
+      const selectedChat = allChats.find((chat) => chat.id === normalizedChatId);
+      if (!selectedChat) {
+        throw new Error("Выбранный чат не найден.");
+      }
+      chats = [selectedChat];
+      messages = allMessages.filter((message) => message.chatId === normalizedChatId);
+      personaStates = allStates.filter((state) => state.chatId === normalizedChatId);
+      memories = allMemories.filter((memory) => memory.chatId === normalizedChatId);
+      personas = allPersonas.filter((persona) => persona.id === selectedChat.personaId);
+    } else if (legacyScope === "generation_sessions") {
+      generatorSessions = allGeneratorSessions;
+      const personaIds = toUniqueIds(
+        generatorSessions.map((session) => session.personaId),
+      );
+      const personaIdSet = new Set(personaIds);
+      personas = allPersonas.filter((persona) => personaIdSet.has(persona.id));
+    }
+
+    if (legacyScope !== "all") {
+      const referencedImageIds = toUniqueIds([
+        ...collectImageAssetIdsFromPersonas(personas),
+        ...collectImageAssetIdsFromMessages(messages),
+        ...collectImageAssetIdsFromGeneratorSessions(generatorSessions),
+      ]);
+      const imageIdSet = new Set(referencedImageIds);
+      imageAssets = allImageAssets.filter((asset) => imageIdSet.has(asset.id));
+    }
   }
 
   const data: BackupDataBundle = {
@@ -442,7 +580,7 @@ export async function buildBackupPayload({
   return {
     schemaVersion: BACKUP_SCHEMA_VERSION,
     exportedAt: new Date().toISOString(),
-    exportScope: scope,
+    exportScope,
     data,
     meta: buildPayloadMeta(data),
   };
@@ -575,7 +713,8 @@ export async function parseBackupFile(file: File): Promise<ParsedBackupPayload> 
     exportScope === "personas" ||
     exportScope === "all_chats" ||
     exportScope === "chat" ||
-    exportScope === "generation_sessions"
+    exportScope === "generation_sessions" ||
+    exportScope === "custom"
       ? exportScope
       : "all";
 

@@ -1,6 +1,9 @@
 package com.tggf.app.localapi
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Build
 import android.util.Base64
 import android.util.Log
 import okhttp3.Call
@@ -20,6 +23,7 @@ import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -182,7 +186,19 @@ object ComfyNativeClient {
                         normalizeReferenceMimeType(
                             response.contentType?.substringBefore(';')?.trim(),
                         )
-                    localized.add(encodeBytesAsDataUrl(response.bytes, mimeType))
+                    val keepOriginalFormat =
+                        mimeType.equals("image/webp", ignoreCase = true) ||
+                            sourceLooksLikeWebp(source)
+                    if (keepOriginalFormat) {
+                        localized.add(encodeBytesAsDataUrl(response.bytes, mimeType))
+                        continue
+                    }
+                    val webpDataUrl = transcodeBytesToWebpDataUrl(response.bytes)
+                    if (!webpDataUrl.isNullOrBlank()) {
+                        localized.add(webpDataUrl)
+                    } else {
+                        localized.add(encodeBytesAsDataUrl(response.bytes, mimeType))
+                    }
                     continue
                 }
             } catch (_: Exception) {
@@ -471,6 +487,61 @@ object ComfyNativeClient {
     private fun encodeBytesAsDataUrl(bytes: ByteArray, mimeType: String): String {
         val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
         return "data:$mimeType;base64,$encoded"
+    }
+
+    private fun transcodeBytesToWebpDataUrl(bytes: ByteArray): String? {
+        if (bytes.isEmpty()) return null
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
+        return try {
+            val output = ByteArrayOutputStream()
+            val format =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Bitmap.CompressFormat.WEBP_LOSSY
+                } else {
+                    @Suppress("DEPRECATION")
+                    Bitmap.CompressFormat.WEBP
+                }
+            val compressed = bitmap.compress(format, COMFY_WEBP_QUALITY, output)
+            if (!compressed) return null
+            val encodedBytes = output.toByteArray()
+            if (encodedBytes.isEmpty()) return null
+            encodeBytesAsDataUrl(encodedBytes, "image/webp")
+        } catch (_: Exception) {
+            null
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private fun sourceLooksLikeWebp(source: String): Boolean {
+        return try {
+            val uri = URI(source)
+            val path = URLDecoder.decode(uri.path ?: "", StandardCharsets.UTF_8.toString()).lowercase(Locale.ROOT)
+            if (path.endsWith(".webp")) {
+                return true
+            }
+            val query = uri.rawQuery ?: return false
+            for (token in query.split("&")) {
+                if (token.isBlank()) continue
+                val parts = token.split("=", limit = 2)
+                val key =
+                    URLDecoder.decode(parts[0], StandardCharsets.UTF_8.toString())
+                        .trim()
+                        .lowercase(Locale.ROOT)
+                if (key != "filename") continue
+                val valueRaw = if (parts.size > 1) parts[1] else ""
+                val value =
+                    URLDecoder.decode(valueRaw, StandardCharsets.UTF_8.toString())
+                        .trim()
+                        .lowercase(Locale.ROOT)
+                if (value.endsWith(".webp")) {
+                    return true
+                }
+            }
+            false
+        } catch (_: Exception) {
+            source.lowercase(Locale.ROOT).contains(".webp")
+        }
     }
 
     private fun buildUiWorkflowForExtraPngInfo(workflow: JSONObject): JSONObject {

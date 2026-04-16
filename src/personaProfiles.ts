@@ -82,6 +82,15 @@ const MOOD_LABELS: Record<MoodId, string> = {
   angry: "злое",
 };
 
+const LOOK_META_SLOT_KEYS = {
+  avatar: "__slot__:avatar",
+  fullbody: "__slot__:fullbody",
+  side: "__slot__:side",
+  back: "__slot__:back",
+} as const;
+
+type PersonaImageMetaByUrl = NonNullable<Persona["imageMetaByUrl"]>;
+
 function clamp0to100(value: number, fallback: number) {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -107,6 +116,96 @@ function hashStringToUint32(value: string) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function extractImageAssetIdFromIdbUrl(value: string) {
+  const normalized = cleanText(value);
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
+
+function toIdbLink(imageId: string) {
+  const normalized = imageId.trim();
+  return normalized ? `idb://${normalized}` : "";
+}
+
+function normalizePersonaImageMetaByUrl(
+  source: Persona["imageMetaByUrl"],
+  refs: {
+    avatarUrl: string;
+    fullBodyUrl: string;
+    fullBodySideUrl: string;
+    fullBodyBackUrl: string;
+    avatarImageId: string;
+    fullBodyImageId: string;
+    fullBodySideImageId: string;
+    fullBodyBackImageId: string;
+  },
+): Persona["imageMetaByUrl"] {
+  if (!source || !isRecord(source)) return undefined;
+
+  const raw = Object.fromEntries(
+    Object.entries(source).filter(
+      ([key, value]) => Boolean(cleanText(key)) && Boolean(value && typeof value === "object"),
+    ),
+  ) as PersonaImageMetaByUrl;
+
+  const canonical: PersonaImageMetaByUrl = {};
+  const keepSlotAndLink = (
+    slotKey: string,
+    url: string,
+    idbLink: string,
+    fallbackKeys: string[],
+  ) => {
+    const normalizedUrl = cleanText(url);
+    const normalizedIdbLink = cleanText(idbLink);
+    const candidates = [
+      cleanText(slotKey),
+      normalizedUrl,
+      normalizedIdbLink,
+      ...fallbackKeys.map((key) => cleanText(key)),
+    ].filter(Boolean);
+    const meta = candidates
+      .map((key) => raw[key])
+      .find((value): value is PersonaImageMetaByUrl[string] =>
+        Boolean(value && typeof value === "object"),
+      );
+    if (!meta) return;
+    canonical[slotKey] = meta;
+    if (normalizedUrl) {
+      canonical[normalizedUrl] = meta;
+    }
+    if (normalizedIdbLink) {
+      canonical[normalizedIdbLink] = meta;
+    }
+  };
+
+  keepSlotAndLink(
+    LOOK_META_SLOT_KEYS.avatar,
+    refs.avatarUrl,
+    toIdbLink(refs.avatarImageId),
+    [extractImageAssetIdFromIdbUrl(refs.avatarUrl) ? refs.avatarUrl : ""],
+  );
+  keepSlotAndLink(
+    LOOK_META_SLOT_KEYS.fullbody,
+    refs.fullBodyUrl,
+    toIdbLink(refs.fullBodyImageId),
+    [extractImageAssetIdFromIdbUrl(refs.fullBodyUrl) ? refs.fullBodyUrl : ""],
+  );
+  keepSlotAndLink(
+    LOOK_META_SLOT_KEYS.side,
+    refs.fullBodySideUrl,
+    toIdbLink(refs.fullBodySideImageId),
+    [extractImageAssetIdFromIdbUrl(refs.fullBodySideUrl) ? refs.fullBodySideUrl : ""],
+  );
+  keepSlotAndLink(
+    LOOK_META_SLOT_KEYS.back,
+    refs.fullBodyBackUrl,
+    toIdbLink(refs.fullBodyBackImageId),
+    [extractImageAssetIdFromIdbUrl(refs.fullBodyBackUrl) ? refs.fullBodyBackUrl : ""],
+  );
+
+  return Object.keys(canonical).length > 0 ? canonical : undefined;
 }
 
 function normalizeLookPromptCache(input: unknown): PersonaLookPromptCache | undefined {
@@ -342,17 +441,43 @@ type LegacyPersonaRecord = Omit<
 };
 
 export function normalizePersonaRecord(persona: LegacyPersonaRecord): Persona {
+  const avatarUrl = cleanText(persona.avatarUrl);
+  const fullBodyUrl = cleanText(persona.fullBodyUrl);
+  const fullBodySideUrl = cleanText(persona.fullBodySideUrl);
+  const fullBodyBackUrl = cleanText(persona.fullBodyBackUrl);
+
+  const avatarImageId = cleanText(persona.avatarImageId) || extractImageAssetIdFromIdbUrl(avatarUrl);
+  const fullBodyImageId =
+    cleanText(persona.fullBodyImageId) || extractImageAssetIdFromIdbUrl(fullBodyUrl);
+  const fullBodySideImageId =
+    cleanText(persona.fullBodySideImageId) || extractImageAssetIdFromIdbUrl(fullBodySideUrl);
+  const fullBodyBackImageId =
+    cleanText(persona.fullBodyBackImageId) || extractImageAssetIdFromIdbUrl(fullBodyBackUrl);
+
+  const imageMetaByUrl = normalizePersonaImageMetaByUrl(persona.imageMetaByUrl, {
+    avatarUrl,
+    fullBodyUrl,
+    fullBodySideUrl,
+    fullBodyBackUrl,
+    avatarImageId,
+    fullBodyImageId,
+    fullBodySideImageId,
+    fullBodyBackImageId,
+  });
+
   return {
     ...persona,
     appearance: normalizeAppearance(persona.appearance),
     imageCheckpoint: cleanText(persona.imageCheckpoint),
-    fullBodyUrl: cleanText(persona.fullBodyUrl),
-    fullBodySideUrl: cleanText(persona.fullBodySideUrl),
-    fullBodyBackUrl: cleanText(persona.fullBodyBackUrl),
-    avatarImageId: cleanText(persona.avatarImageId),
-    fullBodyImageId: cleanText(persona.fullBodyImageId),
-    fullBodySideImageId: cleanText(persona.fullBodySideImageId),
-    fullBodyBackImageId: cleanText(persona.fullBodyBackImageId),
+    avatarUrl,
+    fullBodyUrl,
+    fullBodySideUrl,
+    fullBodyBackUrl,
+    avatarImageId,
+    fullBodyImageId,
+    fullBodySideImageId,
+    fullBodyBackImageId,
+    imageMetaByUrl,
     lookPromptCache: normalizeLookPromptCache(persona.lookPromptCache),
     advanced: normalizeAdvancedProfile(persona.advanced ?? buildAdvancedProfileFromLegacy(persona)),
   };

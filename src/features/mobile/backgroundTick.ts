@@ -60,7 +60,9 @@ function normalizeBackgroundTickPayload(raw: unknown): BackgroundTickPayload {
   };
 }
 
-function resolveLocalApiPlugin(scope: CapacitorScopeLike): LocalApiPluginLike | null {
+function resolveLocalApiPlugin(
+  scope: CapacitorScopeLike,
+): LocalApiPluginLike | null {
   const plugin = scope.Capacitor?.Plugins?.LocalApi;
   if (!plugin || typeof plugin.addListener !== "function") return null;
   return plugin;

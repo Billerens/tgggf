@@ -50,7 +50,11 @@ interface TgGfDb extends DBSchema {
   memories: {
     key: string;
     value: PersonaMemory;
-    indexes: { "by-chat": string; "by-persona": string; "by-updatedAt": string };
+    indexes: {
+      "by-chat": string;
+      "by-persona": string;
+      "by-updatedAt": string;
+    };
   };
   settings: {
     key: string;
@@ -74,12 +78,20 @@ interface TgGfDb extends DBSchema {
   groupParticipants: {
     key: string;
     value: GroupParticipant;
-    indexes: { "by-room": string; "by-persona": string; "by-updatedAt": string };
+    indexes: {
+      "by-room": string;
+      "by-persona": string;
+      "by-updatedAt": string;
+    };
   };
   groupMessages: {
     key: string;
     value: GroupMessage;
-    indexes: { "by-room": string; "by-createdAt": string; "by-authorPersona": string };
+    indexes: {
+      "by-room": string;
+      "by-createdAt": string;
+      "by-authorPersona": string;
+    };
   };
   groupEvents: {
     key: string;
@@ -89,12 +101,21 @@ interface TgGfDb extends DBSchema {
   groupPersonaStates: {
     key: string;
     value: GroupPersonaState;
-    indexes: { "by-room": string; "by-persona": string; "by-updatedAt": string };
+    indexes: {
+      "by-room": string;
+      "by-persona": string;
+      "by-updatedAt": string;
+    };
   };
   groupRelationEdges: {
     key: string;
     value: GroupRelationEdge;
-    indexes: { "by-room": string; "by-source": string; "by-target": string; "by-updatedAt": string };
+    indexes: {
+      "by-room": string;
+      "by-source": string;
+      "by-target": string;
+      "by-updatedAt": string;
+    };
   };
   groupSharedMemories: {
     key: string;
@@ -104,7 +125,11 @@ interface TgGfDb extends DBSchema {
   groupPrivateMemories: {
     key: string;
     value: GroupMemoryPrivate;
-    indexes: { "by-room": string; "by-persona": string; "by-updatedAt": string };
+    indexes: {
+      "by-room": string;
+      "by-persona": string;
+      "by-updatedAt": string;
+    };
   };
   groupSnapshots: {
     key: string;
@@ -118,13 +143,17 @@ const DB_VERSION = 5;
 const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
-const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
+const DEFAULT_COMFY_BASE_URL = "https://t3.tun.uforge.online";
 const DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
 const LLM_PROVIDERS: LlmProvider[] = ["lmstudio", "openrouter", "huggingface"];
-const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = ["soft", "medium", "strong"];
+const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = [
+  "soft",
+  "medium",
+  "strong",
+];
 const IMAGE_ASSET_STORAGE_VERSION = 2;
 const IMAGE_ASSET_DATA_URL_PREFIX = "data:";
 const ALL_KNOWN_STORE_NAMES = [
@@ -202,7 +231,8 @@ function blobToDataUrl(blob: Blob): Promise<string> {
       const result = typeof reader.result === "string" ? reader.result : "";
       resolve(result);
     };
-    reader.onerror = () => reject(reader.error ?? new Error("blob_to_data_url_failed"));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("blob_to_data_url_failed"));
     reader.readAsDataURL(blob);
   });
 }
@@ -217,7 +247,9 @@ async function dataUrlToBlob(dataUrl: string) {
   }
 }
 
-function toStoredImageAssetRecord(asset: ImageAsset | StoredImageAsset): StoredImageAsset {
+function toStoredImageAssetRecord(
+  asset: ImageAsset | StoredImageAsset,
+): StoredImageAsset {
   return {
     id: toTrimmedString(asset.id),
     dataUrl: toTrimmedString(asset.dataUrl),
@@ -228,7 +260,8 @@ function toStoredImageAssetRecord(asset: ImageAsset | StoredImageAsset): StoredI
         ? Math.max(0, Math.floor(asset.byteSize))
         : undefined,
     storageVersion:
-      typeof asset.storageVersion === "number" && Number.isFinite(asset.storageVersion)
+      typeof asset.storageVersion === "number" &&
+      Number.isFinite(asset.storageVersion)
         ? Math.max(1, Math.floor(asset.storageVersion))
         : undefined,
     meta: asset.meta,
@@ -236,7 +269,9 @@ function toStoredImageAssetRecord(asset: ImageAsset | StoredImageAsset): StoredI
   };
 }
 
-async function toBlobStoredImageAsset(asset: ImageAsset | StoredImageAsset): Promise<StoredImageAsset> {
+async function toBlobStoredImageAsset(
+  asset: ImageAsset | StoredImageAsset,
+): Promise<StoredImageAsset> {
   const normalized = toStoredImageAssetRecord(asset);
   const normalizedDataUrl = normalized.dataUrl ?? "";
   if (!normalized.id) {
@@ -282,7 +317,9 @@ async function toBlobStoredImageAsset(asset: ImageAsset | StoredImageAsset): Pro
   };
 }
 
-async function hydrateImageAssetRecord(asset: ImageAsset | StoredImageAsset): Promise<ImageAsset | null> {
+async function hydrateImageAssetRecord(
+  asset: ImageAsset | StoredImageAsset,
+): Promise<ImageAsset | null> {
   const normalized = toStoredImageAssetRecord(asset);
   if (!normalized.id) return null;
 
@@ -350,7 +387,10 @@ async function migrateImageAssetsToBlobStorage(db: IDBPDatabase<TgGfDb>) {
     const normalized = toStoredImageAssetRecord(row as StoredImageAsset);
     const dataUrl = normalized.dataUrl ?? "";
     if (!dataUrl || !isDataUrl(dataUrl)) continue;
-    if (normalized.blob instanceof Blob && normalized.storageVersion === IMAGE_ASSET_STORAGE_VERSION) {
+    if (
+      normalized.blob instanceof Blob &&
+      normalized.storageVersion === IMAGE_ASSET_STORAGE_VERSION
+    ) {
       continue;
     }
     const blob = await dataUrlToBlob(dataUrl);
@@ -369,14 +409,25 @@ async function migrateImageAssetsToBlobStorage(db: IDBPDatabase<TgGfDb>) {
 
 function toTrimmedString(value: unknown): string {
   if (typeof value === "string") return value.trim();
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
     return String(value).trim();
   }
   return "";
 }
 
-const GROUP_ROOM_MODES: GroupRoom["mode"][] = ["personas_only", "personas_plus_user"];
-const GROUP_ROOM_STATUSES: GroupRoom["status"][] = ["active", "paused", "archived"];
+const GROUP_ROOM_MODES: GroupRoom["mode"][] = [
+  "personas_only",
+  "personas_plus_user",
+];
+const GROUP_ROOM_STATUSES: GroupRoom["status"][] = [
+  "active",
+  "paused",
+  "archived",
+];
 const GROUP_ROOM_PHASES: GroupRoom["state"]["phase"][] = [
   "idle",
   "orchestrating",
@@ -417,7 +468,9 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
   const mode = GROUP_ROOM_MODES.includes(source.mode as GroupRoom["mode"])
     ? (source.mode as GroupRoom["mode"])
     : "personas_plus_user";
-  const status = GROUP_ROOM_STATUSES.includes(source.status as GroupRoom["status"])
+  const status = GROUP_ROOM_STATUSES.includes(
+    source.status as GroupRoom["status"],
+  )
     ? (source.status as GroupRoom["status"])
     : "paused";
   const waitingForUser = Boolean(source.waitingForUser);
@@ -425,19 +478,25 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
 
   const stateSource = (source.state ?? {}) as Partial<GroupRoom["state"]>;
   const stateTurnId = toOptionalTrimmedString(stateSource.turnId);
-  const stateSpeakerPersonaId = toOptionalTrimmedString(stateSource.speakerPersonaId);
+  const stateSpeakerPersonaId = toOptionalTrimmedString(
+    stateSource.speakerPersonaId,
+  );
   const stateReason = toOptionalTrimmedString(stateSource.reason);
   const stateError = toOptionalTrimmedString(stateSource.error);
   const fallbackPhase: GroupRoom["state"]["phase"] =
     status === "paused" ? "paused" : waitingForUser ? "waiting_user" : "idle";
-  const statePhase = GROUP_ROOM_PHASES.includes(stateSource.phase as GroupRoom["state"]["phase"])
+  const statePhase = GROUP_ROOM_PHASES.includes(
+    stateSource.phase as GroupRoom["state"]["phase"],
+  )
     ? (stateSource.phase as GroupRoom["state"]["phase"])
     : fallbackPhase;
   const stateUpdatedAt = toIsoDateString(stateSource.updatedAt, updatedAt);
 
   const lastTickAtRaw = toOptionalTrimmedString(source.lastTickAt);
   const lastResponseId = toOptionalTrimmedString(source.lastResponseId);
-  const orchestratorUserFocusMessageId = toOptionalTrimmedString(source.orchestratorUserFocusMessageId);
+  const orchestratorUserFocusMessageId = toOptionalTrimmedString(
+    source.orchestratorUserFocusMessageId,
+  );
 
   return {
     id,
@@ -448,15 +507,21 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
       phase: statePhase,
       updatedAt: stateUpdatedAt,
       ...(stateTurnId ? { turnId: stateTurnId } : {}),
-      ...(stateSpeakerPersonaId ? { speakerPersonaId: stateSpeakerPersonaId } : {}),
+      ...(stateSpeakerPersonaId
+        ? { speakerPersonaId: stateSpeakerPersonaId }
+        : {}),
       ...(stateReason ? { reason: stateReason } : {}),
       ...(stateError ? { error: stateError } : {}),
     },
     waitingForUser,
     ...(waitingReason ? { waitingReason } : {}),
-    ...(lastTickAtRaw ? { lastTickAt: toIsoDateString(lastTickAtRaw, updatedAt) } : {}),
+    ...(lastTickAtRaw
+      ? { lastTickAt: toIsoDateString(lastTickAtRaw, updatedAt) }
+      : {}),
     ...(lastResponseId ? { lastResponseId } : {}),
-    ...(orchestratorUserFocusMessageId ? { orchestratorUserFocusMessageId } : {}),
+    ...(orchestratorUserFocusMessageId
+      ? { orchestratorUserFocusMessageId }
+      : {}),
     orchestratorVersion: toTrimmedString(source.orchestratorVersion) || "v0",
     createdAt,
     updatedAt,
@@ -506,8 +571,14 @@ function normalizeEnhanceDetailStrengthTable(
       source[level] && typeof source[level] === "object" ? source[level] : {};
     const typedRawLevel = rawLevel as Partial<typeof fallback>;
     next[level] = {
-      i2iBase: clampDetailStrengthValue(typedRawLevel.i2iBase, fallback.i2iBase),
-      i2iHires: clampDetailStrengthValue(typedRawLevel.i2iHires, fallback.i2iHires),
+      i2iBase: clampDetailStrengthValue(
+        typedRawLevel.i2iBase,
+        fallback.i2iBase,
+      ),
+      i2iHires: clampDetailStrengthValue(
+        typedRawLevel.i2iHires,
+        fallback.i2iHires,
+      ),
       face: clampDetailStrengthValue(typedRawLevel.face, fallback.face),
       eyes: clampDetailStrengthValue(typedRawLevel.eyes, fallback.eyes),
       nose: clampDetailStrengthValue(typedRawLevel.nose, fallback.nose),
@@ -521,7 +592,9 @@ function normalizeEnhanceDetailStrengthTable(
   return next;
 }
 
-function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettings {
+function normalizeSettings(
+  current: Partial<AppSettings> | undefined,
+): AppSettings {
   const merged: AppSettings = { ...DEFAULT_SETTINGS, ...(current ?? {}) };
 
   const trimmedBaseUrl = toTrimmedString(merged.lmBaseUrl);
@@ -535,43 +608,65 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   }
 
   merged.openRouterBaseUrl =
-    toTrimmedString(merged.openRouterBaseUrl) || DEFAULT_SETTINGS.openRouterBaseUrl;
+    toTrimmedString(merged.openRouterBaseUrl) ||
+    DEFAULT_SETTINGS.openRouterBaseUrl;
   merged.huggingFaceBaseUrl =
-    toTrimmedString(merged.huggingFaceBaseUrl) || DEFAULT_SETTINGS.huggingFaceBaseUrl;
+    toTrimmedString(merged.huggingFaceBaseUrl) ||
+    DEFAULT_SETTINGS.huggingFaceBaseUrl;
 
   merged.oneToOneProvider = LLM_PROVIDERS.includes(merged.oneToOneProvider)
     ? merged.oneToOneProvider
     : DEFAULT_SETTINGS.oneToOneProvider;
-  merged.groupOrchestratorProvider = LLM_PROVIDERS.includes(merged.groupOrchestratorProvider)
+  merged.groupOrchestratorProvider = LLM_PROVIDERS.includes(
+    merged.groupOrchestratorProvider,
+  )
     ? merged.groupOrchestratorProvider
     : DEFAULT_SETTINGS.groupOrchestratorProvider;
-  merged.groupPersonaProvider = LLM_PROVIDERS.includes(merged.groupPersonaProvider)
+  merged.groupPersonaProvider = LLM_PROVIDERS.includes(
+    merged.groupPersonaProvider,
+  )
     ? merged.groupPersonaProvider
     : DEFAULT_SETTINGS.groupPersonaProvider;
-  merged.imagePromptProvider = LLM_PROVIDERS.includes(merged.imagePromptProvider)
+  merged.imagePromptProvider = LLM_PROVIDERS.includes(
+    merged.imagePromptProvider,
+  )
     ? merged.imagePromptProvider
     : DEFAULT_SETTINGS.imagePromptProvider;
-  merged.personaGenerationProvider = LLM_PROVIDERS.includes(merged.personaGenerationProvider)
+  merged.personaGenerationProvider = LLM_PROVIDERS.includes(
+    merged.personaGenerationProvider,
+  )
     ? merged.personaGenerationProvider
     : DEFAULT_SETTINGS.personaGenerationProvider;
 
   merged.model = toTrimmedString(merged.model) || DEFAULT_SETTINGS.model;
   merged.groupOrchestratorModel =
-    toTrimmedString(merged.groupOrchestratorModel) || merged.model || DEFAULT_SETTINGS.model;
+    toTrimmedString(merged.groupOrchestratorModel) ||
+    merged.model ||
+    DEFAULT_SETTINGS.model;
   merged.groupPersonaModel =
-    toTrimmedString(merged.groupPersonaModel) || merged.model || DEFAULT_SETTINGS.model;
+    toTrimmedString(merged.groupPersonaModel) ||
+    merged.model ||
+    DEFAULT_SETTINGS.model;
   merged.imagePromptModel =
-    toTrimmedString(merged.imagePromptModel) || merged.model || DEFAULT_SETTINGS.model;
+    toTrimmedString(merged.imagePromptModel) ||
+    merged.model ||
+    DEFAULT_SETTINGS.model;
   merged.personaGenerationModel =
-    toTrimmedString(merged.personaGenerationModel) || merged.model || DEFAULT_SETTINGS.model;
-  merged.comfyBaseUrl = toTrimmedString(merged.comfyBaseUrl) || DEFAULT_SETTINGS.comfyBaseUrl;
+    toTrimmedString(merged.personaGenerationModel) ||
+    merged.model ||
+    DEFAULT_SETTINGS.model;
+  merged.comfyBaseUrl =
+    toTrimmedString(merged.comfyBaseUrl) || DEFAULT_SETTINGS.comfyBaseUrl;
   merged.googleDriveClientId = toTrimmedString(merged.googleDriveClientId);
   merged.googleDriveFolderId = toTrimmedString(merged.googleDriveFolderId);
   merged.saveComfyOutputs = Boolean(merged.saveComfyOutputs);
   if (!Number.isFinite(merged.chatStyleStrength)) {
     merged.chatStyleStrength = DEFAULT_SETTINGS.chatStyleStrength;
   }
-  merged.chatStyleStrength = Math.max(0, Math.min(1, Number(merged.chatStyleStrength)));
+  merged.chatStyleStrength = Math.max(
+    0,
+    Math.min(1, Number(merged.chatStyleStrength)),
+  );
   merged.apiKey = toTrimmedString(merged.apiKey);
   merged.lmAuth = normalizeAuthConfig(merged.lmAuth, DEFAULT_SETTINGS.lmAuth);
   merged.openRouterAuth = normalizeAuthConfig(
@@ -586,7 +681,8 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
     merged.comfyAuth,
     DEFAULT_SETTINGS.comfyAuth,
   );
-  merged.userName = toTrimmedString(merged.userName) || DEFAULT_SETTINGS.userName;
+  merged.userName =
+    toTrimmedString(merged.userName) || DEFAULT_SETTINGS.userName;
 
   // Backward compatibility for old single API key setting.
   if (!merged.lmAuth.token && merged.apiKey) {
@@ -610,7 +706,12 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
       token: merged.apiKey,
     };
   }
-  const allowedGenders: UserGender[] = ["unspecified", "male", "female", "nonbinary"];
+  const allowedGenders: UserGender[] = [
+    "unspecified",
+    "male",
+    "female",
+    "nonbinary",
+  ];
   if (!allowedGenders.includes(merged.userGender)) {
     merged.userGender = DEFAULT_SETTINGS.userGender;
   }
@@ -618,26 +719,35 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
   const allowedRolloutStages = ["internal", "beta", "prod"] as const;
   if (!allowedRolloutStages.includes(merged.androidNativeRolloutStage)) {
-    merged.androidNativeRolloutStage = DEFAULT_SETTINGS.androidNativeRolloutStage;
+    merged.androidNativeRolloutStage =
+      DEFAULT_SETTINGS.androidNativeRolloutStage;
   }
-  merged.androidNativeGroupIterationV1 = Boolean(merged.androidNativeGroupIterationV1);
+  merged.androidNativeGroupIterationV1 = Boolean(
+    merged.androidNativeGroupIterationV1,
+  );
   const hasNativeGroupImagesOverride = Boolean(
     current &&
-      Object.prototype.hasOwnProperty.call(current, "androidNativeGroupImagesV1"),
+    Object.prototype.hasOwnProperty.call(current, "androidNativeGroupImagesV1"),
   );
   merged.androidNativeGroupImagesV1 = hasNativeGroupImagesOverride
     ? Boolean(merged.androidNativeGroupImagesV1)
     : merged.androidNativeGroupIterationV1;
   const hasNativeTopicGenerationOverride = Boolean(
     current &&
-      Object.prototype.hasOwnProperty.call(current, "androidNativeTopicGenerationV1"),
+    Object.prototype.hasOwnProperty.call(
+      current,
+      "androidNativeTopicGenerationV1",
+    ),
   );
   merged.androidNativeTopicGenerationV1 = hasNativeTopicGenerationOverride
     ? Boolean(merged.androidNativeTopicGenerationV1)
     : merged.androidNativeGroupIterationV1;
   const hasNativeTopicThemedPromptOverride = Boolean(
     current &&
-      Object.prototype.hasOwnProperty.call(current, "androidNativeTopicThemedPromptV1"),
+    Object.prototype.hasOwnProperty.call(
+      current,
+      "androidNativeTopicThemedPromptV1",
+    ),
   );
   merged.androidNativeTopicThemedPromptV1 = hasNativeTopicThemedPromptOverride
     ? Boolean(merged.androidNativeTopicThemedPromptV1)
@@ -662,17 +772,31 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
 
 function normalizeChatSession(chat: ChatSession): ChatSession {
   const next: ChatSession = { ...chat };
-  if (typeof next.chatStyleStrength === "number" && Number.isFinite(next.chatStyleStrength)) {
-    next.chatStyleStrength = Math.max(0, Math.min(1, Number(next.chatStyleStrength)));
+  if (
+    typeof next.chatStyleStrength === "number" &&
+    Number.isFinite(next.chatStyleStrength)
+  ) {
+    next.chatStyleStrength = Math.max(
+      0,
+      Math.min(1, Number(next.chatStyleStrength)),
+    );
   } else {
     delete next.chatStyleStrength;
   }
-  const normalizeSummaryList = (input: unknown, maxItems = 10, maxLen = 220) => {
+  const normalizeSummaryList = (
+    input: unknown,
+    maxItems = 10,
+    maxLen = 220,
+  ) => {
     if (!Array.isArray(input)) return [] as string[];
     return input
       .map((item) => (typeof item === "string" ? item.trim() : ""))
       .filter(Boolean)
-      .map((item) => (item.length > maxLen ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…` : item))
+      .map((item) =>
+        item.length > maxLen
+          ? `${item.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`
+          : item,
+      )
       .slice(0, maxItems);
   };
   const summaryText = toTrimmedString(next.conversationSummary);
@@ -686,7 +810,11 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
   }
   next.summaryFacts = normalizeSummaryList(next.summaryFacts, 10, 180);
   next.summaryGoals = normalizeSummaryList(next.summaryGoals, 8, 180);
-  next.summaryOpenThreads = normalizeSummaryList(next.summaryOpenThreads, 10, 200);
+  next.summaryOpenThreads = normalizeSummaryList(
+    next.summaryOpenThreads,
+    10,
+    200,
+  );
   next.summaryAgreements = normalizeSummaryList(next.summaryAgreements, 8, 200);
   if (!next.summaryFacts.length) delete next.summaryFacts;
   if (!next.summaryGoals.length) delete next.summaryGoals;
@@ -720,7 +848,9 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
   return next;
 }
 
-function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession {
+function normalizeGeneratorSession(
+  session: GeneratorSession,
+): GeneratorSession {
   const normalizedName = toTrimmedString((session as { name?: string }).name);
   const next: GeneratorSession = {
     ...session,
@@ -734,7 +864,8 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
         ? session.status
         : "stopped",
     requestedCount:
-      typeof session.requestedCount === "number" && Number.isFinite(session.requestedCount)
+      typeof session.requestedCount === "number" &&
+      Number.isFinite(session.requestedCount)
         ? Math.max(1, Math.floor(session.requestedCount))
         : null,
     delaySeconds: Number.isFinite(session.delaySeconds)
@@ -748,7 +879,9 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
           .filter((entry) => Boolean(entry?.id))
           .map((entry) => ({
             ...entry,
-            iteration: Number.isFinite(entry.iteration) ? Math.max(1, Math.floor(entry.iteration)) : 1,
+            iteration: Number.isFinite(entry.iteration)
+              ? Math.max(1, Math.floor(entry.iteration))
+              : 1,
             prompt: (entry.prompt ?? "").trim(),
             imageUrls: Array.isArray(entry.imageUrls)
               ? entry.imageUrls.map((url) => (url ?? "").trim()).filter(Boolean)
@@ -757,7 +890,9 @@ function normalizeGeneratorSession(session: GeneratorSession): GeneratorSession 
               entry.imageMetaByUrl && typeof entry.imageMetaByUrl === "object"
                 ? Object.fromEntries(
                     Object.entries(entry.imageMetaByUrl).filter(
-                      ([key, value]) => Boolean(key) && Boolean(value && typeof value === "object"),
+                      ([key, value]) =>
+                        Boolean(key) &&
+                        Boolean(value && typeof value === "object"),
                     ),
                   )
                 : undefined,
@@ -870,7 +1005,9 @@ function getDb() {
         }
 
         if (!db.objectStoreNames.contains("personaStates")) {
-          const personaStates = db.createObjectStore("personaStates", { keyPath: "chatId" });
+          const personaStates = db.createObjectStore("personaStates", {
+            keyPath: "chatId",
+          });
           personaStates.createIndex("by-persona", "personaId");
           personaStates.createIndex("by-updatedAt", "updatedAt");
         }
@@ -887,52 +1024,70 @@ function getDb() {
         }
 
         if (!db.objectStoreNames.contains("generatorSessions")) {
-          const sessions = db.createObjectStore("generatorSessions", { keyPath: "id" });
+          const sessions = db.createObjectStore("generatorSessions", {
+            keyPath: "id",
+          });
           sessions.createIndex("by-persona", "personaId");
           sessions.createIndex("by-updatedAt", "updatedAt");
         }
 
         if (!db.objectStoreNames.contains("imageAssets")) {
-          const imageAssets = db.createObjectStore("imageAssets", { keyPath: "id" });
+          const imageAssets = db.createObjectStore("imageAssets", {
+            keyPath: "id",
+          });
           imageAssets.createIndex("by-createdAt", "createdAt");
         }
 
         if (!db.objectStoreNames.contains("groupRooms")) {
-          const groupRooms = db.createObjectStore("groupRooms", { keyPath: "id" });
+          const groupRooms = db.createObjectStore("groupRooms", {
+            keyPath: "id",
+          });
           groupRooms.createIndex("by-updatedAt", "updatedAt");
           groupRooms.createIndex("by-mode", "mode");
         }
 
         if (!db.objectStoreNames.contains("groupParticipants")) {
-          const groupParticipants = db.createObjectStore("groupParticipants", { keyPath: "id" });
+          const groupParticipants = db.createObjectStore("groupParticipants", {
+            keyPath: "id",
+          });
           groupParticipants.createIndex("by-room", "roomId");
           groupParticipants.createIndex("by-persona", "personaId");
           groupParticipants.createIndex("by-updatedAt", "updatedAt");
         }
 
         if (!db.objectStoreNames.contains("groupMessages")) {
-          const groupMessages = db.createObjectStore("groupMessages", { keyPath: "id" });
+          const groupMessages = db.createObjectStore("groupMessages", {
+            keyPath: "id",
+          });
           groupMessages.createIndex("by-room", "roomId");
           groupMessages.createIndex("by-createdAt", "createdAt");
           groupMessages.createIndex("by-authorPersona", "authorPersonaId");
         }
 
         if (!db.objectStoreNames.contains("groupEvents")) {
-          const groupEvents = db.createObjectStore("groupEvents", { keyPath: "id" });
+          const groupEvents = db.createObjectStore("groupEvents", {
+            keyPath: "id",
+          });
           groupEvents.createIndex("by-room", "roomId");
           groupEvents.createIndex("by-createdAt", "createdAt");
           groupEvents.createIndex("by-type", "type");
         }
 
         if (!db.objectStoreNames.contains("groupPersonaStates")) {
-          const groupPersonaStates = db.createObjectStore("groupPersonaStates", { keyPath: "id" });
+          const groupPersonaStates = db.createObjectStore(
+            "groupPersonaStates",
+            { keyPath: "id" },
+          );
           groupPersonaStates.createIndex("by-room", "roomId");
           groupPersonaStates.createIndex("by-persona", "personaId");
           groupPersonaStates.createIndex("by-updatedAt", "updatedAt");
         }
 
         if (!db.objectStoreNames.contains("groupRelationEdges")) {
-          const groupRelationEdges = db.createObjectStore("groupRelationEdges", { keyPath: "id" });
+          const groupRelationEdges = db.createObjectStore(
+            "groupRelationEdges",
+            { keyPath: "id" },
+          );
           groupRelationEdges.createIndex("by-room", "roomId");
           groupRelationEdges.createIndex("by-source", "fromPersonaId");
           groupRelationEdges.createIndex("by-target", "toPersonaId");
@@ -940,20 +1095,28 @@ function getDb() {
         }
 
         if (!db.objectStoreNames.contains("groupSharedMemories")) {
-          const groupSharedMemories = db.createObjectStore("groupSharedMemories", { keyPath: "id" });
+          const groupSharedMemories = db.createObjectStore(
+            "groupSharedMemories",
+            { keyPath: "id" },
+          );
           groupSharedMemories.createIndex("by-room", "roomId");
           groupSharedMemories.createIndex("by-updatedAt", "updatedAt");
         }
 
         if (!db.objectStoreNames.contains("groupPrivateMemories")) {
-          const groupPrivateMemories = db.createObjectStore("groupPrivateMemories", { keyPath: "id" });
+          const groupPrivateMemories = db.createObjectStore(
+            "groupPrivateMemories",
+            { keyPath: "id" },
+          );
           groupPrivateMemories.createIndex("by-room", "roomId");
           groupPrivateMemories.createIndex("by-persona", "personaId");
           groupPrivateMemories.createIndex("by-updatedAt", "updatedAt");
         }
 
         if (!db.objectStoreNames.contains("groupSnapshots")) {
-          const groupSnapshots = db.createObjectStore("groupSnapshots", { keyPath: "id" });
+          const groupSnapshots = db.createObjectStore("groupSnapshots", {
+            keyPath: "id",
+          });
           groupSnapshots.createIndex("by-room", "roomId");
           groupSnapshots.createIndex("by-createdAt", "createdAt");
         }
@@ -1050,24 +1213,39 @@ export const dbApi = {
       "readwrite",
     );
     await tx.objectStore("personas").delete(personaId);
-    const personaStateKeys = await tx.objectStore("personaStates").index("by-persona").getAllKeys(personaId);
+    const personaStateKeys = await tx
+      .objectStore("personaStates")
+      .index("by-persona")
+      .getAllKeys(personaId);
     for (const key of personaStateKeys) {
       await tx.objectStore("personaStates").delete(key);
     }
-    const memoryKeys = await tx.objectStore("memories").index("by-persona").getAllKeys(personaId);
+    const memoryKeys = await tx
+      .objectStore("memories")
+      .index("by-persona")
+      .getAllKeys(personaId);
     for (const key of memoryKeys) {
       await tx.objectStore("memories").delete(key);
     }
 
-    const chats = await tx.objectStore("chats").index("by-persona").getAll(personaId);
+    const chats = await tx
+      .objectStore("chats")
+      .index("by-persona")
+      .getAll(personaId);
     for (const chat of chats) {
       await tx.objectStore("chats").delete(chat.id);
-      const messages = await tx.objectStore("messages").index("by-chat").getAll(chat.id);
+      const messages = await tx
+        .objectStore("messages")
+        .index("by-chat")
+        .getAll(chat.id);
       for (const msg of messages) {
         await tx.objectStore("messages").delete(msg.id);
       }
       await tx.objectStore("personaStates").delete(chat.id);
-      const memories = await tx.objectStore("memories").index("by-chat").getAll(chat.id);
+      const memories = await tx
+        .objectStore("memories")
+        .index("by-chat")
+        .getAll(chat.id);
       for (const memory of memories) {
         await tx.objectStore("memories").delete(memory.id);
       }
@@ -1146,14 +1324,23 @@ export const dbApi = {
 
   async deleteChat(chatId: string) {
     const db = await getDb();
-    const tx = db.transaction(["chats", "messages", "personaStates", "memories"], "readwrite");
+    const tx = db.transaction(
+      ["chats", "messages", "personaStates", "memories"],
+      "readwrite",
+    );
     await tx.objectStore("chats").delete(chatId);
-    const messages = await tx.objectStore("messages").index("by-chat").getAll(chatId);
+    const messages = await tx
+      .objectStore("messages")
+      .index("by-chat")
+      .getAll(chatId);
     for (const msg of messages) {
       await tx.objectStore("messages").delete(msg.id);
     }
     await tx.objectStore("personaStates").delete(chatId);
-    const memories = await tx.objectStore("memories").index("by-chat").getAll(chatId);
+    const memories = await tx
+      .objectStore("memories")
+      .index("by-chat")
+      .getAll(chatId);
     for (const memory of memories) {
       await tx.objectStore("memories").delete(memory.id);
     }
@@ -1242,9 +1429,15 @@ export const dbApi = {
 
   async getGeneratorSessions(personaId: string) {
     const db = await getDb();
-    const rows = await db.getAllFromIndex("generatorSessions", "by-persona", personaId);
+    const rows = await db.getAllFromIndex(
+      "generatorSessions",
+      "by-persona",
+      personaId,
+    );
     const normalized = rows.map((row) => normalizeGeneratorSession(row));
-    await Promise.all(normalized.map((row) => db.put("generatorSessions", row)));
+    await Promise.all(
+      normalized.map((row) => db.put("generatorSessions", row)),
+    );
     return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
@@ -1252,7 +1445,9 @@ export const dbApi = {
     const db = await getDb();
     const rows = await db.getAll("generatorSessions");
     const normalized = rows.map((row) => normalizeGeneratorSession(row));
-    await Promise.all(normalized.map((row) => db.put("generatorSessions", row)));
+    await Promise.all(
+      normalized.map((row) => db.put("generatorSessions", row)),
+    );
     return normalized.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
@@ -1284,15 +1479,13 @@ export const dbApi = {
 
   async getImageAssets(imageIds: string[]) {
     const uniqueIds = Array.from(
-      new Set(
-        imageIds
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
+      new Set(imageIds.map((value) => value.trim()).filter(Boolean)),
     );
     if (uniqueIds.length === 0) return [];
     const db = await getDb();
-    const rows = await Promise.all(uniqueIds.map((imageId) => db.get("imageAssets", imageId)));
+    const rows = await Promise.all(
+      uniqueIds.map((imageId) => db.get("imageAssets", imageId)),
+    );
     const hydrated = await Promise.all(
       rows
         .filter((row): row is ImageAsset => Boolean(row))
@@ -1326,11 +1519,7 @@ export const dbApi = {
 
   async deleteImageAssets(imageIds: string[]) {
     const uniqueIds = Array.from(
-      new Set(
-        imageIds
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
+      new Set(imageIds.map((value) => value.trim()).filter(Boolean)),
     );
     if (uniqueIds.length === 0) return;
     const db = await getDb();
@@ -1409,7 +1598,10 @@ export const dbApi = {
     ];
 
     for (const storeName of byRoomStores) {
-      const keys = await tx.objectStore(storeName).index("by-room").getAllKeys(roomId);
+      const keys = await tx
+        .objectStore(storeName)
+        .index("by-room")
+        .getAllKeys(roomId);
       for (const key of keys) {
         await tx.objectStore(storeName).delete(key);
       }
@@ -1420,7 +1612,11 @@ export const dbApi = {
 
   async getGroupParticipants(roomId: string) {
     const db = await getDb();
-    const rows = await db.getAllFromIndex("groupParticipants", "by-room", roomId);
+    const rows = await db.getAllFromIndex(
+      "groupParticipants",
+      "by-room",
+      roomId,
+    );
     return rows.sort((a, b) => a.joinedAt.localeCompare(b.joinedAt));
   },
 
@@ -1478,7 +1674,11 @@ export const dbApi = {
 
   async getGroupPersonaStates(roomId: string) {
     const db = await getDb();
-    const rows = await db.getAllFromIndex("groupPersonaStates", "by-room", roomId);
+    const rows = await db.getAllFromIndex(
+      "groupPersonaStates",
+      "by-room",
+      roomId,
+    );
     return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
@@ -1499,7 +1699,11 @@ export const dbApi = {
 
   async getGroupRelationEdges(roomId: string) {
     const db = await getDb();
-    const rows = await db.getAllFromIndex("groupRelationEdges", "by-room", roomId);
+    const rows = await db.getAllFromIndex(
+      "groupRelationEdges",
+      "by-room",
+      roomId,
+    );
     return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
@@ -1515,7 +1719,11 @@ export const dbApi = {
 
   async getGroupSharedMemories(roomId: string) {
     const db = await getDb();
-    const rows = await db.getAllFromIndex("groupSharedMemories", "by-room", roomId);
+    const rows = await db.getAllFromIndex(
+      "groupSharedMemories",
+      "by-room",
+      roomId,
+    );
     return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
@@ -1530,7 +1738,9 @@ export const dbApi = {
   },
 
   async deleteGroupSharedMemories(memoryIds: string[]) {
-    const uniqueIds = Array.from(new Set(memoryIds.map((value) => value.trim()).filter(Boolean)));
+    const uniqueIds = Array.from(
+      new Set(memoryIds.map((value) => value.trim()).filter(Boolean)),
+    );
     if (uniqueIds.length === 0) return;
     const db = await getDb();
     const tx = db.transaction("groupSharedMemories", "readwrite");
@@ -1543,12 +1753,20 @@ export const dbApi = {
   async getGroupPrivateMemories(roomId: string, personaId?: string) {
     const db = await getDb();
     if (personaId?.trim()) {
-      const rows = await db.getAllFromIndex("groupPrivateMemories", "by-persona", personaId.trim());
+      const rows = await db.getAllFromIndex(
+        "groupPrivateMemories",
+        "by-persona",
+        personaId.trim(),
+      );
       return rows
         .filter((row) => row.roomId === roomId)
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     }
-    const rows = await db.getAllFromIndex("groupPrivateMemories", "by-room", roomId);
+    const rows = await db.getAllFromIndex(
+      "groupPrivateMemories",
+      "by-room",
+      roomId,
+    );
     return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   },
 
@@ -1563,7 +1781,9 @@ export const dbApi = {
   },
 
   async deleteGroupPrivateMemories(memoryIds: string[]) {
-    const uniqueIds = Array.from(new Set(memoryIds.map((value) => value.trim()).filter(Boolean)));
+    const uniqueIds = Array.from(
+      new Set(memoryIds.map((value) => value.trim()).filter(Boolean)),
+    );
     if (uniqueIds.length === 0) return;
     const db = await getDb();
     const tx = db.transaction("groupPrivateMemories", "readwrite");
@@ -1586,15 +1806,23 @@ export const dbApi = {
 
   async exportRawSnapshot() {
     const db = await getDb();
-    const snapshot: Record<string, Array<{ key: unknown; value: unknown }>> = {};
+    const snapshot: Record<
+      string,
+      Array<{ key: unknown; value: unknown }>
+    > = {};
     const storeNames = Array.from(db.objectStoreNames);
     for (const storeName of storeNames) {
       const tx = db.transaction(storeName as never, "readonly");
       const store = tx.store;
-      const [keys, values] = await Promise.all([store.getAllKeys(), store.getAll()]);
+      const [keys, values] = await Promise.all([
+        store.getAllKeys(),
+        store.getAll(),
+      ]);
       const serializedValues =
         storeName === "imageAssets"
-          ? await Promise.all(values.map((value) => serializeRawImageAssetRecord(value)))
+          ? await Promise.all(
+              values.map((value) => serializeRawImageAssetRecord(value)),
+            )
           : values;
       snapshot[storeName] = values.map((_, index) => ({
         key: keys[index],
@@ -1625,7 +1853,9 @@ export const dbApi = {
       const hasInlineKey = tx.store.keyPath !== null;
       for (const row of rows) {
         const isEntryShape =
-          row && typeof row === "object" && "value" in (row as Record<string, unknown>);
+          row &&
+          typeof row === "object" &&
+          "value" in (row as Record<string, unknown>);
         if (isEntryShape) {
           const entry = row as { key?: unknown; value: unknown };
           if (!hasInlineKey && entry.key !== undefined) {

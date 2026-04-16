@@ -23,7 +23,7 @@ import { Dropdown } from "./Dropdown";
 import type {
   BackupExportFormat,
   BackupImportMode,
-  BackupExportScope,
+  BackupExportSelection,
 } from "../features/backup/dataTransfer";
 import type { GoogleDriveFileMeta } from "../features/backup/googleDriveSync";
 import type {
@@ -90,6 +90,7 @@ interface SettingsModalProps {
   systemLogs: SystemLogEntry[];
   exportDownloadUrl: string | null;
   exportDownloadFileName: string | null;
+  onDownloadExport: () => Promise<void> | void;
   onClearSystemLogs: () => void;
   setSettingsDraft: (updater: (prev: AppSettings) => AppSettings) => void;
   onInstallPwa: () => void;
@@ -104,9 +105,8 @@ interface SettingsModalProps {
   onGoogleDriveSyncUpload: () => Promise<void>;
   onGoogleDriveSyncDownload: (mode: BackupImportMode) => Promise<void>;
   onExportData: (params: {
-    scope: BackupExportScope;
     format: BackupExportFormat;
-    chatId?: string;
+    selection: BackupExportSelection;
   }) => Promise<void>;
   onImportData: (file: File, mode: BackupImportMode) => Promise<void>;
   onClose: () => void;
@@ -207,15 +207,41 @@ const DETAILING_STRENGTH_COLUMNS: Array<{
   { key: "chest", label: "Chest", step: 0.01 },
   { key: "vagina", label: "Vagina", step: 0.01 },
 ];
-const EXPORT_SCOPE_OPTIONS: Array<{
-  value: BackupExportScope;
+const EXPORT_SELECTION_OPTIONS: Array<{
+  key: keyof Omit<BackupExportSelection, "selectedChatId">;
   label: string;
+  description: string;
 }> = [
-  { value: "all", label: "Все данные" },
-  { value: "personas", label: "Только персоны" },
-  { value: "all_chats", label: "Все чаты + персоны" },
-  { value: "chat", label: "Один чат + персона" },
-  { value: "generation_sessions", label: "Сессии генерации + персоны" },
+  {
+    key: "includeSettings",
+    label: "Настройки",
+    description: "Параметры приложения",
+  },
+  {
+    key: "includePersonas",
+    label: "Персоны",
+    description: "Все карточки персон",
+  },
+  {
+    key: "includeChats",
+    label: "Чаты",
+    description: "Чаты + сообщения + состояния + память",
+  },
+  {
+    key: "includeGenerationSessions",
+    label: "Сессии генерации",
+    description: "История и параметры генератора",
+  },
+  {
+    key: "includeGroupData",
+    label: "Групповые комнаты",
+    description: "Комнаты + участники + события + сообщения",
+  },
+  {
+    key: "includeImageAssets",
+    label: "Image assets",
+    description: "Локальные изображения из IndexedDB",
+  },
 ];
 const EXPORT_FORMAT_OPTIONS: Array<{ value: BackupExportFormat; label: string }> = [
   { value: "json", label: "JSON (.json)" },
@@ -637,6 +663,7 @@ export function SettingsModal({
   systemLogs,
   exportDownloadUrl,
   exportDownloadFileName,
+  onDownloadExport,
   onClearSystemLogs,
   setSettingsDraft,
   onInstallPwa,
@@ -658,8 +685,16 @@ export function SettingsModal({
   const detectCompactLogLayout = () =>
     typeof window !== "undefined" ? window.innerWidth <= 960 : false;
   const [activeTab, setActiveTab] = useState<SettingsTab>("system");
-  const [exportScope, setExportScope] = useState<BackupExportScope>("all");
+  const [exportSelection, setExportSelection] = useState<BackupExportSelection>({
+    includeSettings: true,
+    includePersonas: true,
+    includeChats: true,
+    includeGenerationSessions: true,
+    includeGroupData: true,
+    includeImageAssets: true,
+  });
   const [exportFormat, setExportFormat] = useState<BackupExportFormat>("json");
+  const [exportSelectedChatOnly, setExportSelectedChatOnly] = useState(false);
   const [exportChatId, setExportChatId] = useState("");
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importMode, setImportMode] = useState<BackupImportMode>("merge");
@@ -943,8 +978,16 @@ export function SettingsModal({
   useEffect(() => {
     if (open) {
       setActiveTab("system");
-      setExportScope("all");
+      setExportSelection({
+        includeSettings: true,
+        includePersonas: true,
+        includeChats: true,
+        includeGenerationSessions: true,
+        includeGroupData: true,
+        includeImageAssets: true,
+      });
       setExportFormat("json");
+      setExportSelectedChatOnly(false);
       setExportChatId(exportableChats[0]?.id ?? "");
       setImportFile(null);
       setImportMode("merge");
@@ -988,6 +1031,20 @@ export function SettingsModal({
       setLogMobilePane("list");
     }
   }, [activeTab, isCompactLogLayout, selectedLogEntry]);
+  useEffect(() => {
+    if (exportSelection.includeChats) return;
+    if (exportSelectedChatOnly) {
+      setExportSelectedChatOnly(false);
+    }
+  }, [exportSelection.includeChats, exportSelectedChatOnly]);
+
+  const hasAnyExportSelection = useMemo(
+    () =>
+      EXPORT_SELECTION_OPTIONS.some(({ key }) =>
+        Boolean(exportSelection[key]),
+      ),
+    [exportSelection],
+  );
 
   const getProviderModelOptions = (
     provider: LlmProvider,
@@ -1928,16 +1985,82 @@ export function SettingsModal({
               <div className="persona-section">
                 <h5>Экспорт</h5>
                 <label>
-                  Набор данных
+                  Формат файла
                   <Dropdown
-                    value={exportScope}
-                    options={EXPORT_SCOPE_OPTIONS}
-                    onChange={(nextScope) =>
-                      setExportScope(nextScope as BackupExportScope)
+                    value={exportFormat}
+                    options={EXPORT_FORMAT_OPTIONS}
+                    onChange={(nextFormat) =>
+                      setExportFormat(nextFormat as BackupExportFormat)
                     }
                   />
                 </label>
-                {exportScope === "chat" ? (
+                <div style={{ display: "grid", gap: "0.45rem" }}>
+                  {EXPORT_SELECTION_OPTIONS.map((option) => (
+                    <label
+                      key={option.key}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "auto 1fr",
+                        gap: "0.55rem",
+                        alignItems: "start",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={Boolean(exportSelection[option.key])}
+                        onChange={(event) => {
+                          const checked = event.target.checked;
+                          setExportSelection((prev) => ({
+                            ...prev,
+                            [option.key]: checked,
+                          }));
+                        }}
+                        disabled={
+                          exportBusy ||
+                          importBusy ||
+                          driveBusy ||
+                          exportFormat === "raw_json" ||
+                          exportFormat === "raw_zip"
+                        }
+                      />
+                      <span style={{ display: "grid", gap: "0.1rem" }}>
+                        <strong>{option.label}</strong>
+                        <small style={{ color: "var(--text-secondary)" }}>
+                          {option.description}
+                        </small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {exportSelection.includeChats ? (
+                  <label
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "auto 1fr",
+                      gap: "0.55rem",
+                      alignItems: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={exportSelectedChatOnly}
+                      onChange={(event) =>
+                        setExportSelectedChatOnly(event.target.checked)
+                      }
+                      disabled={
+                        exportBusy ||
+                        importBusy ||
+                        driveBusy ||
+                        exportFormat === "raw_json" ||
+                        exportFormat === "raw_zip"
+                      }
+                    />
+                    <span>Только выбранный чат</span>
+                  </label>
+                ) : null}
+                {exportSelection.includeChats && exportSelectedChatOnly ? (
                   <label>
                     Чат для экспорта
                     <Dropdown
@@ -1954,28 +2077,24 @@ export function SettingsModal({
                     />
                   </label>
                 ) : null}
-                <label>
-                  Формат файла
-                  <Dropdown
-                    value={exportFormat}
-                    options={EXPORT_FORMAT_OPTIONS}
-                    onChange={(nextFormat) =>
-                      setExportFormat(nextFormat as BackupExportFormat)
-                    }
-                  />
-                </label>
                 {exportFormat === "raw_json" || exportFormat === "raw_zip" ? (
                   <small style={{ color: "var(--text-secondary)" }}>
-                    RAW формат сохраняет полный снимок IndexedDB и игнорирует выбранный scope.
+                    RAW формат сохраняет полный снимок IndexedDB и игнорирует чекбоксы
+                    выбора данных.
                   </small>
                 ) : null}
                 <button
                   type="button"
                   onClick={() =>
                     void onExportData({
-                      scope: exportScope,
                       format: exportFormat,
-                      chatId: exportScope === "chat" ? exportChatId : undefined,
+                      selection: {
+                        ...exportSelection,
+                        selectedChatId:
+                          exportSelection.includeChats && exportSelectedChatOnly
+                            ? exportChatId
+                            : undefined,
+                      },
                     })
                   }
                   disabled={
@@ -1983,8 +2102,10 @@ export function SettingsModal({
                     importBusy ||
                     driveBusy ||
                     ((exportFormat === "json" || exportFormat === "zip") &&
-                      exportScope === "chat" &&
-                      !exportChatId)
+                      (!hasAnyExportSelection ||
+                        (exportSelection.includeChats &&
+                          exportSelectedChatOnly &&
+                          !exportChatId)))
                   }
                 >
                   {exportBusy ? "Экспорт..." : "Экспортировать"}
@@ -1995,6 +2116,11 @@ export function SettingsModal({
                       className="button-link"
                       href={exportDownloadUrl}
                       download={exportDownloadFileName}
+                      onClick={(event) => {
+                        if (runtimeMode !== "android") return;
+                        event.preventDefault();
+                        void onDownloadExport();
+                      }}
                     >
                       Скачать экспорт
                     </a>
