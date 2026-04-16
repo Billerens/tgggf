@@ -628,6 +628,20 @@ function normalizeSettings(current: Partial<AppSettings> | undefined): AppSettin
   merged.androidNativeGroupImagesV1 = hasNativeGroupImagesOverride
     ? Boolean(merged.androidNativeGroupImagesV1)
     : merged.androidNativeGroupIterationV1;
+  const hasNativeTopicGenerationOverride = Boolean(
+    current &&
+      Object.prototype.hasOwnProperty.call(current, "androidNativeTopicGenerationV1"),
+  );
+  merged.androidNativeTopicGenerationV1 = hasNativeTopicGenerationOverride
+    ? Boolean(merged.androidNativeTopicGenerationV1)
+    : merged.androidNativeGroupIterationV1;
+  const hasNativeTopicThemedPromptOverride = Boolean(
+    current &&
+      Object.prototype.hasOwnProperty.call(current, "androidNativeTopicThemedPromptV1"),
+  );
+  merged.androidNativeTopicThemedPromptV1 = hasNativeTopicThemedPromptOverride
+    ? Boolean(merged.androidNativeTopicThemedPromptV1)
+    : merged.androidNativeTopicGenerationV1;
   merged.androidNativeGroupStructuredStorageV1 = Boolean(
     merged.androidNativeGroupStructuredStorageV1,
   );
@@ -814,6 +828,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   androidNativeRolloutStage: "internal",
   androidNativeGroupIterationV1: false,
   androidNativeGroupImagesV1: false,
+  androidNativeTopicGenerationV1: false,
+  androidNativeTopicThemedPromptV1: false,
   androidNativeGroupStructuredStorageV1: true,
   androidNativeGroupStructuredStorageDualWrite: true,
   enhanceDetailLevelAll: "medium",

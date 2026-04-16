@@ -1764,8 +1764,8 @@ select:focus,
   background: rgba(255, 255, 255, 0.015);
   display: grid;
   grid-template-columns: minmax(300px, 38%) minmax(0, 1fr);
-  min-height: 460px;
-  max-height: min(72vh, 680px);
+  min-height: 560px;
+  max-height: min(82vh, 860px);
   overflow: hidden;
 }
 .settings-log-master {
@@ -2004,7 +2004,7 @@ select:focus,
   .settings-log-master {
     border-right: none;
     border-bottom: 1px solid var(--border-light);
-    max-height: 260px;
+    max-height: 320px;
   }
   .settings-log-detail {
     min-height: 320px;
@@ -2017,7 +2017,7 @@ select:focus,
   }
   .settings-log-devtools.mobile-list .settings-log-master,
   .settings-log-devtools.mobile-detail .settings-log-detail {
-    max-height: min(68vh, 620px);
+    max-height: min(76vh, 760px);
     overflow: auto;
   }
   .settings-log-entry-head {

@@ -355,6 +355,45 @@ function formatDetailForView(value: unknown): string {
   }
 }
 
+function formatLogEntryForClipboard(entry: DevtoolsLogEntry): string {
+  const parts: string[] = [];
+  parts.push(`[${entry.level.toUpperCase()}] ${entry.eventType}`);
+  parts.push(`Источник: ${entry.source === "native_runtime" ? "NATIVE" : "WEB"}`);
+  parts.push(`Время: ${formatSystemLogTimestamp(entry.timestamp)}`);
+  parts.push(`Сообщение: ${entry.message}`);
+  if (entry.runtimeMeta) {
+    parts.push(`Runtime: ${JSON.stringify(entry.runtimeMeta)}`);
+  }
+  const detailsText = formatDetailForView(entry.detailsRaw);
+  if (detailsText !== "Нет данных") {
+    parts.push("Details:");
+    parts.push(detailsText);
+  }
+  return parts.join("\n");
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  if (typeof document === "undefined") {
+    throw new Error("clipboard_unavailable");
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error("clipboard_exec_command_failed");
+  }
+}
+
 function toSystemLogLevel(value: string): SystemLogLevel {
   switch (value) {
     case "debug":
@@ -636,6 +675,7 @@ export function SettingsModal({
   const [nativeRuntimeEventsLoading, setNativeRuntimeEventsLoading] = useState(false);
   const [nativeRuntimeEventsClearing, setNativeRuntimeEventsClearing] = useState(false);
   const [nativeRuntimeEventsError, setNativeRuntimeEventsError] = useState<string | null>(null);
+  const [copyLogsFeedback, setCopyLogsFeedback] = useState<string>("");
   const [nativeRuntimeEventsFetchedAtMs, setNativeRuntimeEventsFetchedAtMs] = useState<number | null>(
     null,
   );
@@ -781,6 +821,27 @@ export function SettingsModal({
         return payload.includes(normalizedSearch);
       });
   }, [allLogEntries, logLevelFilter, logSearchQuery, logSourceFilter, logTypeFilter]);
+  const copyFilteredLogs = useCallback(async () => {
+    if (filteredLogEntries.length === 0) return;
+    const exportedAt = new Date().toLocaleString("ru-RU");
+    const header = [
+      "TG-GF Logs Export",
+      `Время: ${exportedAt}`,
+      `Фильтры: level=${logLevelFilter}, source=${logSourceFilter}, type=${logTypeFilter}, search=${logSearchQuery.trim() || "-"}`,
+      `Записей: ${filteredLogEntries.length}`,
+    ].join("\n");
+    const entries = filteredLogEntries
+      .map((entry, index) => `#${index + 1}\n${formatLogEntryForClipboard(entry)}`)
+      .join("\n\n----------------------------------------\n\n");
+    try {
+      await copyTextToClipboard(`${header}\n\n${entries}`);
+      setCopyLogsFeedback("Логи скопированы в буфер.");
+    } catch (error) {
+      setCopyLogsFeedback(
+        `Не удалось скопировать логи: ${error instanceof Error ? error.message : "clipboard_error"}`,
+      );
+    }
+  }, [filteredLogEntries, logLevelFilter, logSearchQuery, logSourceFilter, logTypeFilter]);
   const selectedLogEntry = useMemo(
     () => filteredLogEntries.find((entry) => entry.id === selectedLogId) ?? null,
     [filteredLogEntries, selectedLogId],
@@ -800,6 +861,8 @@ export function SettingsModal({
           androidNativeRolloutStage: stage,
           androidNativeGroupIterationV1: true,
           androidNativeGroupImagesV1: false,
+          androidNativeTopicGenerationV1: true,
+          androidNativeTopicThemedPromptV1: false,
           androidNativeGroupStructuredStorageV1: true,
           androidNativeGroupStructuredStorageDualWrite: true,
         };
@@ -810,6 +873,8 @@ export function SettingsModal({
           androidNativeRolloutStage: stage,
           androidNativeGroupIterationV1: true,
           androidNativeGroupImagesV1: true,
+          androidNativeTopicGenerationV1: true,
+          androidNativeTopicThemedPromptV1: true,
           androidNativeGroupStructuredStorageV1: true,
           androidNativeGroupStructuredStorageDualWrite: true,
         };
@@ -819,6 +884,8 @@ export function SettingsModal({
         androidNativeRolloutStage: stage,
         androidNativeGroupIterationV1: true,
         androidNativeGroupImagesV1: true,
+        androidNativeTopicGenerationV1: true,
+        androidNativeTopicThemedPromptV1: true,
         androidNativeGroupStructuredStorageV1: true,
         androidNativeGroupStructuredStorageDualWrite: false,
       };
@@ -830,6 +897,8 @@ export function SettingsModal({
       androidNativeRolloutStage: "internal",
       androidNativeGroupIterationV1: false,
       androidNativeGroupImagesV1: false,
+      androidNativeTopicGenerationV1: false,
+      androidNativeTopicThemedPromptV1: false,
       androidNativeGroupStructuredStorageV1: true,
       androidNativeGroupStructuredStorageDualWrite: true,
     }));
@@ -886,6 +955,7 @@ export function SettingsModal({
       setSelectedLogId(null);
       setActiveLogDetailTab("status");
       setNativeRuntimeEventsError(null);
+      setCopyLogsFeedback("");
       setLogMobilePane(detectCompactLogLayout() ? "list" : "detail");
     }
   }, [open, exportableChats]);
@@ -1346,7 +1416,8 @@ export function SettingsModal({
                         </button>
                       </div>
                       <small style={{ color: "var(--text-secondary)" }}>
-                        Internal: только native iteration. Beta: +native images. Prod: отключает
+                        Internal: native topic/group delegate без themed topic prompt.
+                        Beta: +native images и themed topic prompt. Prod: отключает
                         dual-write после стабильного окна.
                       </small>
                       <label className="checkbox-row">
@@ -1374,6 +1445,32 @@ export function SettingsModal({
                           }
                         />
                         Android: native group images v1
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={settingsDraft.androidNativeTopicGenerationV1}
+                          onChange={(event) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              androidNativeTopicGenerationV1: event.target.checked,
+                            }))
+                          }
+                        />
+                        Android: native topic generation v1
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={settingsDraft.androidNativeTopicThemedPromptV1}
+                          onChange={(event) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              androidNativeTopicThemedPromptV1: event.target.checked,
+                            }))
+                          }
+                        />
+                        Android: native topic themed prompt v1
                       </label>
                       <label className="checkbox-row">
                         <input
@@ -2010,7 +2107,8 @@ export function SettingsModal({
                   <small style={{ color: "var(--text-secondary)" }}>
                     Показано: {filteredLogEntries.length} из {allLogEntries.length}
                   </small>
-                  <div className="inline-row">
+                </div>
+                <div className="inline-row">
                     {canLoadNativeRuntimeEvents ? (
                       <button
                         type="button"
@@ -2050,8 +2148,21 @@ export function SettingsModal({
                           : "Очистить Native Runtime"}
                       </button>
                     ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void copyFilteredLogs();
+                      }}
+                      disabled={filteredLogEntries.length === 0}
+                    >
+                      Копировать отображаемые логи
+                    </button>
                   </div>
-                </div>
+                {copyLogsFeedback ? (
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    {copyLogsFeedback}
+                  </small>
+                ) : null}
                 <small style={{ color: "var(--text-secondary)" }}>
                   {nativeRuntimeStatusLabel}
                   {nativeRuntimeEventsError

@@ -483,6 +483,8 @@ export interface AppSettings {
   androidNativeRolloutStage: AndroidNativeRolloutStage;
   androidNativeGroupIterationV1: boolean;
   androidNativeGroupImagesV1: boolean;
+  androidNativeTopicGenerationV1: boolean;
+  androidNativeTopicThemedPromptV1: boolean;
   androidNativeGroupStructuredStorageV1: boolean;
   androidNativeGroupStructuredStorageDualWrite: boolean;
   enhanceDetailLevelAll: EnhanceDetailLevel;

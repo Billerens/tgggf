@@ -40,13 +40,62 @@ interface CapacitorLikeScope {
 
 interface UseTopicGenerationBackgroundWorkerParams {
   isAndroidRuntime: boolean;
+  androidNativeTopicGenerationV1: boolean;
   generationSession: GeneratorSession | null;
   runGenerationStep: () => Promise<TopicGenerationStepResult>;
+  syncGenerationSessionsFromDb?: (preferredSessionId?: string | null) => Promise<void> | void;
   onError?: (message: string) => void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function hasEntityId(value: unknown): value is { id: string } {
+  return isRecord(value) && typeof value.id === "string" && value.id.trim().length > 0;
+}
+
+function readStoreRows(stores: Record<string, unknown>, storeName: string) {
+  const raw = stores[storeName];
+  if (!Array.isArray(raw)) return [] as Record<string, unknown>[];
+  return raw.filter(isRecord);
+}
+
+function castStoreRows<T>(rows: Record<string, unknown>[]): T[] {
+  return rows as unknown as T[];
+}
+
+function parseIsoMs(value: string | undefined) {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function shouldApplyIncomingSession(params: {
+  current: GeneratorSession | undefined;
+  incoming: GeneratorSession;
+}) {
+  const { current, incoming } = params;
+  if (!current) return true;
+  const currentUpdatedAtMs = parseIsoMs(current.updatedAt);
+  const incomingUpdatedAtMs = parseIsoMs(incoming.updatedAt);
+  if (
+    currentUpdatedAtMs !== null &&
+    incomingUpdatedAtMs !== null &&
+    incomingUpdatedAtMs < currentUpdatedAtMs
+  ) {
+    return false;
+  }
+  if (current.status !== "running" && incoming.status === "running") {
+    if (
+      currentUpdatedAtMs !== null &&
+      incomingUpdatedAtMs !== null &&
+      incomingUpdatedAtMs <= currentUpdatedAtMs
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null {
@@ -136,19 +185,49 @@ async function syncTopicGenerationContextToNative(sessionId: string) {
 
 export function useTopicGenerationBackgroundWorker({
   isAndroidRuntime,
+  androidNativeTopicGenerationV1,
   generationSession,
   runGenerationStep: _runGenerationStep,
+  syncGenerationSessionsFromDb,
   onError: _onError,
 }: UseTopicGenerationBackgroundWorkerParams) {
   const topicGenerationJobIdRef = useRef<string | null>(null);
+  const lastNativePullAtRef = useRef<number>(0);
+  const pullInFlightRef = useRef<boolean>(false);
 
   useEffect(() => {
-    if (!isAndroidRuntime) {
+    if (!isAndroidRuntime || !androidNativeTopicGenerationV1) {
       const previousJobId = topicGenerationJobIdRef.current;
       topicGenerationJobIdRef.current = null;
       if (previousJobId) {
         void cancelBackgroundJob(previousJobId).catch(() => {
           // Ignore queue mutation errors while switching runtimes.
+        });
+      }
+      const previousSessionId = previousJobId?.startsWith(TOPIC_GENERATION_JOB_ID_PREFIX)
+        ? previousJobId.slice(TOPIC_GENERATION_JOB_ID_PREFIX.length).trim()
+        : "";
+      if (previousSessionId) {
+        void setBackgroundDesiredState({
+          taskType: TOPIC_GENERATION_JOB_TYPE,
+          scopeId: previousSessionId,
+          enabled: false,
+          payload: {
+            sessionId: previousSessionId,
+            delayMs: 0,
+          },
+        }).catch(() => {
+          // Ignore desired-state cleanup errors while switching execution mode.
+        });
+      }
+      if (isAndroidRuntime && generationSession) {
+        void updateForegroundWorkerStatus({
+          worker: "topic_generation",
+          state: generationSession.status === "running" ? "running" : "idle",
+          scopeId: generationSession.id,
+          detail: "web_delegate",
+        }).catch(() => {
+          // Ignore status bridge failures.
         });
       }
       topicGenerationJobIdRef.current = null;
@@ -193,7 +272,76 @@ export function useTopicGenerationBackgroundWorker({
       }
     }
 
+    const pullNativeTopicContextIntoWeb = (
+      preferredSessionId: string | null,
+      reason: string,
+    ) => {
+      if (!isAndroidRuntime || !androidNativeTopicGenerationV1) return;
+      if (pullInFlightRef.current) return;
+      const now = Date.now();
+      const minPullIntervalMs = reason === "session_not_running" ? 800 : 4_500;
+      if (now - lastNativePullAtRef.current < minPullIntervalMs) return;
+      const plugin = resolveLocalApiPlugin(globalThis as unknown as CapacitorLikeScope);
+      if (!plugin) return;
+
+      pullInFlightRef.current = true;
+      lastNativePullAtRef.current = now;
+
+      void (async () => {
+        try {
+          const response = await plugin.request({
+            method: "GET",
+            path: "/api/raw-snapshot?stores=generatorSessions",
+          });
+          if (response.status < 200 || response.status >= 300) {
+            throw new Error(`native_topic_context_pull_http_${response.status}`);
+          }
+
+          const body = isRecord(response.body) ? response.body : {};
+          const stores = isRecord(body.stores) ? body.stores : {};
+          const existingSessions = await dbApi.getAllGeneratorSessions();
+          const existingSessionById = new Map(
+            existingSessions.map((session) => [session.id, session]),
+          );
+
+          const sessions = castStoreRows<GeneratorSession>(
+            readStoreRows(stores, "generatorSessions").filter(hasEntityId),
+          );
+          let appliedAnySession = false;
+          for (const session of sessions) {
+            const current = existingSessionById.get(session.id);
+            if (!shouldApplyIncomingSession({ current, incoming: session })) {
+              continue;
+            }
+            await dbApi.saveGeneratorSession(session);
+            existingSessionById.set(session.id, session);
+            appliedAnySession = true;
+          }
+
+          if (appliedAnySession) {
+            await syncGenerationSessionsFromDb?.(preferredSessionId);
+          }
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "native_topic_context_pull_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "topic_generation.native_context_pull_failed",
+            message: "Failed to pull topic generation context into web storage",
+            details: {
+              sessionId: preferredSessionId,
+              reason,
+              error: errorMessage,
+            },
+          });
+        } finally {
+          pullInFlightRef.current = false;
+        }
+      })();
+    };
+
     if (!generationSession) {
+      pullNativeTopicContextIntoWeb(null, "no_session");
       void updateForegroundWorkerStatus({
         worker: "topic_generation",
         state: "idle",
@@ -245,6 +393,22 @@ export function useTopicGenerationBackgroundWorker({
         }).catch(() => {
           // Ignore status bridge failures.
         });
+        try {
+          await syncTopicGenerationContextToNative(sessionId);
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "native_context_sync_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "topic_generation.native_context_sync_failed",
+            message: "Failed to sync stopped topic session to native store",
+            details: {
+              sessionId,
+              error: errorMessage,
+            },
+          });
+        }
+        pullNativeTopicContextIntoWeb(sessionId, "session_not_running");
         return;
       }
 
@@ -341,13 +505,16 @@ export function useTopicGenerationBackgroundWorker({
       }).catch(() => {
         // Ignore status bridge failures.
       });
+      pullNativeTopicContextIntoWeb(sessionId, "native_delegate_ready");
     };
 
     void syncNativeTopicJob();
   }, [
+    androidNativeTopicGenerationV1,
     generationSession?.delaySeconds,
     generationSession?.id,
     generationSession?.status,
     isAndroidRuntime,
+    syncGenerationSessionsFromDb,
   ]);
 }

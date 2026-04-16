@@ -44,6 +44,12 @@ data class NativeLlmCallDebug(
     val parsedField: String?,
 )
 
+data class NativeTopicThemedPrompt(
+    val prompt: String,
+    val themeTags: List<String>,
+    val llmDebug: NativeLlmCallDebug?,
+)
+
 private data class HttpResult(
     val code: Int,
     val body: String,
@@ -393,9 +399,9 @@ object NativeLlmClient {
         val auth = resolveProviderAuth(settings, provider)
         val personaName = speakerPersona.optString("name", "").trim().ifEmpty { "Unknown" }
         val appearanceSummary = summarizePersonaAppearance(speakerPersona).ifBlank { "-" }
-        val stylePrompt = clipText(speakerPersona.optString("stylePrompt", "").trim(), 200).ifBlank { "-" }
+        val stylePrompt = clipText(speakerPersona.optString("stylePrompt", "").trim(), 440).ifBlank { "-" }
         val personalityPrompt =
-            clipText(speakerPersona.optString("personalityPrompt", "").trim(), 200).ifBlank { "-" }
+            clipText(speakerPersona.optString("personalityPrompt", "").trim(), 440).ifBlank { "-" }
         val toolDefinition = buildComfyPromptConversionToolDefinition()
 
         val prompts = mutableListOf<String>()
@@ -437,6 +443,130 @@ object NativeLlmClient {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
+    }
+
+    fun generateThemedComfyPromptForTopic(
+        settings: JSONObject,
+        persona: JSONObject,
+        topic: String,
+        iteration: Int,
+    ): NativeTopicThemedPrompt? {
+        val normalizedTopic = topic.trim()
+        if (normalizedTopic.isBlank()) return null
+
+        val provider =
+            settings
+                .optString(
+                    "imagePromptProvider",
+                    settings.optString("groupPersonaProvider", "lmstudio"),
+                ).trim()
+                .ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model =
+            settings
+                .optString("imagePromptModel", settings.optString("model", ""))
+                .trim()
+        if (model.isBlank()) return null
+        val auth = resolveProviderAuth(settings, provider)
+
+        val systemPrompt =
+            listOf(
+                "Ты генератор одного ComfyUI prompt для изображения персонажа.",
+                "Верни JSON-объект без markdown и пояснений.",
+                "Формат: {\"theme_tags\":[\"...\"],\"comfy_prompts\":[\"...\"]}",
+                "theme_tags: 8-12 кратких English tags, которые напрямую описывают тему/контекст кадра.",
+                "comfy_prompts: массив из одного prompt (строка с comma-separated English tags).",
+                "theme_tags должны быть конкретными (локация, роль, действие, атмосфера) и не противоречить теме.",
+                "Формат внутри comfy_prompts[0]: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
+                "Каждый тег: строго 1-2 слова, в редких случаях допускается 3; lowercase, без точки в конце.",
+                "ЗАПРЕЩЕНО: полные предложения, художественные описания, markdown, двоеточия с пояснениями, нумерация, буллеты, кавычки.",
+                "ЗАПРЕЩЕНО: конструкции типа 'a woman standing...', 'she is...', 'this scene shows...'.",
+                "ЗАПРЕЩЕНО добавлять теги, которых нет в теме/внешности (никаких выдуманных тату, пирсингов, фетиш-элементов, ролей).",
+                "Правильный стиль: 'solo, one person, upper body, soft rim light, city street at night' - в подобном виде.",
+                "Определяй количество действующих лиц из тематики.",
+                "Описывай строго одного человека (solo, single subject, one person) или нескольких если описание (тематика) этого требует.",
+                "ОБЯЗАТЕЛЬНО Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
+                "ОБЯЗАТЕЛЬНО Если в input есть блок LookPrompt cache, используй его как identity prior: hair/face/eyes/body/outfit-теги приоритетны и помогают держать консистентность.",
+                "Из LookPrompt cache можно брать только стабильные identity/outfit детали, но не добавляй лишние детали, которых нет в теме или которые не соответствуют описанию.",
+                "Все теги из theme_tags ОБЯЗАТЕЛЬНО должны присутствовать в comfy_prompts[0] без потери смысла.",
+                "Используй уместную одежду, если тема не требует специального костюма.",
+                "Добавляй композицию, свет, фон, ракурс, качество.",
+                "Перед отправкой проверь self-check: если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
+                "Без дополнительных полей и пояснений.",
+                "",
+                "SELF-CHECK",
+                "Если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
+                "Теги только на английском языке (English only).",
+                "Внешность персонажа должна быть сохранена.",
+                "Обязательно перепроверяй наличие важных тегов внешности: телосложение, цвет глаз, цвет волос, прическа, эмоции (если указаны).",
+                "Если что-то не соответствует - перегенерируй."
+            ).joinToString("\n")
+
+        val userPrompt =
+            listOf(
+                "Character name: ${persona.optString("name", "").trim().ifEmpty { "Unknown" }}",
+                "Appearance: ${formatTopicAppearanceInput(persona.optJSONObject("appearance"))}",
+                "Style: ${persona.optString("stylePrompt", "").trim().ifEmpty { "-" }}",
+                "Personality: ${persona.optString("personalityPrompt", "").trim().ifEmpty { "-" }}",
+                "LookPrompt cache:\n${formatTopicLookPromptCacheInput(persona.optJSONObject("lookPromptCache"))}",
+                "Theme: $normalizedTopic",
+                "Iteration: ${max(1, iteration)}",
+                "Generate one unique prompt variation for this iteration.",
+            ).joinToString("\n")
+
+        val response =
+            requestChatCompletionsWithRetry(
+                baseUrl = baseUrl,
+                model = model,
+                auth = auth,
+                temperature =
+                    clampTemperature(
+                        settings.optDouble("temperature", 0.55),
+                        minValue = 0.35,
+                        maxValue = 0.75,
+                    ),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 600), minValue = 180, maxValue = 700),
+                systemPrompt = systemPrompt,
+                userPrompt = userPrompt,
+                forceJsonObject = true,
+                toolDefinition = buildThemedComfyPromptToolDefinition(),
+            )
+
+        val parsed = parseJsonObjectLoose(response.content)
+        val promptEntry = readFirstNonBlankEntry(parsed, "prompt", "comfy_prompt", "comfyPrompt")
+        val structuredPrompts =
+            parseStringArrayFlexible(parsed.opt("comfy_prompts"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfyPrompts")) }
+
+        var prompt = promptEntry?.value.orEmpty()
+        var parsedField = promptEntry?.key
+        if (prompt.isBlank() && structuredPrompts.isNotEmpty()) {
+            prompt = structuredPrompts.first().trim()
+            parsedField = "comfy_prompts[0]"
+        }
+        if (prompt.isBlank()) {
+            val rawFallback = response.content.trim()
+            if (rawFallback.isNotBlank() && !rawFallback.startsWith("{") && !rawFallback.startsWith("[")) {
+                prompt = rawFallback
+                parsedField = "raw_content_fallback"
+            }
+        }
+        if (prompt.isBlank()) {
+            throw IllegalStateException("topic_themed_prompt_missing_prompt")
+        }
+
+        val themeTags =
+            parseStringArrayFlexible(parsed.opt("theme_tags"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("themeTags")) }
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("tags")) }
+                .ifEmpty { fallbackThemeTags(normalizedTopic) }
+                .distinct()
+
+        return NativeTopicThemedPrompt(
+            prompt = mergeRequiredTags(prompt, themeTags),
+            themeTags = themeTags,
+            llmDebug = response.llmDebug?.copy(parsedField = parsedField),
+        )
     }
 
     private fun buildParticipantNameMap(
@@ -488,10 +618,10 @@ object NativeLlmClient {
                 OrchestratorParticipantProfile(
                     personaId = personaId,
                     name = personaName,
-                    archetype = clipText(readNestedString(persona, "advanced", "core", "archetype"), 60),
-                    character = clipText(persona.optString("personalityPrompt", "").trim(), 120),
-                    voiceTone = clipText(readNestedString(persona, "advanced", "voice", "tone"), 40),
-                    lexicalStyle = clipText(readNestedString(persona, "advanced", "voice", "lexicalStyle"), 48),
+                    archetype = clipText(readNestedString(persona, "advanced", "core", "archetype"), 180),
+                    character = clipText(persona.optString("personalityPrompt", "").trim(), 240),
+                    voiceTone = clipText(readNestedString(persona, "advanced", "voice", "tone"), 120),
+                    lexicalStyle = clipText(readNestedString(persona, "advanced", "voice", "lexicalStyle"), 144),
                     sentenceLength = normalizeSentenceLength(readNestedString(persona, "advanced", "voice", "sentenceLength")),
                     formality = readNestedInt(persona, 50, "advanced", "voice", "formality"),
                     expressiveness = readNestedInt(persona, 50, "advanced", "voice", "expressiveness"),
@@ -515,7 +645,7 @@ object NativeLlmClient {
                 appearance.optString("bodyType", "").trim(),
                 appearance.optString("clothingStyle", "").trim(),
             ).filter { it.isNotBlank() }
-        return clipText(parts.joinToString(", "), 120)
+        return clipText(parts.joinToString(", "), 400)
     }
 
     private fun resolveFocusedUserMessage(messages: JSONArray, room: JSONObject, roomId: String): JSONObject? {
@@ -1221,6 +1351,61 @@ object NativeLlmClient {
         )
     }
 
+    private fun buildThemedComfyPromptToolDefinition(): LlmToolDefinition {
+        return LlmToolDefinition(
+            name = "emit_themed_comfy_prompt",
+            description = "Return one themed ComfyUI prompt and matching theme tags in structured form.",
+            parameters =
+                JSONObject().apply {
+                    put("type", "object")
+                    put(
+                        "properties",
+                        JSONObject().apply {
+                            put("prompt", JSONObject().apply { put("type", "string") })
+                            put("comfy_prompt", JSONObject().apply { put("type", "string") })
+                            put("comfyPrompt", JSONObject().apply { put("type", "string") })
+                            put(
+                                "comfy_prompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfyPrompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "theme_tags",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "themeTags",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "tags",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                        },
+                    )
+                    put("additionalProperties", true)
+                },
+        )
+    }
+
     private fun buildComfyPromptConversionToolDefinition(): LlmToolDefinition {
         return LlmToolDefinition(
             name = "emit_comfy_prompts",
@@ -1735,6 +1920,92 @@ object NativeLlmClient {
             }
         }
         return result
+    }
+
+    private fun formatTopicAppearanceInput(appearance: JSONObject?): String {
+        if (appearance == null) return "-"
+        val parts =
+            listOf(
+                appearance.optString("gender", "").trim(),
+                appearance.optString("faceDescription", "").trim(),
+                appearance.optString("hair", "").trim(),
+                appearance.optString("eyes", "").trim(),
+                appearance.optString("bodyType", "").trim(),
+                appearance.optString("clothingStyle", "").trim(),
+                appearance.optString("markers", "").trim(),
+            ).filter { it.isNotBlank() }
+        if (parts.isEmpty()) return "-"
+        return clipText(parts.joinToString(", "), 1000)
+    }
+
+    private fun formatTopicLookPromptCacheInput(lookPromptCache: JSONObject?): String {
+        if (lookPromptCache == null) return "-"
+        val lines = mutableListOf<String>()
+        val avatarPrompt = clipText(lookPromptCache.optString("avatarPrompt", "").trim(), 360)
+        if (avatarPrompt.isNotBlank()) {
+            lines.add("avatarPrompt: $avatarPrompt")
+        }
+        val fullBodyPrompt = clipText(lookPromptCache.optString("fullBodyPrompt", "").trim(), 360)
+        if (fullBodyPrompt.isNotBlank()) {
+            lines.add("fullBodyPrompt: $fullBodyPrompt")
+        }
+        val identityLocks = lookPromptCache.optJSONObject("identityLocks")
+        if (identityLocks != null) {
+            val lockParts =
+                listOf(
+                    "hair" to identityLocks.optString("hair", "").trim(),
+                    "face" to identityLocks.optString("face", "").trim(),
+                    "eyes" to identityLocks.optString("eyes", "").trim(),
+                    "body" to identityLocks.optString("body", "").trim(),
+                    "outfit" to identityLocks.optString("outfit", "").trim(),
+                ).filter { it.second.isNotBlank() }
+            if (lockParts.isNotEmpty()) {
+                lines.add(
+                    "identityLocks: ${
+                        lockParts.joinToString(", ") { (key, value) -> "$key=$value" }
+                    }",
+                )
+            }
+        }
+        if (lines.isEmpty()) return "-"
+        return lines.joinToString("\n")
+    }
+
+    private fun fallbackThemeTags(topic: String): List<String> {
+        val normalized =
+            topic
+                .lowercase()
+                .replace(Regex("[\\n\\r\\t]+"), " ")
+                .replace(Regex("[.;:!?()\\[\\]{}\"'`]"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        if (normalized.isBlank()) return emptyList()
+
+        return normalized
+            .split(Regex("[,\\-\\\\/|]+"))
+            .flatMap { chunk -> chunk.split(" ") }
+            .map { part -> part.trim() }
+            .filter { part -> part.isNotBlank() }
+            .distinct()
+            .take(8)
+    }
+
+    private fun splitPromptTags(value: String): List<String> {
+        return value
+            .split(",")
+            .map { item -> item.trim() }
+            .filter { item -> item.isNotBlank() }
+    }
+
+    private fun mergeRequiredTags(basePrompt: String, requiredTags: List<String>): String {
+        val existing = splitPromptTags(basePrompt)
+        val existingLower = existing.map { tag -> tag.lowercase() }.toHashSet()
+        val normalizedRequired =
+            requiredTags
+                .map { tag -> tag.trim() }
+                .filter { tag -> tag.isNotBlank() }
+                .filter { tag -> !existingLower.contains(tag.lowercase()) }
+        return (normalizedRequired + existing).joinToString(", ")
     }
 
     private fun parseJsonObjectLoose(raw: String?): JSONObject {

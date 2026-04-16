@@ -49,6 +49,33 @@ export function useGenerationSessionManager({
     [generationSessionId, generationSessions],
   );
 
+  const syncGenerationSessionsFromDb = async (preferredSessionId?: string | null) => {
+    const personaId = generationPersonaId.trim();
+    if (!personaId) {
+      setGenerationSessions([]);
+      setGenerationSessionId("");
+      setGenerationCompletedCount(0);
+      return;
+    }
+
+    try {
+      const sessions = await dbApi.getGeneratorSessions(personaId);
+      setGenerationSessions(sessions);
+      const preferredId = (preferredSessionId ?? "").trim();
+      setGenerationSessionId((prev) => {
+        if (preferredId && sessions.some((session) => session.id === preferredId)) {
+          return preferredId;
+        }
+        if (prev && sessions.some((session) => session.id === prev)) {
+          return prev;
+        }
+        return sessions[0]?.id ?? "";
+      });
+    } catch (error) {
+      useAppStore.setState({ error: (error as Error).message });
+    }
+  };
+
   useEffect(() => {
     if (!generationPersonaId && personas.length > 0) {
       setGenerationPersonaId(personas[0].id);
@@ -218,6 +245,7 @@ export function useGenerationSessionManager({
     generationCompletedCount,
     setGenerationCompletedCount,
     generationSession,
+    syncGenerationSessionsFromDb,
     createGenerationSession,
     deleteGenerationSession,
     renameGenerationSession,

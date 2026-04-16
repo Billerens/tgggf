@@ -348,9 +348,29 @@ class LocalApiBridgePlugin : Plugin() {
         repository.writeStoreJson(storeName, value.toString())
     }
 
-    private fun exportRawStores(): JSONObject {
+    private fun parseRequestedStoreNames(query: String?): Set<String>? {
+        val raw = readQueryParam(query, "stores") ?: return null
+        if (raw.isBlank()) return null
+        val knownStoreNames = repository.knownStoreNames()
+        val requested = mutableSetOf<String>()
+        for (token in raw.split(",")) {
+            val storeName = token.trim()
+            if (storeName.isEmpty()) continue
+            if (knownStoreNames.contains(storeName)) {
+                requested.add(storeName)
+            }
+        }
+        return requested
+    }
+
+    private fun exportRawStores(requestedStoreNames: Set<String>? = null): JSONObject {
         val stores = JSONObject()
-        val storeNames = repository.knownStoreNames().toList().sorted()
+        val storeNames =
+            if (requestedStoreNames == null) {
+                repository.knownStoreNames().toList().sorted()
+            } else {
+                requestedStoreNames.toList().sorted()
+            }
         for (storeName in storeNames) {
             stores.put(storeName, readStoreArray(storeName))
         }
@@ -1263,12 +1283,13 @@ class LocalApiBridgePlugin : Plugin() {
         }
 
         if (method == "GET" && path == "/api/raw-snapshot") {
+            val requestedStoreNames = parseRequestedStoreNames(query)
             respond(
                 call,
                 200,
                 JSObject().apply {
                     put("ok", true)
-                    put("stores", exportRawStores())
+                    put("stores", exportRawStores(requestedStoreNames))
                 },
             )
             return

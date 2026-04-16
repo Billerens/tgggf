@@ -59,6 +59,7 @@ interface CapacitorLikeScope {
 
 interface UseGroupIterationBackgroundWorkerParams {
   activeGroupRoom: GroupRoom | null;
+  groupRooms: GroupRoom[];
   isAndroidRuntime: boolean;
   androidNativeGroupIterationV1: boolean;
   personas: Persona[];
@@ -267,6 +268,7 @@ async function syncGroupContextToNative(roomId: string) {
 
 export function useGroupIterationBackgroundWorker({
   activeGroupRoom,
+  groupRooms,
   isAndroidRuntime,
   androidNativeGroupIterationV1,
   personas,
@@ -279,6 +281,7 @@ export function useGroupIterationBackgroundWorker({
   const settingsRef = useEffectRef(settings);
   const runActiveGroupIterationRef = useEffectRef(runActiveGroupIteration);
   const previousRoomIdRef = useRef<string | null>(null);
+  const previousRoomCatalogFingerprintRef = useRef<string>("");
   const desiredStateFingerprintRef = useRef<string>("");
   const desiredStatePendingFingerprintRef = useRef<string>("");
   const lastNativeSyncAtRef = useRef<number>(0);
@@ -290,6 +293,12 @@ export function useGroupIterationBackgroundWorker({
   useEffect(() => {
     const previousRoomId = previousRoomIdRef.current;
     const nextRoomId = activeGroupRoom?.id ?? null;
+    const nextRoomCatalogFingerprint = groupRooms
+      .map((room) => room.id)
+      .sort()
+      .join("|");
+    const previousRoomCatalogFingerprint = previousRoomCatalogFingerprintRef.current;
+    previousRoomCatalogFingerprintRef.current = nextRoomCatalogFingerprint;
     const executionMode = resolveGroupIterationExecutionMode(
       isAndroidRuntime,
       androidNativeGroupIterationV1,
@@ -512,7 +521,9 @@ export function useGroupIterationBackgroundWorker({
 
     if (!activeGroupRoom) {
       if (isAndroidRuntime) {
-        pullNativeContextIntoWeb(null, "no_active_room");
+        if (!previousRoomId) {
+          pullNativeContextIntoWeb(null, "no_active_room");
+        }
         if (previousRoomId) {
           syncDesiredState(previousRoomId, false);
           void cancelBackgroundJob(buildGroupIterationJobId(previousRoomId)).catch(() => {
@@ -532,14 +543,24 @@ export function useGroupIterationBackgroundWorker({
     }
     const roomId = activeGroupRoom.id;
     const jobId = buildGroupIterationJobId(roomId);
+    const roomChanged = previousRoomId !== nextRoomId;
+    const roomCatalogChanged =
+      previousRoomCatalogFingerprint !== nextRoomCatalogFingerprint;
     syncDesiredState(roomId, shouldEnableDesiredState(activeGroupRoom));
     if (isAndroidRuntime) {
       const now = Date.now();
-      if (!syncInFlightRef.current && now - lastNativeSyncAtRef.current > 2_000) {
+      const shouldSyncNow =
+        roomChanged ||
+        roomCatalogChanged ||
+        now - lastNativeSyncAtRef.current > 2_000;
+      if (!syncInFlightRef.current && shouldSyncNow) {
         syncInFlightRef.current = true;
         void syncGroupContextToNative(roomId)
           .then(() => {
             lastNativeSyncAtRef.current = Date.now();
+            if (roomChanged || roomCatalogChanged) {
+              pullNativeContextIntoWeb(roomId, "effect_enter_post_sync");
+            }
           })
           .catch((error) => {
             const errorMessage =
@@ -557,8 +578,11 @@ export function useGroupIterationBackgroundWorker({
           .finally(() => {
             syncInFlightRef.current = false;
           });
+      } else if (roomChanged || roomCatalogChanged) {
+        // Avoid pulling stale native snapshot while a room-switch sync is pending.
+      } else {
+        pullNativeContextIntoWeb(roomId, "effect_enter");
       }
-      pullNativeContextIntoWeb(roomId, "effect_enter");
     }
     let lastStatusFingerprint = "";
     let lastStatusAt = 0;
@@ -904,6 +928,7 @@ export function useGroupIterationBackgroundWorker({
   }, [
     activeGroupRoom?.id,
     activeGroupRoom?.status,
+    groupRooms,
     isAndroidRuntime,
     androidNativeGroupIterationV1,
     syncGroupStateFromDb,

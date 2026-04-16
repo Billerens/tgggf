@@ -2051,15 +2051,24 @@ object GroupIterationNativeExecutor {
         try {
             for (index in promptsForGeneration.indices) {
                 val prompt = promptsForGeneration[index]
+                val seed = ComfyNativeClient.stableSeedFromText("$messageId:${index + 1}:$prompt")
                 val comfyResult =
-                    TopicGenerationNativeExecutor.generateComfyImageForGroup(
-                        context = context,
-                        settings = settings,
-                        prompt = prompt,
-                        checkpointName = checkpointName.ifEmpty { null },
-                        styleReferenceImage = styleReferenceImage,
-                        seedKey = "$messageId:${index + 1}:$prompt",
-                        scopeId = roomId,
+                    ComfyNativeClient.runBaseGeneration(
+                        ComfyNativeClient.BaseGenerationRequest(
+                            context = context,
+                            settings = settings,
+                            prompt = prompt,
+                            seed = seed,
+                            checkpointName = checkpointName.ifEmpty { null },
+                            styleReferenceImage = styleReferenceImage,
+                            preferredTitleIncludes = emptyList(),
+                            strictPreferredMatch = false,
+                            pickLatestImageOnly = false,
+                            worker = ForegroundSyncService.WORKER_GROUP_ITERATION,
+                            workerScopeId = roomId.ifBlank { "group" },
+                            workerQueueDetail = "native_queue_image_prompt",
+                            workerWaitDetail = "native_wait_image_history",
+                        ),
                     )
                 if (comfyResult.imageUrls.isEmpty()) {
                     throw IllegalStateException("group_comfy_empty_images")

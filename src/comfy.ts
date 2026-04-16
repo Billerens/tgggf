@@ -96,6 +96,7 @@ type I2IDetailerTarget = DetailTarget | IntimateDetailTarget | "penis";
 export type ComfyFlow = "base" | "i2i";
 
 const DEFAULT_COMFY_BASE_URL = "http://127.0.0.1:8188";
+const COMFY_SEED_MAX = 1_125_899_906_842_624;
 const BASE_WORKFLOW_TEMPLATE_PATH = "comfy_api.json";
 const I2I_WORKFLOW_TEMPLATE_PATH = "comfy_api_i2i_2.json";
 const POSITIVE_PROMPT_NODE_ID = "1050";
@@ -474,7 +475,11 @@ function setSeed(
   if (!Number.isFinite(seed)) return;
   const node = workflow[nodeId];
   if (!node || !node.inputs) return;
-  node.inputs.seed = Math.max(0, Math.floor(seed as number));
+  const normalizedSeed = Math.max(
+    0,
+    Math.min(COMFY_SEED_MAX, Math.floor(seed as number)),
+  );
+  node.inputs.seed = normalizedSeed;
 }
 
 function setSliderValue(workflow: ComfyWorkflow, nodeId: string, value?: number) {
