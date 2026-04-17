@@ -33,7 +33,9 @@ import type {
   GroupMessage,
   GroupMessageMention,
   GroupParticipant,
+  GroupPersonaState,
   GroupRoom,
+  InfluenceProfile,
   GroupEvent,
   ImageGenerationMeta,
   Persona,
@@ -42,6 +44,7 @@ import type {
 interface GroupChatPaneProps {
   activeRoom: GroupRoom | null;
   participants: GroupParticipant[];
+  personaStates: GroupPersonaState[];
   messages: GroupMessage[];
   events: GroupEvent[];
   personas: Persona[];
@@ -61,6 +64,11 @@ interface GroupChatPaneProps {
     blockIndexes?: number[],
   ) => Promise<void> | void;
   onRegenerateMessageResponse: (messageId: string) => Promise<void> | void;
+  onSetPersonaInfluenceProfile: (
+    roomId: string,
+    personaId: string,
+    profile: Partial<InfluenceProfile> | null,
+  ) => Promise<void> | void;
   onOpenChatDetails: () => void;
 }
 
@@ -706,6 +714,7 @@ function parseIdbAssetId(value: string) {
 export function GroupChatPane({
   activeRoom,
   participants,
+  personaStates,
   messages,
   events,
   personas,
@@ -722,6 +731,7 @@ export function GroupChatPane({
   onSubmitMessage,
   onRetryMessageImages,
   onRegenerateMessageResponse,
+  onSetPersonaInfluenceProfile,
   onOpenChatDetails,
 }: GroupChatPaneProps) {
   const [eventLogModalOpen, setEventLogModalOpen] = useState(false);
@@ -971,6 +981,15 @@ export function GroupChatPane({
     [personas],
   );
   const profilePersona = profilePersonaId ? personaById[profilePersonaId] ?? null : null;
+  const profilePersonaState = useMemo(() => {
+    if (!activeRoom || !profilePersonaId) return null;
+    return (
+      personaStates.find(
+        (state) =>
+          state.roomId === activeRoom.id && state.personaId === profilePersonaId,
+      ) ?? null
+    );
+  }, [activeRoom, personaStates, profilePersonaId]);
   const personaNameById = useMemo(
     () =>
       Object.fromEntries(personas.map((persona) => [persona.id, persona.name])),
@@ -1847,6 +1866,16 @@ export function GroupChatPane({
       <PersonaProfileModal
         open={Boolean(profilePersona)}
         persona={profilePersona}
+        influenceProfile={profilePersonaState?.influenceProfile ?? null}
+        currentIntent={profilePersonaState?.currentIntent ?? null}
+        onSaveInfluenceProfile={(profile) => {
+          if (!activeRoom || !profilePersona) return;
+          void onSetPersonaInfluenceProfile(activeRoom.id, profilePersona.id, profile);
+        }}
+        onResetInfluenceProfile={() => {
+          if (!activeRoom || !profilePersona) return;
+          void onSetPersonaInfluenceProfile(activeRoom.id, profilePersona.id, null);
+        }}
         onClose={() => setProfilePersonaId(null)}
       />
     </main>

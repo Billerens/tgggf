@@ -500,6 +500,7 @@ export async function requestLlmPersonaMessage(params: {
   const systemPrompt = buildGroupPersonaSystemPrompt({
     room: params.room,
     persona: params.speaker,
+    personaState: params.personaState,
     userName: params.userName,
     participantNames: params.participantNames,
   });

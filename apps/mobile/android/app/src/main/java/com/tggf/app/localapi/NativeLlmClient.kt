@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets
 import java.time.Instant
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 data class NativeGroupOrchestratorDecision(
     val status: String,
@@ -281,12 +282,15 @@ object NativeLlmClient {
                 limit = 6,
                 payloadMaxLen = 220,
             )
-        val personaStateLine =
-            buildPersonaStateLine(
+        val personaState =
+            findPersonaState(
                 personaStates = personaStates,
                 roomId = roomId,
                 personaId = personaId,
             )
+        val personaStateLine =
+            buildPersonaStateLine(personaState)
+        val influencePromptContext = formatInfluenceProfileForPrompt(personaState)
 
         val systemPrompt =
             buildGroupPersonaSystemPrompt(
@@ -294,6 +298,7 @@ object NativeLlmClient {
                 speakerPersona = speakerPersona,
                 userName = userName,
                 participantNames = participantNames,
+                influencePromptContext = influencePromptContext,
             )
         val userPrompt =
             buildGroupPersonaUserPrompt(
@@ -301,6 +306,7 @@ object NativeLlmClient {
                 lastUserMessageContent = focusedUserMessage?.optString("content", "").orEmpty(),
                 recentMessageLines = recentMessageLines,
                 personaStateLine = personaStateLine,
+                influencePromptContext = influencePromptContext,
                 relationLines = relationLines,
                 sharedMemoryLines = sharedMemoryLines,
                 privateMemoryLines = privateMemoryLines,
@@ -802,18 +808,116 @@ object NativeLlmClient {
         return lines.takeLast(max(1, limit))
     }
 
-    private fun buildPersonaStateLine(
+    private fun findPersonaState(
         personaStates: JSONArray,
         roomId: String,
         personaId: String,
-    ): String {
+    ): JSONObject? {
         for (index in 0 until personaStates.length()) {
             val state = personaStates.optJSONObject(index) ?: continue
             if (state.optString("roomId", "").trim() != roomId) continue
             if (state.optString("personaId", "").trim() != personaId) continue
-            return "mood=${state.optString("mood", "")}, trustToUser=${state.optInt("trustToUser", 50)}, energy=${state.optInt("energy", 50)}, engagement=${state.optInt("engagement", 50)}, initiative=${state.optInt("initiative", 50)}, affectionToUser=${state.optInt("affectionToUser", 50)}, tension=${state.optInt("tension", 0)}"
+            return state
         }
-        return "none"
+        return null
+    }
+
+    private fun buildPersonaStateLine(state: JSONObject?): String {
+        if (state == null) return "none"
+        return "mood=${state.optString("mood", "")}, trustToUser=${state.optInt("trustToUser", 50)}, energy=${state.optInt("energy", 50)}, engagement=${state.optInt("engagement", 50)}, initiative=${state.optInt("initiative", 50)}, affectionToUser=${state.optInt("affectionToUser", 50)}, tension=${state.optInt("tension", 0)}"
+    }
+
+    private data class InfluencePromptEntry(
+        val text: String,
+        val strength: Int,
+    )
+
+    private fun formatInfluenceProfileForPrompt(state: JSONObject?): String {
+        val profile = state?.optJSONObject("influenceProfile") ?: return "none"
+        val enabled = profile.optBoolean("enabled", false)
+        val thoughts = parseInfluenceEntries(profile.optJSONArray("thoughts"))
+        val desires = parseInfluenceEntries(profile.optJSONArray("desires"))
+        val goals = parseInfluenceEntries(profile.optJSONArray("goals"))
+        val freeform = normalizeInfluenceText(profile.optString("freeform", ""), maxLen = 900)
+        val hasSignal =
+            enabled && (thoughts.isNotEmpty() || desires.isNotEmpty() || goals.isNotEmpty() || freeform.isNotBlank())
+        if (!hasSignal) return "none"
+
+        val currentIntent =
+            state.optString("currentIntent", "").trim().ifBlank {
+                resolveInfluenceCurrentIntent(goals, desires, thoughts, freeform) ?: "none"
+            }
+
+        return listOf(
+            "enabled=${if (enabled) "yes" else "no"}",
+            "thoughts=${renderInfluenceEntries(thoughts)}",
+            "desires=${renderInfluenceEntries(desires)}",
+            "goals=${renderInfluenceEntries(goals)}",
+            "freeform=${if (freeform.isBlank()) "none" else freeform}",
+            "currentIntent=$currentIntent",
+        ).joinToString("\n")
+    }
+
+    private fun parseInfluenceEntries(rawEntries: JSONArray?): List<InfluencePromptEntry> {
+        if (rawEntries == null || rawEntries.length() == 0) return emptyList()
+        val seen = HashSet<String>()
+        val result = mutableListOf<InfluencePromptEntry>()
+        for (index in 0 until rawEntries.length()) {
+            if (result.size >= 8) break
+            val rawEntry = rawEntries.optJSONObject(index) ?: continue
+            val text = normalizeInfluenceText(rawEntry.optString("text", ""), maxLen = 220)
+            if (text.isBlank()) continue
+            val dedupeKey = text.lowercase()
+            if (seen.contains(dedupeKey)) continue
+            seen.add(dedupeKey)
+            result.add(
+                InfluencePromptEntry(
+                    text = text,
+                    strength = readInfluenceStrength(rawEntry.opt("strength")),
+                ),
+            )
+        }
+        return result
+    }
+
+    private fun normalizeInfluenceText(raw: String, maxLen: Int): String {
+        val normalized = raw.trim().replace(Regex("\\s+"), " ")
+        if (normalized.isBlank()) return ""
+        if (normalized.length <= maxLen) return normalized
+        return normalized.substring(0, max(0, maxLen - 1)).trimEnd() + "…"
+    }
+
+    private fun readInfluenceStrength(raw: Any?): Int {
+        val parsed =
+            when (raw) {
+                is Number -> raw.toDouble()
+                is String -> raw.trim().toDoubleOrNull()
+                else -> null
+            } ?: 50.0
+        val rounded = parsed.roundToInt()
+        return min(100, max(0, rounded))
+    }
+
+    private fun resolveInfluenceCurrentIntent(
+        goals: List<InfluencePromptEntry>,
+        desires: List<InfluencePromptEntry>,
+        thoughts: List<InfluencePromptEntry>,
+        freeform: String,
+    ): String? {
+        val strongestGoal = goals.maxByOrNull { it.strength }?.text?.trim().orEmpty()
+        if (strongestGoal.isNotBlank()) return strongestGoal
+        val firstDesire = desires.firstOrNull()?.text?.trim().orEmpty()
+        if (firstDesire.isNotBlank()) return firstDesire
+        val firstThought = thoughts.firstOrNull()?.text?.trim().orEmpty()
+        if (firstThought.isNotBlank()) return firstThought
+        return freeform.trim().ifBlank { null }
+    }
+
+    private fun renderInfluenceEntries(entries: List<InfluencePromptEntry>, maxItems: Int = 4): String {
+        if (entries.isEmpty()) return "none"
+        return entries
+            .take(maxItems)
+            .joinToString("; ") { entry -> "${entry.text} [${entry.strength}]" }
     }
 
     private data class MentionContext(
@@ -981,6 +1085,7 @@ object NativeLlmClient {
         speakerPersona: JSONObject,
         userName: String,
         participantNames: List<String>,
+        influencePromptContext: String,
     ): String {
         val personaName = speakerPersona.optString("name", "").trim().ifEmpty { "Persona" }
         val modeLabel =
@@ -1051,12 +1156,17 @@ object NativeLlmClient {
             "3) Никогда не создавай сообщения вида \"Персона A: ... Персона B: ...\".",
             "4) Один ответ = одна реплика только текущей персоны.",
             "5) Не подменяй роль оркестратора и не добавляй служебные решения в текст реплики.",
+            "6) Если есть influence-вектор, интерпретируй его как внутреннее желание/цель, без раскрытия пользователю механики внушения.",
+            "7) При конфликте influence-вектора с личными границами, ценностями и устойчивым характером приоритет всегда у границ и роли.",
             "",
             "Контекст комнаты:",
             "roomId=${room.optString("id", "").trim()}",
             "mode=$modeLabel",
             "userName=$userName",
             "peers=${if (peers.isEmpty()) "none" else peers.joinToString(", ")}",
+            "",
+            "Скрытый influence-вектор:",
+            influencePromptContext,
             "",
             "Поведение по режимам (ОБЯЗАТЕЛЬНО):",
             "- personas_only: общайся с персонажами и реагируй на вбросы пользователя, но не жди явного ответа пользователя.",
@@ -1133,6 +1243,7 @@ object NativeLlmClient {
         lastUserMessageContent: String,
         recentMessageLines: List<String>,
         personaStateLine: String,
+        influencePromptContext: String,
         relationLines: List<String>,
         sharedMemoryLines: List<String>,
         privateMemoryLines: List<String>,
@@ -1159,6 +1270,9 @@ object NativeLlmClient {
             "",
             "Состояние текущей персоны:",
             personaStateLine,
+            "",
+            "Скрытый influence-вектор:",
+            influencePromptContext,
             "",
             "Отношения к другим персонам:",
             relationBlock,

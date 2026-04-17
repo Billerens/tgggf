@@ -8,6 +8,10 @@ import {
   reconcileSharedGroupMemories,
 } from "./groupDynamics";
 import {
+  normalizeInfluenceProfile,
+  resolveInfluenceCurrentIntent,
+} from "./influenceProfile";
+import {
   buildSpeakerSelectedEvent,
   buildTickStartedEvent,
   buildWaitingTransitionEvents,
@@ -39,6 +43,7 @@ import type {
   GroupRoom,
   GroupRoomMode,
   GroupRoomStatus,
+  InfluenceProfile,
   ImageGenerationMeta,
   Persona,
 } from "./types";
@@ -87,6 +92,11 @@ interface GroupStoreState {
     },
   ) => Promise<GroupMessage | null>;
   setActiveGroupRoomStatus: (status: GroupRoomStatus) => Promise<void>;
+  setGroupPersonaInfluenceProfile: (
+    roomId: string,
+    personaId: string,
+    profile: Partial<InfluenceProfile> | null,
+  ) => Promise<void>;
   runActiveGroupIteration: (
     personas: Persona[],
     settings: AppSettings,
@@ -1803,6 +1813,43 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
         state.activeGroupRoomId === roomId
           ? [...state.groupEvents, event]
           : state.groupEvents,
+    }));
+  },
+
+  setGroupPersonaInfluenceProfile: async (roomId, personaId, profile) => {
+    const state = get();
+    const roomState = state.groupRooms.find((room) => room.id === roomId);
+    if (!roomState) return;
+
+    const statesInRoom = state.groupPersonaStates.filter(
+      (item) => item.roomId === roomId,
+    );
+    const targetState = statesInRoom.find((item) => item.personaId === personaId);
+    if (!targetState) return;
+
+    const updatedAt = nowIso();
+    const normalizedProfile = profile
+      ? normalizeInfluenceProfile(profile, updatedAt)
+      : null;
+    const nextState: GroupPersonaState = normalizedProfile
+      ? {
+          ...targetState,
+          influenceProfile: normalizedProfile,
+          currentIntent: resolveInfluenceCurrentIntent(normalizedProfile),
+          updatedAt,
+        }
+      : {
+          ...targetState,
+          influenceProfile: undefined,
+          currentIntent: undefined,
+          updatedAt,
+        };
+
+    await dbApi.saveGroupPersonaState(nextState);
+    set((current) => ({
+      groupPersonaStates: current.groupPersonaStates.map((item) =>
+        item.id === nextState.id ? nextState : item,
+      ),
     }));
   },
 

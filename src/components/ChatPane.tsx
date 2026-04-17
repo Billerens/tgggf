@@ -15,6 +15,7 @@ import { dbApi } from "../db";
 import type {
   ChatMessage,
   ChatSession,
+  InfluenceProfile,
   ImageGenerationMeta,
   Persona,
   PersonaRuntimeState,
@@ -44,6 +45,8 @@ interface ChatPaneProps {
   setMessageInput: (value: string) => void;
   isLoading: boolean;
   activePersonaState: PersonaRuntimeState | null;
+  activeInfluenceProfile: InfluenceProfile | null;
+  activeCurrentIntent: string | null;
   memoryCount: number;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
@@ -72,6 +75,8 @@ interface ChatPaneProps {
     messageId: string,
     decision: "accepted" | "rejected",
   ) => void;
+  onSaveInfluenceProfile: (profile: InfluenceProfile) => void;
+  onResetInfluenceProfile: () => void;
   onOpenSidebar: () => void;
   onOpenChatDetails: () => void;
 }
@@ -180,6 +185,8 @@ export function ChatPane({
   setMessageInput,
   isLoading,
   activePersonaState,
+  activeInfluenceProfile,
+  activeCurrentIntent,
   memoryCount,
   showSystemImageBlock,
   showStatusChangeDetails,
@@ -190,6 +197,8 @@ export function ChatPane({
   onSubmitMessage,
   onRegeneratePromptAtIndex,
   onResolveRelationshipProposal,
+  onSaveInfluenceProfile,
+  onResetInfluenceProfile,
   onOpenSidebar,
   onOpenChatDetails,
 }: ChatPaneProps) {
@@ -781,6 +790,10 @@ export function ChatPane({
       <PersonaProfileModal
         open={profileModalOpen && Boolean(activePersona)}
         persona={activePersona}
+        influenceProfile={activeInfluenceProfile}
+        currentIntent={activeCurrentIntent}
+        onSaveInfluenceProfile={onSaveInfluenceProfile}
+        onResetInfluenceProfile={onResetInfluenceProfile}
         onClose={() => setProfileModalOpen(false)}
       />
     </main>

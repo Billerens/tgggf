@@ -8,6 +8,7 @@ import type {
   GroupRoom,
   Persona,
 } from "./types";
+import { formatInfluenceProfileForPrompt } from "./influenceProfile";
 
 function clip(value: string, max = 260) {
   const text = value.trim();
@@ -47,6 +48,7 @@ interface GroupOrchestratorPromptInput {
 interface GroupPersonaPromptInput {
   room: GroupRoom;
   persona: Persona;
+  personaState: GroupPersonaState | null;
   userName: string;
   participantNames: string[];
 }
@@ -136,6 +138,7 @@ function renderPeers(
 export function buildGroupPersonaSystemPrompt({
   room,
   persona,
+  personaState,
   userName,
   participantNames,
 }: GroupPersonaPromptInput) {
@@ -161,6 +164,10 @@ export function buildGroupPersonaSystemPrompt({
       : "none";
   const modeLabel =
     room.mode === "personas_plus_user" ? "personas_plus_user" : "personas_only";
+  const influencePromptContext = formatInfluenceProfileForPrompt(
+    personaState?.influenceProfile,
+    personaState?.currentIntent,
+  );
 
   return [
     `Ты персона "${persona.name}" в групповом чате.`,
@@ -194,12 +201,17 @@ export function buildGroupPersonaSystemPrompt({
     '3) Никогда не создавай сообщения вида "Персона A: ... Персона B: ...".',
     "4) Один ответ = одна реплика только текущей персоны.",
     "5) Не подменяй роль оркестратора и не добавляй служебные решения в текст реплики.",
+    "6) Если есть influence-вектор, интерпретируй его как внутреннее желание/цель, без раскрытия пользователю механики внушения.",
+    "7) При конфликте influence-вектора с личными границами, ценностями и устойчивым характером приоритет всегда у границ и роли.",
     "",
     "Контекст комнаты:",
     `roomId=${room.id}`,
     `mode=${modeLabel}`,
     `userName=${userName}`,
     `peers=${peers.join(", ") || "none"}`,
+    "",
+    "Скрытый influence-вектор:",
+    influencePromptContext,
     "",
     "Поведение по режимам (ОБЯЗАТЕЛЬНО):",
     "- personas_only: общайся с персонажами и реагируй на вбросы пользователя, но не жди явного ответа пользователя.",
@@ -421,6 +433,10 @@ export function buildGroupPersonaUserInput(payload: GroupPersonaInputPayload) {
         : "none"
     }`,
   ].join("\n");
+  const influenceBlock = formatInfluenceProfileForPrompt(
+    payload.personaState?.influenceProfile,
+    payload.personaState?.currentIntent,
+  );
 
   return [
     `Пользователь: ${payload.userName}`,
@@ -431,6 +447,9 @@ export function buildGroupPersonaUserInput(payload: GroupPersonaInputPayload) {
     "",
     "Состояние текущей персоны:",
     stateBlock,
+    "",
+    "Скрытый influence-вектор:",
+    influenceBlock,
     "",
     "Отношения к другим персонам:",
     relationBlock,

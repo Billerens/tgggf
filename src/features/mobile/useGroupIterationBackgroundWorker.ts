@@ -13,6 +13,10 @@ import type {
   Persona,
 } from '../../types';
 import { dbApi } from '../../db';
+import {
+  normalizeInfluenceProfile,
+  resolveInfluenceCurrentIntent,
+} from '../../influenceProfile';
 import { cancelBackgroundJob, ensureRecurringBackgroundJob } from './backgroundJobs';
 import {
   buildGroupIterationJobId,
@@ -469,9 +473,22 @@ async function applyGroupStatePatch(
     touched = true;
   }
 
-  const personaStates = normalizeStoreRows(stores, 'groupPersonaStates').filter(
+  const personaStatesRaw = normalizeStoreRows(stores, 'groupPersonaStates').filter(
     (row): row is Record<string, unknown> => hasEntityId(row) && matchesRoom(row, preferredRoomId),
   ) as unknown as GroupPersonaState[];
+  const personaStates = personaStatesRaw.map((state) => {
+    const normalizedProfile = state.influenceProfile
+      ? normalizeInfluenceProfile(state.influenceProfile, state.updatedAt)
+      : undefined;
+    const currentIntent =
+      (typeof state.currentIntent === 'string' ? state.currentIntent.trim() : '') ||
+      resolveInfluenceCurrentIntent(normalizedProfile);
+    return {
+      ...state,
+      influenceProfile: normalizedProfile,
+      currentIntent: currentIntent || undefined,
+    };
+  });
   if (personaStates.length > 0) {
     await dbApi.saveGroupPersonaStates(personaStates);
     touched = true;

@@ -213,6 +213,7 @@ export default function App() {
     deleteChat,
     renameChat,
     setChatStyleStrength,
+    setActiveInfluenceProfile,
     updateActivePersonaState,
     addManualMemory,
     updateActiveMemory,
@@ -241,6 +242,7 @@ export default function App() {
     selectGroupRoom,
     sendUserGroupMessage,
     setActiveGroupRoomStatus,
+    setGroupPersonaInfluenceProfile,
     runActiveGroupIteration,
     retryGroupMessageImages,
     regenerateGroupMessageResponse,
@@ -1094,6 +1096,7 @@ export default function App() {
           <GroupChatPane
             activeRoom={activeGroupRoom}
             participants={groupParticipants}
+            personaStates={groupPersonaStates}
             messages={groupMessages}
             events={groupEvents}
             personas={personas}
@@ -1129,6 +1132,9 @@ export default function App() {
                 userName: settings.userName,
               })
             }
+            onSetPersonaInfluenceProfile={(roomId, personaId, profile) =>
+              void setGroupPersonaInfluenceProfile(roomId, personaId, profile)
+            }
             onOpenChatDetails={() => setShowGroupChatDetailsModal(true)}
           />
         ) : (
@@ -1142,6 +1148,8 @@ export default function App() {
             setMessageInput={setMessageInput}
             isLoading={isLoading}
             activePersonaState={activePersonaState}
+            activeInfluenceProfile={activePersonaState?.influenceProfile ?? null}
+            activeCurrentIntent={activePersonaState?.currentIntent ?? null}
             memoryCount={activeMemories.length}
             showSystemImageBlock={settings.showSystemImageBlock}
             showStatusChangeDetails={settings.showStatusChangeDetails}
@@ -1158,6 +1166,12 @@ export default function App() {
             }}
             onResolveRelationshipProposal={(messageId, decision) => {
               void resolveRelationshipProposal(messageId, decision);
+            }}
+            onSaveInfluenceProfile={(profile) => {
+              void setActiveInfluenceProfile(profile);
+            }}
+            onResetInfluenceProfile={() => {
+              void setActiveInfluenceProfile(null);
             }}
             onOpenSidebar={() => {
               setSidebarTab("personas");
