@@ -3209,12 +3209,72 @@ select:focus,
     background: rgba(13, 16, 23, 0.85);
     backdrop-filter: blur(24px);
     border-bottom: 1px solid var(--border-light);
+    align-items: flex-start;
+    gap: 10px;
   }
   .chat-header h2 {
-    font-size: 20px;
+    font-size: 18px;
+    line-height: 1.2;
+  }
+  .chat-header > div:first-child {
+    min-width: 0;
+    flex: 1;
+  }
+  .chat-header p {
+    margin-top: 6px;
+    line-height: 1.35;
+  }
+  .header-actions {
+    flex-shrink: 0;
+    align-items: center;
+    gap: 6px;
   }
   .persona-header-row {
     gap: 8px;
+  }
+  .generation-pane .chat-header {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .generation-pane .header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .generation-pane .header-actions button {
+    width: 100%;
+    min-height: 40px;
+    padding: 8px 10px;
+    white-space: nowrap;
+  }
+  .generation-pane .header-actions button:only-child {
+    grid-column: 1 / -1;
+  }
+  .group-chat .chat-header {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+  .group-chat .group-header-controls {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+  .group-chat .group-header-controls .mini {
+    flex: 0 0 auto;
+    min-width: 34px;
+    min-height: 34px;
+    padding: 0 10px;
+  }
+  .group-chat .group-room-meta {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .group-chat .group-participants-strip {
+    margin-top: 6px;
   }
 
   .messages {

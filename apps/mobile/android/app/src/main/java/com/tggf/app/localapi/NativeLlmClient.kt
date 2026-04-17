@@ -78,6 +78,13 @@ private data class LlmToolDefinition(
     val parameters: JSONObject,
 )
 
+private data class ParsedImageDescriptionContext(
+    val type: String,
+    val participants: String,
+    val includesPersona: Boolean,
+    val hasExplicitType: Boolean,
+)
+
 object NativeLlmClient {
     private const val DEFAULT_LMSTUDIO_BASE_URL = "http://10.0.2.2:1234/v1"
     private const val DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -392,26 +399,42 @@ object NativeLlmClient {
                 .distinct()
         if (descriptions.isEmpty()) return emptyList()
 
-        val provider = settings.optString("groupPersonaProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val provider = settings.optString("imagePromptProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
         val baseUrl = resolveProviderBaseUrl(settings, provider)
         val model =
             settings
-                .optString(
-                    "imagePromptModel",
-                    settings.optString("groupPersonaModel", settings.optString("model", "")),
-                ).trim()
+                .optString("imagePromptModel", settings.optString("model", ""))
+                .trim()
         if (model.isBlank()) return emptyList()
 
         val auth = resolveProviderAuth(settings, provider)
         val personaName = speakerPersona.optString("name", "").trim().ifEmpty { "Unknown" }
-        val appearanceSummary = summarizePersonaAppearance(speakerPersona).ifBlank { "-" }
         val stylePrompt = clipText(speakerPersona.optString("stylePrompt", "").trim(), 440).ifBlank { "-" }
         val personalityPrompt =
             clipText(speakerPersona.optString("personalityPrompt", "").trim(), 440).ifBlank { "-" }
         val toolDefinition = buildComfyPromptConversionToolDefinition()
+        val appearance = speakerPersona.optJSONObject("appearance")
+        val lookPromptCache = speakerPersona.optJSONObject("lookPromptCache")
+        val systemPrompt = buildImageDescriptionToComfyPromptSystemPrompt()
 
         val prompts = mutableListOf<String>()
         for ((index, description) in descriptions.withIndex()) {
+            val sceneContext = parseImageDescriptionContext(description, personaName)
+            val shouldUsePersonaContext =
+                sceneContext.type == "person" ||
+                    (sceneContext.type == "group" && sceneContext.includesPersona)
+            val appearanceContext =
+                if (shouldUsePersonaContext) {
+                    formatAppearanceProfileInput(appearance)
+                } else {
+                    "N/A (persona appearance is disabled for this type)"
+                }
+            val lookPromptCacheContext =
+                if (shouldUsePersonaContext) {
+                    formatLookPromptCacheInput(lookPromptCache)
+                } else {
+                    "DISABLED (persona identity prior must not be used for this type)"
+                }
             val response =
                 requestChatCompletionsWithRetry(
                     baseUrl = baseUrl,
@@ -424,13 +447,18 @@ object NativeLlmClient {
                             maxValue = 0.75,
                         ),
                     maxTokens = clampMaxTokens(settings.optInt("maxTokens", 520), minValue = 180, maxValue = 700),
-                    systemPrompt = buildImageDescriptionToComfyPromptSystemPrompt(),
+                    systemPrompt = systemPrompt,
                     userPrompt =
                         buildImageDescriptionToComfyPromptUserPrompt(
                             personaName = personaName,
-                            appearanceSummary = appearanceSummary,
+                            sceneType = sceneContext.type,
+                            hasExplicitType = sceneContext.hasExplicitType,
+                            participants = sceneContext.participants,
+                            shouldUsePersonaContext = shouldUsePersonaContext,
+                            appearanceContext = appearanceContext,
                             stylePrompt = stylePrompt,
                             personalityPrompt = personalityPrompt,
+                            lookPromptCacheContext = lookPromptCacheContext,
                             imageDescription = description,
                             iteration = index + 1,
                         ),
@@ -462,10 +490,8 @@ object NativeLlmClient {
 
         val provider =
             settings
-                .optString(
-                    "imagePromptProvider",
-                    settings.optString("groupPersonaProvider", "lmstudio"),
-                ).trim()
+                .optString("imagePromptProvider", "lmstudio")
+                .trim()
                 .ifEmpty { "lmstudio" }
         val baseUrl = resolveProviderBaseUrl(settings, provider)
         val model =
@@ -500,7 +526,7 @@ object NativeLlmClient {
                 "Добавляй композицию, свет, фон, ракурс, качество.",
                 "Перед отправкой проверь self-check: если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
                 "Без дополнительных полей и пояснений.",
-                "Избегай двусмысленных формулировок: looking at camera (смотрит на камеру (как объект) / смотрит в камеру (в объектив)), full body (полное телосложение / в полный рост) и тп. ",
+                "Избегай двусмысленных формулировок: looking at camera (смотрит на камеру (как объект) / смотрит в камеру (в объектив)), full body (полное телосложение / в полный рост) и тп.",
                 "Вместо них используй: looking at viewer (смотрит на зрителя), head-to-toe shot (полноростовый кадр). Аналогично и с другими двусмысленными формулировками.",
                 "",
                 "SELF-CHECK",
@@ -508,16 +534,16 @@ object NativeLlmClient {
                 "Теги только на английском языке (English only).",
                 "Внешность персонажа должна быть сохранена.",
                 "Обязательно перепроверяй наличие важных тегов внешности: телосложение, цвет глаз, цвет волос, прическа, эмоции (если указаны).",
-                "Если что-то не соответствует - перегенерируй."
+                "Если что-то не соответствует - перегенерируй.",
             ).joinToString("\n")
 
         val userPrompt =
             listOf(
                 "Character name: ${persona.optString("name", "").trim().ifEmpty { "Unknown" }}",
-                "Appearance: ${formatTopicAppearanceInput(persona.optJSONObject("appearance"))}",
+                "Appearance: ${formatAppearanceProfileInput(persona.optJSONObject("appearance"))}",
                 "Style: ${persona.optString("stylePrompt", "").trim().ifEmpty { "-" }}",
                 "Personality: ${persona.optString("personalityPrompt", "").trim().ifEmpty { "-" }}",
-                "LookPrompt cache:\n${formatTopicLookPromptCacheInput(persona.optJSONObject("lookPromptCache"))}",
+                "LookPrompt cache:\n${formatLookPromptCacheInput(persona.optJSONObject("lookPromptCache"))}",
                 "Theme: $normalizedTopic",
                 "Iteration: ${max(1, iteration)}",
                 "Generate one unique prompt variation for this iteration.",
@@ -1624,36 +1650,155 @@ object NativeLlmClient {
 
     private fun buildImageDescriptionToComfyPromptSystemPrompt(): String {
         return listOf(
-            "Ты конвертер описания сцены в ComfyUI prompt.",
-            "Верни строго JSON-объект без markdown.",
-            "Формат: {\"prompts\":[\"...\"]}.",
-            "Для одного описания верни один prompt в массиве.",
-            "Строки type: и participants: считай служебными, не копируй их как теги.",
-            "Каждый prompt: одна строка на английском, только comma-separated visual tags.",
-            "Разделитель тегов строго ', ' (запятая и пробел), без переносов.",
-            "Не добавляй объяснений, не добавляй ключей кроме prompts/comfyPrompts/comfy_prompts.",
-            "Сохраняй ключевые визуальные детали из description без выдумок.",
-            "Избегай дубликатов и взаимоисключающих тегов.",
+            "Ты конвертер описания сцены в список ComfyUI prompts.",
+            "Верни JSON-объект без markdown и пояснений.",
+            "Формат: {\"prompts\":[\"...\"]}",
+            "Возвращай структурированный ответ через tool call; если tool call недоступен, допустим fallback в JSON или в одной comma-separated строке.",
+            "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный элемент в prompts для каждого кадра.",
+            "Если описание одного кадра, верни один элемент в prompts.",
+            "Определи тип кадра из поля type в Image description: person|other_person|no_person|group.",
+            "Строку type и participants считай служебными и НЕ копируй в теги.",
+            "Внутри блока только comma-separated English tags (никаких предложений).",
+            "Формат внутри блока: строго ОДНА строка, разделитель строго и обязательно должен быть ', ' (запятая + пробел), без переносов и без лишних пробелов.",
+            "Длина prompt: 30-46 тегов.",
+            "Каждый тег: строго 2-3 слова, в редких случаях допускается 4; тег должен быть визуально наблюдаемым.",
+            "Порядок тегов: quality -> subject identity -> emotion/expression -> clothing/materials -> pose/framing -> camera -> lighting -> background -> technical cleanup.",
+            "CONSISTENCY LOCKS (обязательны): key appearance traits, emotion/expression, outfit/materials, environment, scene conditions (time/weather/lighting).",
+            "Все lock-детали из Image description должны перейти в prompt без потери смысла, но не перегружай prompt.",
+            "Не подменяй lock-детали похожими, но другими по смыслу формулировками.",
+            "type=person: используй детали персонажа из Image description + Appearance + LookPrompt cache.",
+            "type=other_person: запрещено использовать Appearance и LookPrompt cache текущей персоны.",
+            "type=no_person: строго без людей/лиц/персонажей; Appearance и LookPrompt cache запрещены.",
+            "type=group: используй Appearance/LookPrompt cache только если participants явно включает текущую персону; иначе запрещено.",
+            "Если в input явно сказано, что Appearance/LookPrompt cache disabled, НЕ используй их ни в каком виде.",
+            "Одежда должна соответствовать ситуации!",
+            "ОБЯЗАТЕЛЬНО!: описывай детали сцены досконально - вид, одежда, окружение, действия, фокус на определенных частях тела и тд.",
+            "При конфликте: scene-specific детали (эмоция, одежда, окружение, условия) берутся из Image description; стабильная идентичность из Appearance применима только когда тип кадра это допускает.",
+            "Не добавляй детали, которых нет в исходном описании (например пирсинг/тату/аксессуары/фетиш-атрибуты, если они не указаны).",
+            "ВАЖНО: Старайся покрыть тегами переданный Image description по максимуму, но без противоречий, чтобы передать все описанные детали! При этом - не выходи за общие лимиты!",
+            "Запрещено добавлять любые role/biography теги, которых нет в описании сцены (student, office worker, nurse и т.п.).",
+            "Запрещены психологические/поведенческие/мотивационные ярлыки: narcissistic, exhibitionist, self-promotion, slang, casual language и т.п.",
+            "Запрещены мета-теги платформ, намерений и нарратива.",
+            "Запрещен quality spam: не более 4 quality/technical тегов суммарно.",
+            "Избегай противоречий в кадрировании: не ставь одновременно full body и close-up.",
+            "Если это selfie и не указан mirror full body, предпочитай upper body/waist-up framing.",
+            "По описанию определяй сколько лиц участвует в сцене (для type=no_person людей должно быть 0).",
+            "Используй solo/single subject/one person только когда в кадре один человек; для type=group используй multi-person теги; для type=no_person не добавляй людей вовсе.",
+            "Удали дубли и семантические дубли тегов.",
+            "Запрещены взаимоисключающие теги (например black hair и blonde hair вместе).",
+            "Если есть сомнение, лучше пропусти тег, не выдумывай.",
+            "Учитывай свои границы дозволенного при генерации.",
+            "Перед ответом сделай self-check: format delimiter, word count per tag, no duplicates, no contradictions, no banned tags, все ключевые детали из Image description покрыты.",
         ).joinToString("\n")
     }
 
     private fun buildImageDescriptionToComfyPromptUserPrompt(
         personaName: String,
-        appearanceSummary: String,
+        sceneType: String,
+        hasExplicitType: Boolean,
+        participants: String,
+        shouldUsePersonaContext: Boolean,
+        appearanceContext: String,
         stylePrompt: String,
         personalityPrompt: String,
+        lookPromptCacheContext: String,
         imageDescription: String,
         iteration: Int,
     ): String {
         return listOf(
             "Character name: $personaName",
-            "Appearance summary: $appearanceSummary",
+            "Scene type (parsed): $sceneType",
+            "Type field present in description: ${if (hasExplicitType) "yes" else "no"}",
+            "Participants: $participants",
+            "Use persona appearance context: ${if (shouldUsePersonaContext) "yes" else "no"}",
+            "Appearance: $appearanceContext",
             "Style: $stylePrompt",
             "Personality: $personalityPrompt",
+            "LookPrompt cache:\n$lookPromptCacheContext",
+            "Image description: $imageDescription",
             "Iteration: $iteration",
-            "Image description:",
-            imageDescription,
         ).joinToString("\n")
+    }
+
+    private fun normalizeImageDescriptionTypeToken(token: String?): String? {
+        val normalized = token?.trim()?.lowercase().orEmpty()
+        if (normalized.isBlank()) return null
+        return when (normalized) {
+            "person", "persona_self", "self" -> "person"
+            "other_person", "other" -> "other_person"
+            "no_person", "none", "landscape" -> "no_person"
+            "group", "multi_person" -> "group"
+            else -> null
+        }
+    }
+
+    private fun parseImageDescriptionContext(
+        description: String,
+        personaName: String,
+    ): ParsedImageDescriptionContext {
+        val normalized = description.lowercase()
+        val typeMatch =
+            Regex("(?:^|\\n)\\s*type\\s*:\\s*([a-z_]+)\\b", RegexOption.IGNORE_CASE)
+                .find(normalized)
+                ?.groupValues
+                ?.getOrNull(1)
+        val subjectModeMatch =
+            Regex(
+                "(?:^|\\n)\\s*subject_mode\\s*:\\s*(persona_self|other_person|no_person|group)\\b",
+                RegexOption.IGNORE_CASE,
+            ).find(normalized)
+                ?.groupValues
+                ?.getOrNull(1)
+        val explicitType =
+            normalizeImageDescriptionTypeToken(typeMatch) ?:
+                normalizeImageDescriptionTypeToken(subjectModeMatch)
+        val hasExplicitType = explicitType != null
+        val participants =
+            Regex("(?:^|\\n)\\s*participants\\s*:\\s*([^\\n\\r]+)", RegexOption.IGNORE_CASE)
+                .find(description)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.takeIf { it.isNotBlank() } ?: "-"
+        val personaNameNormalized = personaName.trim().lowercase()
+        val participantsNormalized = participants.lowercase()
+        val mentionsPersona =
+            normalized.contains("participants: persona") ||
+                normalized.contains("participants: персона") ||
+                normalized.contains("персона") ||
+                (personaNameNormalized.isNotBlank() && normalized.contains(personaNameNormalized))
+
+        val inferredType =
+            explicitType ?: when {
+                Regex("\\bno_person\\b|\\bno person\\b|\\blandscape\\b|\\bscenery\\b|\\binterior\\b")
+                    .containsMatchIn(normalized) ||
+                    Regex("пейзаж|ландшафт|интерьер|без людей|без человека")
+                        .containsMatchIn(normalized) -> "no_person"
+                Regex("\\bgroup\\b|\\bmultiple people\\b|\\bcrowd\\b|\\bfamily\\b|\\bfriends\\b")
+                    .containsMatchIn(normalized) ||
+                    Regex("групп|компан|семь|друз|толпа|двое|трое|четверо")
+                        .containsMatchIn(normalized) -> "group"
+                else -> "person"
+            }
+
+        val includesPersona =
+            inferredType == "person" ||
+                (
+                    inferredType == "group" && (
+                        mentionsPersona ||
+                            participantsNormalized.contains("persona") ||
+                            participantsNormalized.contains("персона") ||
+                            (personaNameNormalized.isNotBlank() &&
+                                participantsNormalized.contains(personaNameNormalized))
+                    )
+                )
+
+        return ParsedImageDescriptionContext(
+            type = inferredType,
+            participants = participants,
+            includesPersona = includesPersona,
+            hasExplicitType = hasExplicitType,
+        )
     }
 
     private fun extractComfyPromptsFromConversionPayload(parsed: JSONObject, rawContent: String): List<String> {
@@ -2100,53 +2245,49 @@ object NativeLlmClient {
         return result
     }
 
-    private fun formatTopicAppearanceInput(appearance: JSONObject?): String {
-        if (appearance == null) return "-"
+    private fun formatAppearanceProfileInput(appearance: JSONObject?): String {
+        if (appearance == null) return "Не указано."
         val parts =
             listOf(
-                appearance.optString("gender", "").trim(),
                 appearance.optString("faceDescription", "").trim(),
-                appearance.optString("hair", "").trim(),
+                appearance.optString("height", "").trim(),
                 appearance.optString("eyes", "").trim(),
+                appearance.optString("lips", "").trim(),
+                appearance.optString("hair", "").trim(),
+                appearance.optString("skin", "").trim(),
+                appearance.optString("ageType", "").trim(),
                 appearance.optString("bodyType", "").trim(),
-                appearance.optString("clothingStyle", "").trim(),
                 appearance.optString("markers", "").trim(),
+                appearance.optString("accessories", "").trim(),
+                appearance.optString("clothingStyle", "").trim(),
             ).filter { it.isNotBlank() }
-        if (parts.isEmpty()) return "-"
-        return clipText(parts.joinToString(", "), 1000)
+        return if (parts.isNotEmpty()) {
+            parts.joinToString(", ")
+        } else {
+            "Не указано."
+        }
     }
 
-    private fun formatTopicLookPromptCacheInput(lookPromptCache: JSONObject?): String {
-        if (lookPromptCache == null) return "-"
-        val lines = mutableListOf<String>()
-        val avatarPrompt = clipText(lookPromptCache.optString("avatarPrompt", "").trim(), 360)
-        if (avatarPrompt.isNotBlank()) {
-            lines.add("avatarPrompt: $avatarPrompt")
-        }
-        val fullBodyPrompt = clipText(lookPromptCache.optString("fullBodyPrompt", "").trim(), 360)
-        if (fullBodyPrompt.isNotBlank()) {
-            lines.add("fullBodyPrompt: $fullBodyPrompt")
-        }
-        val identityLocks = lookPromptCache.optJSONObject("identityLocks")
-        if (identityLocks != null) {
-            val lockParts =
-                listOf(
-                    "hair" to identityLocks.optString("hair", "").trim(),
-                    "face" to identityLocks.optString("face", "").trim(),
-                    "eyes" to identityLocks.optString("eyes", "").trim(),
-                    "body" to identityLocks.optString("body", "").trim(),
-                    "outfit" to identityLocks.optString("outfit", "").trim(),
-                ).filter { it.second.isNotBlank() }
-            if (lockParts.isNotEmpty()) {
-                lines.add(
-                    "identityLocks: ${
-                        lockParts.joinToString(", ") { (key, value) -> "$key=$value" }
-                    }",
-                )
+    private fun formatLookPromptCacheInput(lookPromptCache: JSONObject?): String {
+        if (lookPromptCache == null) return "none"
+        val detailPrompts = lookPromptCache.optJSONObject("detailPrompts")
+        val locked = if (lookPromptCache.optBoolean("locked", false)) "true" else "false"
+        val fingerprint =
+            when (val value = lookPromptCache.opt("fingerprint")) {
+                null, JSONObject.NULL -> "undefined"
+                else -> value.toString().trim().ifEmpty { "undefined" }
             }
-        }
-        if (lines.isEmpty()) return "-"
-        return lines.joinToString("\n")
+        return listOf(
+            "locked=$locked",
+            "fingerprint=$fingerprint",
+            "avatarPrompt=${lookPromptCache.optString("avatarPrompt", "")}",
+            "fullBodyPrompt=${lookPromptCache.optString("fullBodyPrompt", "")}",
+            "detail.face=${detailPrompts?.optString("face", "") ?: ""}",
+            "detail.eyes=${detailPrompts?.optString("eyes", "") ?: ""}",
+            "detail.nose=${detailPrompts?.optString("nose", "") ?: ""}",
+            "detail.lips=${detailPrompts?.optString("lips", "") ?: ""}",
+            "detail.hands=${detailPrompts?.optString("hands", "") ?: ""}",
+        ).joinToString("\n")
     }
 
     private fun fallbackThemeTags(topic: String): List<String> {
