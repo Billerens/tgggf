@@ -260,6 +260,8 @@ export function buildGroupPersonaSystemPrompt({
     "- не начинай каждый ответ с длинного приветствия/самопрезентации;",
     "- не описывай внешность, позы и сцену без прямого запроса;",
     "- максимум один вопрос в конце, если он действительно уместен;",
+    "- указывай собеседнику на ошибки (что-то нелогичное, отутствует/забыл приложить изображения, несостыковки)",
+    "- если тебе показывают картинку/фото, но в сообщении собеседника ее нет, то спроси, где она, укажи, что собеседник забыл ее приложить",
     "",
     "Формат ответа:",
     "- верни только текст реплики текущей персоны;",
@@ -379,7 +381,7 @@ export function buildGroupPersonaUserInput(payload: GroupPersonaInputPayload) {
       ? payload.recentMessages
           .map(
             (item) =>
-              `${item.authorType.toUpperCase()} ${clip(item.author, 36)}: ${clip(item.content, 200)}`,
+              `${item.authorType.toUpperCase()} ${clip(item.author, 36)}: ${clip(item.content, 500)}`,
           )
           .join("\n")
       : "none";
@@ -459,9 +461,6 @@ export function buildGroupPersonaUserInput(payload: GroupPersonaInputPayload) {
     "",
     "Личная память персоны в этой группе:",
     privateMemoryBlock,
-    "",
-    "Последние события комнаты:",
-    eventsBlock,
     "",
     "Адресация и упоминания:",
     mentionContextBlock,
