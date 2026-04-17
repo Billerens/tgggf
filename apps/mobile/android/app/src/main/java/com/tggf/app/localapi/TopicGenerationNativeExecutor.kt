@@ -19,6 +19,8 @@ object TopicGenerationNativeExecutor {
     private const val TOPIC_GENERATION_JOB_PREFIX = "topic_generation:"
     private const val TOPIC_GENERATION_LEASE_MS = 45_000L
     private const val COMFY_SEED_MAX = 1_125_899_906_842_624L
+    private const val THEMED_PROMPT_BATCH_SIZE = 8
+    private const val THEMED_PROMPT_REFILL_THRESHOLD = 1
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
     private const val IMAGE_REF_PREFIX = "idb://"
     private const val IMAGE_ASSET_GC_INTERVAL_MS = 15 * 60 * 1000L
@@ -63,6 +65,11 @@ object TopicGenerationNativeExecutor {
         val prompt: String,
         val source: String,
         val themeTags: List<String>,
+    )
+
+    private data class TopicPromptQueueResolution(
+        val promptResolution: TopicPromptResolution,
+        val nextThemePromptQueue: List<String>,
     )
 
     @JvmStatic
@@ -469,8 +476,10 @@ object TopicGenerationNativeExecutor {
                 iteration = iteration,
                 scopeId = sessionId,
                 jobId = job.id,
+                requestedCount = requestedCount,
+                singleRunRequested = singleRunRequested,
             )
-        val prompt = promptResolution.prompt
+        val prompt = promptResolution.promptResolution.prompt
 
         ForegroundSyncService.updateWorkerStatus(
             context = context,
@@ -520,11 +529,11 @@ object TopicGenerationNativeExecutor {
             val nowIso = nowIsoUtc()
             val meta = JSONObject().apply {
                 put("prompt", prompt)
-                put("promptSource", promptResolution.source)
+                put("promptSource", promptResolution.promptResolution.source)
                 put("seed", comfyResult.seed)
                 put("flow", "base")
-                if (promptResolution.themeTags.isNotEmpty()) {
-                    put("themeTags", JSONArray(promptResolution.themeTags))
+                if (promptResolution.promptResolution.themeTags.isNotEmpty()) {
+                    put("themeTags", JSONArray(promptResolution.promptResolution.themeTags))
                 }
                 if (!comfyResult.model.isNullOrBlank()) {
                     put("model", comfyResult.model)
@@ -539,9 +548,9 @@ object TopicGenerationNativeExecutor {
                 put("id", UUID.randomUUID().toString())
                 put("iteration", iteration)
                 put("prompt", prompt)
-                put("promptSource", promptResolution.source)
-                if (promptResolution.themeTags.isNotEmpty()) {
-                    put("themeTags", JSONArray(promptResolution.themeTags))
+                put("promptSource", promptResolution.promptResolution.source)
+                if (promptResolution.promptResolution.themeTags.isNotEmpty()) {
+                    put("themeTags", JSONArray(promptResolution.promptResolution.themeTags))
                 }
                 put("imageUrls", JSONArray(imageRefs))
                 put("createdAt", nowIso)
@@ -555,6 +564,7 @@ object TopicGenerationNativeExecutor {
             entries.put(entry)
             session.put("entries", entries)
             session.put("completedCount", iteration)
+            session.put("themePromptQueue", JSONArray(promptResolution.nextThemePromptQueue))
             if (shouldUseDirectOneShotSeed) {
                 session.put("directPromptSeed", JSONObject.NULL)
                 session.put("directPromptSeedArmed", false)
@@ -1365,7 +1375,9 @@ object TopicGenerationNativeExecutor {
         iteration: Int,
         scopeId: String,
         jobId: String?,
-    ): TopicPromptResolution {
+        requestedCount: Int?,
+        singleRunRequested: Boolean,
+    ): TopicPromptQueueResolution {
         val fallback = buildFallbackPrompt(session, persona, iteration)
         val topic = session.optString("topic", "").trim()
         val promptMode = resolvePromptMode(session)
@@ -1383,10 +1395,14 @@ object TopicGenerationNativeExecutor {
                             put("reason", "direct_prompt_missing")
                         },
                 )
-                return TopicPromptResolution(
-                    prompt = fallback,
-                    source = "fallback",
-                    themeTags = emptyList(),
+                return TopicPromptQueueResolution(
+                    promptResolution =
+                        TopicPromptResolution(
+                            prompt = fallback,
+                            source = "fallback",
+                            themeTags = emptyList(),
+                        ),
+                    nextThemePromptQueue = emptyList(),
                 )
             }
             appendRuntimeEvent(
@@ -1400,10 +1416,14 @@ object TopicGenerationNativeExecutor {
                     put("source", "session.topic")
                 },
             )
-            return TopicPromptResolution(
-                prompt = topic,
-                source = "direct",
-                themeTags = emptyList(),
+            return TopicPromptQueueResolution(
+                promptResolution =
+                    TopicPromptResolution(
+                        prompt = topic,
+                        source = "direct",
+                        themeTags = emptyList(),
+                    ),
+                nextThemePromptQueue = emptyList(),
             )
         }
         if (topic.isBlank()) {
@@ -1419,87 +1439,122 @@ object TopicGenerationNativeExecutor {
                         put("reason", "topic_missing")
                     },
             )
-            return TopicPromptResolution(
-                prompt = fallback,
-                source = "fallback",
-                themeTags = emptyList(),
-            )
+            throw IllegalStateException("topic_missing")
         }
 
-        return try {
-            val llmPrompt =
-                NativeLlmClient.generateThemedComfyPromptForTopic(
-                    settings = settings,
-                    persona = persona,
-                    topic = topic,
-                    iteration = iteration,
-                )
-            val normalizedPrompt = llmPrompt?.prompt?.trim().orEmpty()
-            if (normalizedPrompt.isBlank()) {
-                appendRuntimeEvent(
-                    runtimeRepository = runtimeRepository,
-                    scopeId = scopeId,
-                    jobId = jobId,
-                    stage = "topic_prompt_fallback",
-                    level = "warn",
-                    message = "Native LLM returned empty themed prompt, fallback applied",
-                    details =
-                        JSONObject().apply {
-                            put("reason", "empty_llm_prompt")
-                        },
-                )
-                TopicPromptResolution(
-                    prompt = fallback,
-                    source = "fallback",
-                    themeTags = emptyList(),
-                )
-            } else {
-                val themeTags =
-                    llmPrompt?.themeTags
-                        ?.map { it.trim() }
-                        ?.filter { it.isNotEmpty() }
-                        ?: emptyList()
-                appendRuntimeEvent(
-                    runtimeRepository = runtimeRepository,
-                    scopeId = scopeId,
-                    jobId = jobId,
-                    stage = "topic_prompt_llm",
-                    level = "info",
-                    message = "Native LLM themed prompt generated",
-                    details =
-                        JSONObject().apply {
-                            put("themeTagCount", themeTags.size)
-                            if (themeTags.isNotEmpty()) {
-                                put("themeTags", JSONArray(themeTags))
-                            }
-                        },
-                )
-                TopicPromptResolution(
-                    prompt = normalizedPrompt,
-                    source = "llm",
-                    themeTags = themeTags,
-                )
+        val queue = resolveThemePromptQueue(session).toMutableList()
+        val remainingIterations = requestedCount?.let { count -> max(1, count - session.optInt("completedCount", 0)) }
+        val refillTargetSize = if (singleRunRequested) 1 else THEMED_PROMPT_BATCH_SIZE
+
+        var refillThemeTags = emptyList<String>()
+        if (queue.size <= THEMED_PROMPT_REFILL_THRESHOLD) {
+            val desiredQueueSize =
+                if (remainingIterations == null) {
+                    refillTargetSize
+                } else {
+                    minOf(refillTargetSize, remainingIterations)
+                }
+            val refillCount = max(0, desiredQueueSize - queue.size)
+            if (refillCount > 0) {
+                try {
+                    val result =
+                        NativeLlmClient.generateThemedComfyPromptsForTopic(
+                        settings = settings,
+                        persona = persona,
+                        topic = topic,
+                        iteration = iteration,
+                        promptCount = refillCount,
+                    )
+                    val prompts =
+                        result?.prompts
+                            ?.map { it.trim() }
+                            ?.filter { it.isNotEmpty() }
+                            .orEmpty()
+                    if (prompts.isEmpty()) {
+                        throw IllegalStateException("empty_llm_prompt_batch")
+                    }
+                    refillThemeTags =
+                        result?.themeTags
+                            ?.map { it.trim() }
+                            ?.filter { it.isNotEmpty() }
+                            .orEmpty()
+                    queue.addAll(prompts)
+                    appendRuntimeEvent(
+                        runtimeRepository = runtimeRepository,
+                        scopeId = scopeId,
+                        jobId = jobId,
+                        stage = "topic_prompt_refilled",
+                        level = "info",
+                        message = "Native LLM themed prompt batch generated",
+                        details =
+                            JSONObject().apply {
+                                put("addedCount", prompts.size)
+                                put("queueSize", queue.size)
+                            },
+                    )
+                } catch (error: Exception) {
+                    if (queue.isNotEmpty()) {
+                        appendRuntimeEvent(
+                            runtimeRepository = runtimeRepository,
+                            scopeId = scopeId,
+                            jobId = jobId,
+                            stage = "topic_prompt_refill_failed_queue_used",
+                            level = "warn",
+                            message = "Native LLM themed prompt refill failed, using queued prompt",
+                            details =
+                                JSONObject().apply {
+                                    put("queueSize", queue.size)
+                                    put("error", error.message?.trim().orEmpty())
+                                },
+                        )
+                    } else {
+                        appendRuntimeEvent(
+                            runtimeRepository = runtimeRepository,
+                            scopeId = scopeId,
+                            jobId = jobId,
+                            stage = "topic_prompt_refill_failed",
+                            level = "error",
+                            message = "Native LLM themed prompt refill failed",
+                            details =
+                                JSONObject().apply {
+                                    put("error", error.message?.trim().orEmpty())
+                                },
+                        )
+                        throw error
+                    }
+                }
             }
-        } catch (error: Exception) {
-            appendRuntimeEvent(
-                runtimeRepository = runtimeRepository,
-                scopeId = scopeId,
-                jobId = jobId,
-                stage = "topic_prompt_fallback",
-                level = "warn",
-                message = "Native LLM themed prompt failed, fallback applied",
-                details =
-                    JSONObject().apply {
-                        put("reason", "llm_error")
-                        put("error", error.message?.trim().orEmpty())
-                    },
-            )
-            TopicPromptResolution(
-                prompt = fallback,
-                source = "fallback",
-                themeTags = emptyList(),
-            )
         }
+
+        if (queue.isEmpty()) {
+            throw IllegalStateException("empty_llm_prompt_batch")
+        }
+        val prompt = queue.removeAt(0).trim()
+        if (prompt.isBlank()) {
+            throw IllegalStateException("empty_llm_prompt_batch")
+        }
+
+        appendRuntimeEvent(
+            runtimeRepository = runtimeRepository,
+            scopeId = scopeId,
+            jobId = jobId,
+            stage = "topic_prompt_llm_queue",
+            level = "info",
+            message = "Topic prompt dequeued from themed prompt queue",
+            details =
+                JSONObject().apply {
+                    put("queueSizeAfterDequeue", queue.size)
+                },
+        )
+        return TopicPromptQueueResolution(
+            promptResolution =
+                TopicPromptResolution(
+                    prompt = prompt,
+                    source = "llm_queue",
+                    themeTags = refillThemeTags,
+                ),
+            nextThemePromptQueue = queue,
+        )
     }
 
     private fun collectAppearanceTokens(node: JSONObject, out: MutableList<String>) {
@@ -1556,6 +1611,18 @@ object TopicGenerationNativeExecutor {
             } ?: return null
         if (parsed <= 0L) return null
         return if (parsed > COMFY_SEED_MAX) COMFY_SEED_MAX else parsed
+    }
+
+    private fun resolveThemePromptQueue(session: JSONObject): List<String> {
+        val raw = session.optJSONArray("themePromptQueue") ?: return emptyList()
+        val prompts = mutableListOf<String>()
+        for (index in 0 until raw.length()) {
+            val prompt = raw.optString(index, "").trim()
+            if (prompt.isNotEmpty()) {
+                prompts.add(prompt)
+            }
+        }
+        return prompts
     }
 
     private fun randomComfySeed(): Long {
@@ -1644,6 +1711,7 @@ object TopicGenerationNativeExecutor {
             }
             put("directPromptSeedArmed", session.optBoolean("directPromptSeedArmed", false))
             put("singleRunRequested", session.optBoolean("singleRunRequested", false))
+            put("themePromptQueue", JSONArray(resolveThemePromptQueue(session)))
             if (appendedEntries != null && appendedEntries.length() > 0) {
                 put("appendEntries", appendedEntries)
             }

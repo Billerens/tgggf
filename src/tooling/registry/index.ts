@@ -23,7 +23,7 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
     task: "image_prompt",
     toolName: "emit_themed_comfy_prompt",
     owner: "image",
-    description: "Single themed ComfyUI prompt + theme tags.",
+    description: "One or many themed ComfyUI prompts + theme tags.",
   },
   {
     key: "image.emit_comfy_prompts_from_description",

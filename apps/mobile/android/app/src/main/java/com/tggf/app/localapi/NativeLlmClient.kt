@@ -51,6 +51,12 @@ data class NativeTopicThemedPrompt(
     val llmDebug: NativeLlmCallDebug?,
 )
 
+data class NativeTopicThemedPrompts(
+    val prompts: List<String>,
+    val themeTags: List<String>,
+    val llmDebug: NativeLlmCallDebug?,
+)
+
 private data class HttpResult(
     val code: Int,
     val body: String,
@@ -485,8 +491,33 @@ object NativeLlmClient {
         topic: String,
         iteration: Int,
     ): NativeTopicThemedPrompt? {
+        val prompts =
+            generateThemedComfyPromptsForTopic(
+                settings = settings,
+                persona = persona,
+                topic = topic,
+                iteration = iteration,
+                promptCount = 1,
+            ) ?: return null
+        val firstPrompt = prompts.prompts.firstOrNull()?.trim().orEmpty()
+        if (firstPrompt.isBlank()) return null
+        return NativeTopicThemedPrompt(
+            prompt = firstPrompt,
+            themeTags = prompts.themeTags,
+            llmDebug = prompts.llmDebug,
+        )
+    }
+
+    fun generateThemedComfyPromptsForTopic(
+        settings: JSONObject,
+        persona: JSONObject,
+        topic: String,
+        iteration: Int,
+        promptCount: Int,
+    ): NativeTopicThemedPrompts? {
         val normalizedTopic = topic.trim()
         if (normalizedTopic.isBlank()) return null
+        val normalizedPromptCount = promptCount.coerceIn(1, 8)
 
         val provider =
             settings
@@ -501,54 +532,6 @@ object NativeLlmClient {
         if (model.isBlank()) return null
         val auth = resolveProviderAuth(settings, provider)
 
-        val systemPrompt =
-            listOf(
-                "Ты генератор одного ComfyUI prompt для изображения персонажа.",
-                "Верни JSON-объект без markdown и пояснений.",
-                "Формат: {\"theme_tags\":[\"...\"],\"comfy_prompts\":[\"...\"]}",
-                "theme_tags: 8-12 кратких English tags, которые напрямую описывают тему/контекст кадра.",
-                "comfy_prompts: массив из одного prompt (строка с comma-separated English tags).",
-                "theme_tags должны быть конкретными (локация, роль, действие, атмосфера) и не противоречить теме.",
-                "Формат внутри comfy_prompts[0]: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
-                "Каждый тег: строго 1-2 слова, в редких случаях допускается 3; lowercase, без точки в конце.",
-                "ЗАПРЕЩЕНО: полные предложения, художественные описания, markdown, двоеточия с пояснениями, нумерация, буллеты, кавычки.",
-                "ЗАПРЕЩЕНО: конструкции типа 'a woman standing...', 'she is...', 'this scene shows...'.",
-                "ЗАПРЕЩЕНО добавлять теги, которых нет в теме/внешности (никаких выдуманных тату, пирсингов, фетиш-элементов, ролей).",
-                "Правильный стиль: 'solo, one person, upper body, soft rim light, city street at night' - в подобном виде.",
-                "Определяй количество действующих лиц из тематики.",
-                "Описывай строго одного человека (solo, single subject, one person) или нескольких если описание (тематика) этого требует.",
-                "ОБЯЗАТЕЛЬНО Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
-                "ОБЯЗАТЕЛЬНО Если в input есть блок LookPrompt cache, используй его как identity prior: hair/face/eyes/body/outfit-теги приоритетны и помогают держать консистентность.",
-                "ОБЯЗАТЕЛЬНО Добавляй специфичные для темы теги в итоговую генерацию: описания ситуации, эмоций, действий, окружения, атмосферы и тд.",
-                "Из LookPrompt cache можно брать только стабильные identity/outfit детали, но не добавляй лишние детали, которых нет в теме или которые не соответствуют описанию.",
-                "Все теги из theme_tags ОБЯЗАТЕЛЬНО должны присутствовать в comfy_prompts[0] без потери смысла.",
-                "Используй уместную одежду, если тема не требует специального костюма.",
-                "Добавляй композицию, свет, фон, ракурс, качество.",
-                "Перед отправкой проверь self-check: если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
-                "Без дополнительных полей и пояснений.",
-                "Избегай двусмысленных формулировок: looking at camera (смотрит на камеру (как объект) / смотрит в камеру (в объектив)), full body (полное телосложение / в полный рост) и тп.",
-                "Вместо них используй: looking at viewer (смотрит на зрителя), head-to-toe shot (полноростовый кадр). Аналогично и с другими двусмысленными формулировками.",
-                "",
-                "SELF-CHECK",
-                "Если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
-                "Теги только на английском языке (English only).",
-                "Внешность персонажа должна быть сохранена.",
-                "Обязательно перепроверяй наличие важных тегов внешности: телосложение, цвет глаз, цвет волос, прическа, эмоции (если указаны).",
-                "Если что-то не соответствует - перегенерируй.",
-            ).joinToString("\n")
-
-        val userPrompt =
-            listOf(
-                "Character name: ${persona.optString("name", "").trim().ifEmpty { "Unknown" }}",
-                "Appearance: ${formatAppearanceProfileInput(persona.optJSONObject("appearance"))}",
-                "Style: ${persona.optString("stylePrompt", "").trim().ifEmpty { "-" }}",
-                "Personality: ${persona.optString("personalityPrompt", "").trim().ifEmpty { "-" }}",
-                "LookPrompt cache:\n${formatLookPromptCacheInput(persona.optJSONObject("lookPromptCache"))}",
-                "Theme: $normalizedTopic",
-                "Iteration: ${max(1, iteration)}",
-                "Generate one unique prompt variation for this iteration.",
-            ).joinToString("\n")
-
         val response =
             requestChatCompletionsWithRetry(
                 baseUrl = baseUrl,
@@ -560,34 +543,41 @@ object NativeLlmClient {
                         minValue = 0.35,
                         maxValue = 0.75,
                     ),
-                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 600), minValue = 180, maxValue = 700),
-                systemPrompt = systemPrompt,
-                userPrompt = userPrompt,
+                maxTokens =
+                    clampMaxTokens(
+                        maxOf(
+                            settings.optInt("maxTokens", 600),
+                            700,
+                            320 + normalizedPromptCount * 260,
+                        ),
+                        minValue = 320,
+                        maxValue = 16384,
+                    ),
+                systemPrompt = buildThemedComfyPromptSystemPrompt(),
+                userPrompt =
+                    buildThemedComfyPromptUserPrompt(
+                        persona = persona,
+                        topic = normalizedTopic,
+                        iteration = iteration,
+                        promptCount = normalizedPromptCount,
+                    ),
                 forceJsonObject = true,
                 toolDefinition = buildThemedComfyPromptToolDefinition(),
             )
 
         val parsed = parseJsonObjectLoose(response.content)
         val promptEntry = readFirstNonBlankEntry(parsed, "prompt", "comfy_prompt", "comfyPrompt")
-        val structuredPrompts =
-            parseStringArrayFlexible(parsed.opt("comfy_prompts"))
-                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfyPrompts")) }
-
-        var prompt = promptEntry?.value.orEmpty()
-        var parsedField = promptEntry?.key
-        if (prompt.isBlank() && structuredPrompts.isNotEmpty()) {
-            prompt = structuredPrompts.first().trim()
-            parsedField = "comfy_prompts[0]"
+        val promptCandidates = mutableListOf<String>()
+        if (promptEntry != null) {
+            promptCandidates.add(promptEntry.value)
         }
-        if (prompt.isBlank()) {
+        promptCandidates.addAll(parseStringArrayFlexible(parsed.opt("comfy_prompts")))
+        promptCandidates.addAll(parseStringArrayFlexible(parsed.opt("comfyPrompts")))
+        if (promptCandidates.isEmpty()) {
             val rawFallback = response.content.trim()
             if (rawFallback.isNotBlank() && !rawFallback.startsWith("{") && !rawFallback.startsWith("[")) {
-                prompt = rawFallback
-                parsedField = "raw_content_fallback"
+                promptCandidates.add(rawFallback)
             }
-        }
-        if (prompt.isBlank()) {
-            throw IllegalStateException("topic_themed_prompt_missing_prompt")
         }
 
         val themeTags =
@@ -597,8 +587,27 @@ object NativeLlmClient {
                 .ifEmpty { fallbackThemeTags(normalizedTopic) }
                 .distinct()
 
-        return NativeTopicThemedPrompt(
-            prompt = mergeRequiredTags(prompt, themeTags),
+        val mergedPrompts =
+            promptCandidates
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .map { mergeRequiredTags(it, themeTags) }
+                .distinct()
+                .take(normalizedPromptCount)
+        if (mergedPrompts.isEmpty()) {
+            throw IllegalStateException("topic_themed_prompt_missing_prompt")
+        }
+
+        val parsedField =
+            when {
+                promptEntry != null -> promptEntry.key
+                parseStringArrayFlexible(parsed.opt("comfy_prompts")).isNotEmpty() -> "comfy_prompts"
+                parseStringArrayFlexible(parsed.opt("comfyPrompts")).isNotEmpty() -> "comfyPrompts"
+                else -> "raw_content_fallback"
+            }
+
+        return NativeTopicThemedPrompts(
+            prompts = mergedPrompts,
             themeTags = themeTags,
             llmDebug = response.llmDebug?.copy(parsedField = parsedField),
         )
@@ -1612,7 +1621,7 @@ object NativeLlmClient {
 
     private fun buildComfyPromptConversionToolDefinition(): LlmToolDefinition {
         return LlmToolDefinition(
-            name = "emit_comfy_prompts",
+            name = "emit_comfy_prompts_from_description",
             description = "Return one or more ComfyUI prompts generated from image descriptions.",
             parameters =
                 JSONObject().apply {
@@ -1646,6 +1655,64 @@ object NativeLlmClient {
                     put("additionalProperties", true)
                 },
         )
+    }
+
+    private fun buildThemedComfyPromptSystemPrompt(): String {
+        return listOf(
+            "Ты генератор themed ComfyUI prompts для изображения персонажа.",
+            "Верни JSON-объект без markdown и пояснений.",
+            "Формат: {\"theme_tags\":[\"...\"],\"comfy_prompts\":[\"...\"]}",
+            "theme_tags: 8-12 кратких English tags, которые напрямую описывают тему/контекст кадра.",
+            "comfy_prompts: массив из 1-N prompt'ов (каждый prompt — строка с comma-separated English tags).",
+            "theme_tags должны быть конкретными (локация, роль, действие, атмосфера) и не противоречить теме.",
+            "Формат каждого comfy_prompts[i]: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
+            "Каждый тег: строго 1-2 слова, в редких случаях допускается 3; lowercase, без точки в конце.",
+            "ЗАПРЕЩЕНО: полные предложения, художественные описания, markdown, двоеточия с пояснениями, нумерация, буллеты, кавычки.",
+            "ЗАПРЕЩЕНО: конструкции типа 'a woman standing...', 'she is...', 'this scene shows...'.",
+            "ЗАПРЕЩЕНО добавлять теги, которых нет в теме/внешности (никаких выдуманных тату, пирсингов, фетиш-элементов, ролей).",
+            "ЗАПРЕЩЕНО: психологические/мотивационные ярлыки (exhibitionist, narcissistic, voyeuristic, self-promotion) - в таком виде.",
+            "Правильный стиль: 'solo, one person, upper body, soft rim light, city street at night'.",
+            "Определяй количество действующих лиц из тематики.",
+            "Описывай строго одного человека (solo, single subject, one person) или нескольких если описание (тематика) этого требует.",
+            "ОБЯЗАТЕЛЬНО Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
+            "ОБЯЗАТЕЛЬНО Если в input есть блок LookPrompt cache, используй его как identity prior: hair/face/eyes/body/outfit-теги приоритетны и помогают держать консистентность.",
+            "ОБЯЗАТЕЛЬНО Добавляй специфичные для темы теги в итоговую генерацию: описания ситуации, эмоций, действий, окружения, атмосферы и тд.",
+            "Из LookPrompt cache можно брать только стабильные identity/outfit детали, но не добавляй лишние детали, которых нет в теме.",
+            "Все теги из theme_tags ОБЯЗАТЕЛЬНО должны присутствовать в каждом comfy_prompts[i] без потери смысла.",
+            "Промпты в comfy_prompts должны быть взаимно различимыми вариациями одной темы без потери identity locks.",
+            "Используй уместную одежду, если тема не требует специального костюма.",
+            "Добавляй композицию, свет, фон, ракурс, качество.",
+            "Перед отправкой проверь self-check: если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
+            "Без дополнительных полей и пояснений.",
+            "Избегай двусмысленных формулировок: looking at camera (смотрит на камеру (как объект) / смотрит в камеру (в объектив)), full body (полное телосложение / в полный рост) и тп.",
+            "Вместо них используй: looking at viewer (смотрит на зрителя), head-to-toe shot (полноростовый кадр). Аналогично и с другими двусмысленными формулировками.",
+            "",
+            "SELF-CHECK",
+            "Если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
+            "Теги только на английском языке (English only).",
+            "Внешность персонажа должна быть сохранена.",
+            "Обязательно перепроверяй наличие важных тегов внешности: телосложение, цвет глаз, цвет волос, прическа, эмоции (если указаны).",
+            "Если что-то не соответствует - перегенерируй.",
+        ).joinToString("\n")
+    }
+
+    private fun buildThemedComfyPromptUserPrompt(
+        persona: JSONObject,
+        topic: String,
+        iteration: Int,
+        promptCount: Int,
+    ): String {
+        return listOf(
+            "Character name: ${persona.optString("name", "").trim().ifEmpty { "Unknown" }}",
+            "Appearance: ${formatAppearanceProfileInput(persona.optJSONObject("appearance"))}",
+            "Style: ${persona.optString("stylePrompt", "").trim().ifEmpty { "-" }}",
+            "Personality: ${persona.optString("personalityPrompt", "").trim().ifEmpty { "-" }}",
+            "LookPrompt cache:\n${formatLookPromptCacheInput(persona.optJSONObject("lookPromptCache"))}",
+            "Theme: $topic",
+            "Iteration: ${max(1, iteration)}",
+            "Prompt count: ${promptCount.coerceIn(1, 8)}",
+            "Generate unique prompt variations for consecutive iterations starting from this iteration.",
+        ).joinToString("\n")
     }
 
     private fun buildImageDescriptionToComfyPromptSystemPrompt(): String {

@@ -428,6 +428,7 @@ export interface GeneratorSession {
   directPromptSeed: number | null;
   directPromptSeedArmed: boolean;
   singleRunRequested: boolean;
+  themePromptQueue: string[];
   isInfinite: boolean;
   requestedCount: number | null;
   delaySeconds: number;

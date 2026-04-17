@@ -7,7 +7,7 @@ import {
 } from "../../comfy";
 import { dbApi } from "../../db";
 import { localizeImageUrls } from "../../imageStorage";
-import { generateThemedComfyPrompt } from "../../lmstudio";
+import { generateThemedComfyPrompts } from "../../lmstudio";
 import { useAppStore } from "../../store";
 import type { AppSettings, GeneratorSession, Persona } from "../../types";
 import { waitMs, stableSeedFromText } from "../look/lookHelpers";
@@ -41,6 +41,8 @@ export type TopicGenerationStepResult =
   | "stopped";
 
 const COMFY_SEED_MAX = 1_125_899_906_842_624;
+const THEMED_PROMPT_BATCH_SIZE = 8;
+const THEMED_PROMPT_REFILL_THRESHOLD = 1;
 
 function normalizeDirectPromptSeed(seed: number | null) {
   if (typeof seed !== "number" || !Number.isFinite(seed)) return null;
@@ -58,6 +60,11 @@ function randomComfySeed() {
     return Number(bounded);
   }
   return Math.floor(Math.random() * COMFY_SEED_MAX) + 1;
+}
+
+function normalizeThemePromptQueue(queue: GeneratorSession["themePromptQueue"]) {
+  if (!Array.isArray(queue)) return [] as string[];
+  return queue.map((item) => item.trim()).filter(Boolean);
 }
 
 interface IterationResult {
@@ -171,6 +178,7 @@ export function useTopicGenerator({
         directPromptSeedArmed:
           generationPromptMode === "direct_prompt" && directPromptSeed !== null,
         singleRunRequested,
+        themePromptQueue: [],
         isInfinite: generationInfinite,
         requestedCount: total,
         delaySeconds: generationDelaySeconds,
@@ -229,10 +237,48 @@ export function useTopicGenerator({
         session.promptMode === "direct_prompt"
           ? "direct_prompt"
           : "theme_llm";
-      const prompt =
-        promptMode === "direct_prompt"
-          ? topic
-          : await generateThemedComfyPrompt(settings, persona, topic, iteration);
+      let prompt = topic;
+      let themedPromptQueue = normalizeThemePromptQueue(session.themePromptQueue);
+      if (promptMode === "theme_llm") {
+        const remainingIterations =
+          total === null ? null : Math.max(1, total - session.completedCount);
+        const refillTargetSize = forceStopAfterIteration
+          ? 1
+          : THEMED_PROMPT_BATCH_SIZE;
+        let refillError: Error | null = null;
+        if (themedPromptQueue.length <= THEMED_PROMPT_REFILL_THRESHOLD) {
+          const desiredQueueSize =
+            remainingIterations === null
+              ? refillTargetSize
+              : Math.min(refillTargetSize, remainingIterations);
+          const refillCount = Math.max(0, desiredQueueSize - themedPromptQueue.length);
+          if (refillCount > 0) {
+            try {
+              const generatedPrompts = await generateThemedComfyPrompts(
+                settings,
+                persona,
+                topic,
+                iteration,
+                refillCount,
+              );
+              themedPromptQueue = [...themedPromptQueue, ...generatedPrompts];
+            } catch (error) {
+              refillError =
+                error instanceof Error
+                  ? error
+                  : new Error("Ошибка генерации themed prompt batch.");
+            }
+          }
+        }
+        if (themedPromptQueue.length === 0) {
+          if (refillError) throw refillError;
+          throw new Error("Модель вернула пустой comfy prompt.");
+        }
+        prompt = themedPromptQueue[0];
+        themedPromptQueue = themedPromptQueue.slice(1);
+      } else {
+        themedPromptQueue = [];
+      }
 
       const normalizedDirectSeed = normalizeDirectPromptSeed(session.directPromptSeed);
       const shouldConsumeOneShotSeed =
@@ -322,6 +368,7 @@ export function useTopicGenerator({
         entries: [...session.entries, entry],
         status: nextStatus,
         singleRunRequested: false,
+        themePromptQueue: themedPromptQueue,
         directPromptSeed: shouldConsumeOneShotSeed
           ? null
           : session.directPromptSeed,

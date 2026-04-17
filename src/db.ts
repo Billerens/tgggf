@@ -829,6 +829,11 @@ function normalizeGeneratorSession(
     Number.isFinite(session.directPromptSeed)
       ? Math.max(1, Math.min(MAX_COMFY_SEED, Math.floor(session.directPromptSeed)))
       : null;
+  const normalizedThemePromptQueue = Array.isArray(session.themePromptQueue)
+    ? session.themePromptQueue
+        .map((prompt) => (typeof prompt === "string" ? prompt.trim() : ""))
+        .filter(Boolean)
+    : [];
   const next: GeneratorSession = {
     ...session,
     name: normalizedName || "Новая сессия",
@@ -838,6 +843,7 @@ function normalizeGeneratorSession(
     directPromptSeedArmed:
       Boolean(session.directPromptSeedArmed) && normalizedDirectPromptSeed !== null,
     singleRunRequested: Boolean(session.singleRunRequested),
+    themePromptQueue: normalizedThemePromptQueue,
     status:
       session.status === "running" ||
       session.status === "stopped" ||

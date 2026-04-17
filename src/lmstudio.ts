@@ -1840,27 +1840,15 @@ interface PersonaLookIdentityLocks {
   outfit?: string;
 }
 
-export async function generateThemedComfyPrompt(
-  settings: AppSettings,
-  persona: Pick<
-    Persona,
-    | "name"
-    | "appearance"
-    | "stylePrompt"
-    | "personalityPrompt"
-    | "lookPromptCache"
-  >,
-  topic: string,
-  iteration: number,
-): Promise<string> {
-  const systemPrompt = [
-    "Ты генератор одного ComfyUI prompt для изображения персонажа.",
+function buildThemedComfyPromptSystemPrompt() {
+  return [
+    "Ты генератор themed ComfyUI prompts для изображения персонажа.",
     "Верни JSON-объект без markdown и пояснений.",
     'Формат: {"theme_tags":["..."],"comfy_prompts":["..."]}',
     "theme_tags: 8-12 кратких English tags, которые напрямую описывают тему/контекст кадра.",
-    "comfy_prompts: массив из одного prompt (строка с comma-separated English tags).",
+    "comfy_prompts: массив из 1-N prompt'ов (каждый prompt — строка с comma-separated English tags).",
     "theme_tags должны быть конкретными (локация, роль, действие, атмосфера) и не противоречить теме.",
-    "Формат внутри comfy_prompts[0]: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
+    "Формат каждого comfy_prompts[i]: строго одна строка, разделитель строго ', ' (запятая + пробел), без переносов.",
     "Каждый тег: строго 1-2 слова, в редких случаях допускается 3; lowercase, без точки в конце.",
     "ЗАПРЕЩЕНО: полные предложения, художественные описания, markdown, двоеточия с пояснениями, нумерация, буллеты, кавычки.",
     "ЗАПРЕЩЕНО: конструкции типа 'a woman standing...', 'she is...', 'this scene shows...'.",
@@ -1873,7 +1861,8 @@ export async function generateThemedComfyPrompt(
     "ОБЯЗАТЕЛЬНО Если в input есть блок LookPrompt cache, используй его как identity prior: hair/face/eyes/body/outfit-теги приоритетны и помогают держать консистентность.",
     "ОБЯЗАТЕЛЬНО Добавляй специфичные для темы теги в итоговую генерацию: описания ситуации, эмоций, действий, окружения, атмосферы и тд.",
     "Из LookPrompt cache можно брать только стабильные identity/outfit детали, но не добавляй лишние детали, которых нет в теме.",
-    "Все теги из theme_tags ОБЯЗАТЕЛЬНО должны присутствовать в comfy_prompts[0] без потери смысла.",
+    "Все теги из theme_tags ОБЯЗАТЕЛЬНО должны присутствовать в каждом comfy_prompts[i] без потери смысла.",
+    "Промпты в comfy_prompts должны быть взаимно различимыми вариациями одной темы без потери identity locks.",
     "Используй уместную одежду, если тема не требует специального костюма.",
     "Добавляй композицию, свет, фон, ракурс, качество.",
     "Перед отправкой проверь self-check: если в тексте есть глагольные формы/длинные фразы, перепиши в теговый формат.",
@@ -1888,8 +1877,22 @@ export async function generateThemedComfyPrompt(
     "Обязательно перепроверяй наличие важных тегов внешности: телосложение, цвет глаз, цвет волос, прическа, эмоции (если указаны).",
     "Если что-то не соответствует - перегенерируй.",
   ].join("\n");
+}
 
-  const input = [
+function buildThemedComfyPromptInput(
+  persona: Pick<
+    Persona,
+    | "name"
+    | "appearance"
+    | "stylePrompt"
+    | "personalityPrompt"
+    | "lookPromptCache"
+  >,
+  topic: string,
+  iteration: number,
+  promptCount: number,
+) {
+  return [
     `Character name: ${persona.name || "Unknown"}`,
     `Appearance: ${formatAppearanceProfile(persona.appearance)}`,
     `Style: ${persona.stylePrompt || "-"}`,
@@ -1897,11 +1900,45 @@ export async function generateThemedComfyPrompt(
     `LookPrompt cache:\n${formatLookPromptCacheInput(persona.lookPromptCache)}`,
     `Theme: ${topic}`,
     `Iteration: ${iteration}`,
-    "Generate one unique prompt variation for this iteration.",
+    `Prompt count: ${promptCount}`,
+    "Generate unique prompt variations for consecutive iterations starting from this iteration.",
   ].join("\n");
+}
+
+function normalizeThemedPromptCount(value: number) {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, Math.min(8, Math.floor(value)));
+}
+
+export async function generateThemedComfyPrompts(
+  settings: AppSettings,
+  persona: Pick<
+    Persona,
+    | "name"
+    | "appearance"
+    | "stylePrompt"
+    | "personalityPrompt"
+    | "lookPromptCache"
+  >,
+  topic: string,
+  iteration: number,
+  promptCount: number,
+): Promise<string[]> {
+  const normalizedTopic = topic.trim();
+  if (!normalizedTopic) {
+    throw new Error("Тема генерации не может быть пустой.");
+  }
+  const normalizedPromptCount = normalizeThemedPromptCount(promptCount);
+  const systemPrompt = buildThemedComfyPromptSystemPrompt();
+  const input = buildThemedComfyPromptInput(
+    persona,
+    normalizedTopic,
+    iteration,
+    normalizedPromptCount,
+  );
 
   const themedPromptToolConfig = createThemedComfyPromptToolConfig(
-    topic,
+    normalizedTopic,
     fallbackThemeTags,
   );
   const runtime = await requestGenericToolRuntime(settings, {
@@ -1910,22 +1947,62 @@ export async function generateThemedComfyPrompt(
       model: resolveImagePromptModel(settings),
       input,
       systemPrompt,
-      maxOutputTokens: Math.max(180, Math.min(700, settings.maxTokens)),
+      maxOutputTokens: Math.min(
+        16384,
+        Math.max(
+          Math.max(settings.maxTokens, 700),
+          320 + normalizedPromptCount * 260,
+        ),
+      ),
       temperature: Math.max(0.35, Math.min(0.75, settings.temperature)),
       store: false,
     },
     ...themedPromptToolConfig,
   });
 
-  const prompt = toTrimmedString(runtime.value.prompt);
-  if (!prompt) {
-    throw new Error("Модель вернула пустой comfy prompt.");
-  }
   const themeTags =
     runtime.value.themeTags.length > 0
       ? runtime.value.themeTags
-      : fallbackThemeTags(topic);
-  return mergeRequiredTags(prompt, themeTags);
+      : fallbackThemeTags(normalizedTopic);
+  const mergedPrompts = Array.from(
+    new Set(
+      runtime.value.prompts
+        .map((prompt) => toTrimmedString(prompt))
+        .filter(Boolean)
+        .map((prompt) => mergeRequiredTags(prompt, themeTags)),
+    ),
+  );
+  if (mergedPrompts.length === 0) {
+    throw new Error("Модель вернула пустой comfy prompt.");
+  }
+  return mergedPrompts.slice(0, normalizedPromptCount);
+}
+
+export async function generateThemedComfyPrompt(
+  settings: AppSettings,
+  persona: Pick<
+    Persona,
+    | "name"
+    | "appearance"
+    | "stylePrompt"
+    | "personalityPrompt"
+    | "lookPromptCache"
+  >,
+  topic: string,
+  iteration: number,
+): Promise<string> {
+  const prompts = await generateThemedComfyPrompts(
+    settings,
+    persona,
+    topic,
+    iteration,
+    1,
+  );
+  const first = toTrimmedString(prompts[0]);
+  if (!first) {
+    throw new Error("Модель вернула пустой comfy prompt.");
+  }
+  return first;
 }
 
 type ImageDescriptionType = "person" | "other_person" | "no_person" | "group";

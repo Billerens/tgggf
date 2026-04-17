@@ -248,6 +248,13 @@ function normalizeComfySeedValue(value: unknown): number | null {
   return null;
 }
 
+function normalizeThemePromptQueue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+}
+
 function toFiniteInt(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.floor(value);
@@ -373,6 +380,20 @@ async function applyTopicStatePatch(
     if (typeof patch.singleRunRequested === "boolean") {
       if (patch.singleRunRequested !== next.singleRunRequested) {
         next.singleRunRequested = patch.singleRunRequested;
+        changed = true;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "themePromptQueue")) {
+      const nextQueue = normalizeThemePromptQueue(patch.themePromptQueue);
+      const prevQueue = Array.isArray(next.themePromptQueue)
+        ? next.themePromptQueue
+        : [];
+      const hasQueueDiff =
+        nextQueue.length !== prevQueue.length ||
+        nextQueue.some((prompt, index) => prompt !== prevQueue[index]);
+      if (hasQueueDiff) {
+        next.themePromptQueue = nextQueue;
         changed = true;
       }
     }

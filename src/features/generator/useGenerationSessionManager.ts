@@ -194,6 +194,7 @@ export function useGenerationSessionManager({
       directPromptSeed: generationDirectPromptSeed,
       directPromptSeedArmed: false,
       singleRunRequested: false,
+      themePromptQueue: [],
       isInfinite: generationInfinite,
       requestedCount: generationInfinite
         ? null
