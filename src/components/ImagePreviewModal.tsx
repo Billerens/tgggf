@@ -21,6 +21,7 @@ interface ImagePreviewModalProps {
   src: string | null;
   alt?: string;
   meta?: ImageGenerationMeta;
+  showMeta?: boolean;
   actionBusy?: boolean;
   enhanceTarget?: LookEnhanceTarget;
   enhanceTargetOptions?: Array<{ value: LookEnhanceTarget; label: string }>;
@@ -102,6 +103,7 @@ export function ImagePreviewModal({
   src,
   alt = "preview",
   meta,
+  showMeta,
   actionBusy = false,
   enhanceTarget,
   enhanceTargetOptions,
@@ -131,6 +133,15 @@ export function ImagePreviewModal({
   const promptEditTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const zoomed = scale > MIN_PREVIEW_SCALE;
+  const hasMeta =
+    showMeta ??
+    Boolean(
+      meta &&
+        (meta.prompt?.trim() ||
+          meta.flow?.trim() ||
+          meta.model?.trim() ||
+          Number.isFinite(meta.seed)),
+    );
   const resolvedEnhanceTargetOptions =
     enhanceTargetOptions && enhanceTargetOptions.length > 0
       ? enhanceTargetOptions
@@ -493,23 +504,25 @@ export function ImagePreviewModal({
             style={{ transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})` }}
           />
         </div>
-        <section className="image-preview-meta" aria-label="Метаданные генерации">
-          <div className="image-preview-meta-grid">
-            <p>
-              <strong>Flow:</strong> {meta?.flow ?? "—"}
-            </p>
-            <p>
-              <strong>Seed:</strong> {Number.isFinite(meta?.seed) ? meta?.seed : "—"}
-            </p>
-            <p>
-              <strong>Model:</strong> {meta?.model?.trim() || "—"}
-            </p>
-          </div>
-          <div className="image-preview-meta-prompt">
-            <strong>Prompt:</strong>
-            <pre>{meta?.prompt?.trim() || "—"}</pre>
-          </div>
-        </section>
+        {hasMeta ? (
+          <section className="image-preview-meta" aria-label="Метаданные генерации">
+            <div className="image-preview-meta-grid">
+              <p>
+                <strong>Flow:</strong> {meta?.flow ?? "—"}
+              </p>
+              <p>
+                <strong>Seed:</strong> {Number.isFinite(meta?.seed) ? meta?.seed : "—"}
+              </p>
+              <p>
+                <strong>Model:</strong> {meta?.model?.trim() || "—"}
+              </p>
+            </div>
+            <div className="image-preview-meta-prompt">
+              <strong>Prompt:</strong>
+              <pre>{meta?.prompt?.trim() || "—"}</pre>
+            </div>
+          </section>
+        ) : null}
         {promptEditMode ? (
           <div
             className="prompt-edit-overlay"

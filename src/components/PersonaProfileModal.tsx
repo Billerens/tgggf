@@ -3,6 +3,7 @@ import { ExternalLink, X } from "lucide-react";
 import { dbApi } from "../db";
 import { extractImageAssetIdFromIdbUrl } from "../personaAvatar";
 import type { Persona } from "../types";
+import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface PersonaProfileModalProps {
   open: boolean;
@@ -36,6 +37,13 @@ function toDisplayRows(items: Array<{ label: string; value: string }>) {
     .filter((item) => item.value);
 }
 
+function labelForSlot(slot: PersonaImageSlot) {
+  if (slot === "avatar") return "Avatar";
+  if (slot === "fullBody") return "Body";
+  if (slot === "side") return "Side";
+  return "Back";
+}
+
 export function PersonaProfileModal({
   open,
   persona,
@@ -49,6 +57,12 @@ export function PersonaProfileModal({
     side: "",
     back: "",
   });
+  const [selectedImageKey, setSelectedImageKey] =
+    useState<PersonaImageSlot>("avatar");
+  const [previewImage, setPreviewImage] = useState<{
+    src: string;
+    alt: string;
+  } | null>(null);
 
   const imageEntries = useMemo<PersonaImageEntry[]>(() => {
     if (!persona) return [];
@@ -96,10 +110,11 @@ export function PersonaProfileModal({
         side: "",
         back: "",
       });
+      setSelectedImageKey("avatar");
+      setPreviewImage(null);
       return;
     }
     let cancelled = false;
-
     const load = async () => {
       const uniqueIds = Array.from(
         new Set(
@@ -111,6 +126,7 @@ export function PersonaProfileModal({
       const assets =
         uniqueIds.length > 0 ? await dbApi.getImageAssets(uniqueIds) : [];
       if (cancelled) return;
+
       const dataUrlById = Object.fromEntries(
         assets.map((asset) => [asset.id, asset.dataUrl]),
       );
@@ -145,32 +161,47 @@ export function PersonaProfileModal({
 
   if (!open || !persona) return null;
 
-  const coreRows = toDisplayRows([
-    { label: "Archetype", value: persona.advanced.core.archetype },
-    { label: "Gender", value: persona.advanced.core.selfGender },
-    { label: "Expertise", value: persona.advanced.core.expertise },
-  ]);
-  const appearanceRows = toDisplayRows([
-    { label: "Face", value: persona.appearance.faceDescription },
-    { label: "Age", value: persona.appearance.ageType },
-    { label: "Body", value: persona.appearance.bodyType },
-    { label: "Height", value: persona.appearance.height },
-    { label: "Eyes", value: persona.appearance.eyes },
-    { label: "Hair", value: persona.appearance.hair },
-    { label: "Skin", value: persona.appearance.skin },
-    { label: "Lips", value: persona.appearance.lips },
-    { label: "Accessories", value: persona.appearance.accessories },
-    { label: "Style", value: persona.appearance.clothingStyle },
-    { label: "Markers", value: persona.appearance.markers },
+  const avatarSrc = imageSrcBySlot.avatar;
+  const personalPhotoEntries = imageEntries
+    .filter((entry) => entry.key !== "avatar")
+    .map((entry) => ({
+      key: entry.key,
+      label: entry.label,
+      src: imageSrcBySlot[entry.key],
+    }))
+    .filter((entry) => Boolean(entry.src));
+  const avatarDisplaySrc = avatarSrc || personalPhotoEntries[0]?.src || "";
+  const selectedImageSrc = imageSrcBySlot[selectedImageKey];
+  const fallbackImageEntry =
+    imageEntries.find((entry) => Boolean(imageSrcBySlot[entry.key])) ?? null;
+  const activeImageSrc =
+    selectedImageSrc ||
+    (fallbackImageEntry ? imageSrcBySlot[fallbackImageEntry.key] : "");
+
+  const profileRows = toDisplayRows([
+    { label: "Архетип", value: persona.advanced.core.archetype },
+    { label: "Пол", value: persona.advanced.core.selfGender },
+    { label: "Возраст", value: persona.appearance.ageType },
+    { label: "Тип тела", value: persona.appearance.bodyType },
+    { label: "Рост", value: persona.appearance.height },
+    { label: "Глаза", value: persona.appearance.eyes },
+    { label: "Волосы", value: persona.appearance.hair },
+    { label: "Кожа", value: persona.appearance.skin },
+    { label: "Губы", value: persona.appearance.lips },
+    { label: "Стиль", value: persona.appearance.clothingStyle },
+    { label: "Аксессуары", value: persona.appearance.accessories },
+    { label: "Приметы", value: persona.appearance.markers },
+    { label: "Лицо", value: persona.appearance.faceDescription },
+    { label: "Экспертиза", value: persona.advanced.core.expertise },
+    { label: "О себе", value: compactText(persona.advanced.core.backstory, "") },
+    { label: "Цели", value: compactText(persona.advanced.core.goals, "") },
+    { label: "Ценности", value: compactText(persona.advanced.core.values, "") },
+    { label: "Границы", value: compactText(persona.advanced.core.boundaries, "") },
+    { label: "Тон общения", value: compactText(persona.advanced.voice.tone, "") },
   ]);
 
   return (
-    <div
-      className="overlay"
-      role="dialog"
-      aria-modal="true"
-      onClick={onClose}
-    >
+    <div className="overlay" role="dialog" aria-modal="true" onClick={onClose}>
       <div
         className="modal large persona-profile-modal"
         onClick={(event) => event.stopPropagation()}
@@ -185,98 +216,107 @@ export function PersonaProfileModal({
           </button>
         </header>
 
-        <section className="persona-profile-body">
-          <div className="persona-profile-images" aria-label="Изображения персоны">
-            {imageEntries.map((entry) => {
-              const src = imageSrcBySlot[entry.key];
-              return (
-                <article key={entry.key} className="persona-profile-image-card">
-                  <div className="persona-profile-image-head">
-                    <strong>{entry.label}</strong>
+        <div className="persona-profile-scroll">
+          <section className="persona-profile-head">
+            <div className="persona-profile-avatar-wrap">
+              {avatarDisplaySrc ? (
+                <img
+                  src={avatarDisplaySrc}
+                  alt={`${persona.name} avatar`}
+                  className="persona-profile-avatar"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="persona-profile-avatar persona-profile-avatar-fallback">
+                  {persona.name.trim().charAt(0).toUpperCase()}
+                </div>
+              )}
+            </div>
+            <div className="persona-profile-head-text">
+              <h3>{persona.name}</h3>
+              <p>{persona.advanced.core.archetype || "Персона"}</p>
+            </div>
+          </section>
+
+          <section className="persona-profile-section-card">
+            <div className="persona-profile-section-head">
+              <h4>Личные фото</h4>
+              {activeImageSrc ? (
+                <a
+                  href={activeImageSrc}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="attachment-link"
+                >
+                  Открыть <ExternalLink size={14} />
+                </a>
+              ) : null}
+            </div>
+
+            <div className="persona-profile-photo-strip" aria-label="Миниатюры фото">
+              {imageEntries.map((entry) => {
+                const src = imageSrcBySlot[entry.key];
+                const isActive = Boolean(src) && entry.key === selectedImageKey;
+                return (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    className={`persona-profile-photo-thumb ${isActive ? "active" : ""}`}
+                    disabled={!src}
+                    onClick={() => {
+                      if (!src) return;
+                      setSelectedImageKey(entry.key);
+                      setPreviewImage({
+                        src,
+                        alt: `${persona.name}-${entry.label}`,
+                      });
+                    }}
+                    title={labelForSlot(entry.key)}
+                    aria-label={`Показать фото ${labelForSlot(entry.key)}`}
+                  >
                     {src ? (
-                      <a
-                        href={src}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="attachment-link"
-                      >
-                        Открыть <ExternalLink size={14} />
-                      </a>
-                    ) : null}
-                  </div>
-                  <div className="persona-profile-image-frame">
-                    {src ? (
-                      <img src={src} alt={`${persona.name}-${entry.label}`} loading="lazy" />
+                      <img
+                        src={src}
+                        alt={`${persona.name}-${entry.label}-thumb`}
+                        loading="lazy"
+                      />
                     ) : (
-                      <span className="persona-profile-image-empty">Нет изображения</span>
+                      <span>{labelForSlot(entry.key).charAt(0)}</span>
                     )}
+                  </button>
+                );
+              })}
+            </div>
+            {!activeImageSrc ? (
+              <p className="persona-profile-empty">Фото пока отсутствуют</p>
+            ) : null}
+          </section>
+
+          <section className="persona-profile-section-card">
+            <div className="persona-profile-section-head">
+              <h4>Детали профиля</h4>
+            </div>
+            {profileRows.length === 0 ? (
+              <p className="persona-profile-empty">Нет данных</p>
+            ) : (
+              <dl className="persona-profile-fields">
+                {profileRows.map((row) => (
+                  <div key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
                   </div>
-                </article>
-              );
-            })}
-          </div>
-
-          <div className="persona-profile-sections">
-            <section className="status-card persona-profile-section">
-              <h4>Core</h4>
-              {coreRows.length === 0 ? (
-                <p>—</p>
-              ) : (
-                <dl className="persona-profile-fields">
-                  {coreRows.map((row) => (
-                    <div key={row.label}>
-                      <dt>{row.label}</dt>
-                      <dd>{row.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              )}
-            </section>
-
-            <section className="status-card persona-profile-section">
-              <h4>Appearance</h4>
-              {appearanceRows.length === 0 ? (
-                <p>—</p>
-              ) : (
-                <dl className="persona-profile-fields">
-                  {appearanceRows.map((row) => (
-                    <div key={row.label}>
-                      <dt>{row.label}</dt>
-                      <dd>{row.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              )}
-            </section>
-
-            <section className="status-card persona-profile-section">
-              <h4>Prompts</h4>
-              <p>
-                <strong>Personality:</strong>{" "}
-                {compactText(persona.personalityPrompt)}
-              </p>
-              <p>
-                <strong>Style:</strong> {compactText(persona.stylePrompt)}
-              </p>
-              <p>
-                <strong>Backstory:</strong>{" "}
-                {compactText(persona.advanced.core.backstory)}
-              </p>
-              <p>
-                <strong>Goals:</strong> {compactText(persona.advanced.core.goals)}
-              </p>
-              <p>
-                <strong>Values:</strong>{" "}
-                {compactText(persona.advanced.core.values)}
-              </p>
-              <p>
-                <strong>Boundaries:</strong>{" "}
-                {compactText(persona.advanced.core.boundaries)}
-              </p>
-            </section>
-          </div>
-        </section>
+                ))}
+              </dl>
+            )}
+          </section>
+        </div>
       </div>
+      <ImagePreviewModal
+        src={previewImage?.src ?? null}
+        alt={previewImage?.alt}
+        showMeta={false}
+        onClose={() => setPreviewImage(null)}
+      />
     </div>
   );
 }

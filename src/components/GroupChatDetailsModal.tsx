@@ -1,5 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
+import { dbApi } from "../db";
+import { extractImageAssetIdFromIdbUrl } from "../personaAvatar";
 import type {
   GroupEvent,
   GroupMemoryPrivate,
@@ -31,12 +33,17 @@ interface GroupChatDetailsModalProps {
 type DetailsTab = "attachments" | "status";
 
 interface GroupImageAttachment {
-  src: string;
+  sourceUrl: string;
+  imageId: string;
   alt: string;
   meta?: ImageGenerationMeta;
   messageId: string;
   authorDisplayName: string;
   createdAt: string;
+}
+
+function getAttachmentKey(attachment: GroupImageAttachment) {
+  return `${attachment.messageId}::${attachment.sourceUrl}`;
 }
 
 function formatDateTime(value: string | undefined) {
@@ -61,8 +68,11 @@ function extractGroupImageAttachments(messages: GroupMessage[]): GroupImageAttac
       const key = `${message.id}::${src}`;
       if (known.has(key)) continue;
       known.add(key);
+      const imageId =
+        (attachment.imageId ?? "").trim() || extractImageAssetIdFromIdbUrl(src);
       attachments.push({
-        src,
+        sourceUrl: src,
+        imageId,
         alt: "Изображение",
         meta: attachment.meta ?? message.imageMetaByUrl?.[src],
         messageId: message.id,
@@ -93,11 +103,55 @@ export function GroupChatDetailsModal({
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(
     undefined,
   );
+  const [resolvedAttachmentSrcByKey, setResolvedAttachmentSrcByKey] = useState<
+    Record<string, string>
+  >({});
   const personaNameById = useMemo(
     () => Object.fromEntries(personas.map((persona) => [persona.id, persona.name])),
     [personas],
   );
   const attachments = useMemo(() => extractGroupImageAttachments(messages), [messages]);
+  useEffect(() => {
+    let cancelled = false;
+    const resolveAttachments = async () => {
+      const nextResolved: Record<string, string> = {};
+      const refsById = new Map<string, string[]>();
+
+      for (const attachment of attachments) {
+        const key = getAttachmentKey(attachment);
+        if (attachment.imageId) {
+          const bucket = refsById.get(attachment.imageId) ?? [];
+          bucket.push(key);
+          refsById.set(attachment.imageId, bucket);
+          continue;
+        }
+        nextResolved[key] = attachment.sourceUrl.startsWith("idb://")
+          ? ""
+          : attachment.sourceUrl;
+      }
+
+      if (refsById.size > 0) {
+        const assets = await dbApi.getImageAssets(Array.from(refsById.keys()));
+        const assetById = Object.fromEntries(
+          assets.map((asset) => [asset.id, asset.dataUrl]),
+        );
+        for (const [imageId, keys] of refsById.entries()) {
+          const dataUrl = assetById[imageId] ?? "";
+          for (const key of keys) {
+            nextResolved[key] = dataUrl;
+          }
+        }
+      }
+
+      if (!cancelled) {
+        setResolvedAttachmentSrcByKey(nextResolved);
+      }
+    };
+    void resolveAttachments();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachments]);
   const imageCount = attachments.length;
   const pendingImageCount = useMemo(
     () => messages.filter((message) => message.imageGenerationPending).length,
@@ -157,35 +211,51 @@ export function GroupChatDetailsModal({
               <p className="empty-state">В этом групповом чате пока нет картинок.</p>
             ) : (
               <div className="attachment-grid">
-                {attachments.map((attachment) => (
-                  <article
-                    key={`${attachment.messageId}-${attachment.src}`}
-                    className="attachment-card"
-                  >
-                    <button
-                      type="button"
-                      className="attachment-preview-btn"
-                      onClick={() => {
-                        setPreviewSrc(attachment.src);
-                        setPreviewMeta(attachment.meta);
-                      }}
+                {attachments.map((attachment) => {
+                  const resolvedSrc =
+                    resolvedAttachmentSrcByKey[getAttachmentKey(attachment)] ?? "";
+                  return (
+                    <article
+                      key={`${attachment.messageId}-${attachment.sourceUrl}`}
+                      className="attachment-card"
                     >
-                      <img src={attachment.src} alt={attachment.alt} loading="lazy" />
-                    </button>
-                    <div className="attachment-meta">
-                      <span>{attachment.authorDisplayName}</span>
-                      <span>{formatDateTime(attachment.createdAt)}</span>
-                    </div>
-                    <a
-                      href={attachment.src}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="attachment-link"
-                    >
-                      Открыть <ExternalLink size={14} />
-                    </a>
-                  </article>
-                ))}
+                      <button
+                        type="button"
+                        className="attachment-preview-btn"
+                        onClick={() => {
+                          if (!resolvedSrc) return;
+                          setPreviewSrc(resolvedSrc);
+                          setPreviewMeta(attachment.meta);
+                        }}
+                        disabled={!resolvedSrc}
+                      >
+                        {resolvedSrc ? (
+                          <img src={resolvedSrc} alt={attachment.alt} loading="lazy" />
+                        ) : (
+                          <div className="image-skeleton-card" />
+                        )}
+                      </button>
+                      <div className="attachment-meta">
+                        <span>{attachment.authorDisplayName}</span>
+                        <span>{formatDateTime(attachment.createdAt)}</span>
+                      </div>
+                      {resolvedSrc ? (
+                        <a
+                          href={resolvedSrc}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="attachment-link"
+                        >
+                          Открыть <ExternalLink size={14} />
+                        </a>
+                      ) : (
+                        <span className="attachment-link" aria-disabled="true">
+                          Недоступно
+                        </span>
+                      )}
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>
