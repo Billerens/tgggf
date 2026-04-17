@@ -519,6 +519,14 @@ export default function App() {
         .reverse(),
     [generationSession],
   );
+  useEffect(() => {
+    if (!isAndroidRuntime) return;
+    const shouldBeRunning = generationSession?.status === "running";
+    setGenerationIsRunning((prev) => (prev === shouldBeRunning ? prev : shouldBeRunning));
+    if (!shouldBeRunning) {
+      setGenerationPendingImageCount(0);
+    }
+  }, [isAndroidRuntime, generationSession?.id, generationSession?.status]);
   const generationImageMetaByUrl = useMemo(() => {
     const next: Record<string, ComfyImageGenerationMeta> = {};
     for (const entry of generationSession?.entries ?? []) {

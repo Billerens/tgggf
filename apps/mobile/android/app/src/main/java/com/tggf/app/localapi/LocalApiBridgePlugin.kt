@@ -978,6 +978,22 @@ class LocalApiBridgePlugin : Plugin() {
             }
             val enabled = body.optBoolean("enabled", false)
             val payloadJson = parsePayloadJson(body.opt("payload"))
+            val existingState = backgroundRuntime.getDesiredState(taskType, scopeId)
+            if (
+                existingState != null &&
+                    existingState.enabled == enabled &&
+                    existingState.payloadJson.trim() == payloadJson.trim()
+            ) {
+                respond(
+                    call,
+                    200,
+                    JSObject().apply {
+                        put("ok", true)
+                        put("state", backgroundDesiredStateToJsObject(existingState))
+                    },
+                )
+                return
+            }
             val updated = backgroundRuntime.upsertDesiredState(
                 taskType = taskType,
                 scopeId = scopeId,

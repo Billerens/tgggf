@@ -230,6 +230,7 @@ export function useTopicGenerationBackgroundWorker({
   const pollInFlightRef = useRef<boolean>(false);
   const visibleRef = useRef<boolean>(typeof document === "undefined" ? true : !document.hidden);
   const activeSessionIdRef = useRef<string | null>(generationSession?.id ?? null);
+  const syncSignatureRef = useRef<string>("");
 
   useEffect(() => {
     activeSessionIdRef.current = generationSession?.id ?? null;
@@ -314,6 +315,17 @@ export function useTopicGenerationBackgroundWorker({
     };
 
     const syncDesiredStateAndJob = async () => {
+      const signature = generationSession
+        ? `${generationSession.id}|${generationSession.status}|${Math.max(
+            0,
+            Math.floor((generationSession.delaySeconds || 0) * 1000),
+          )}`
+        : "none";
+      if (syncSignatureRef.current === signature) {
+        return;
+      }
+      syncSignatureRef.current = signature;
+
       const nextJobId = generationSession
         ? buildTopicGenerationJobId(generationSession.id)
         : null;

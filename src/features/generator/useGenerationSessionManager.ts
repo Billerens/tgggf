@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { dbApi } from "../../db";
 import { useAppStore } from "../../store";
@@ -49,32 +49,35 @@ export function useGenerationSessionManager({
     [generationSessionId, generationSessions],
   );
 
-  const syncGenerationSessionsFromDb = async (preferredSessionId?: string | null) => {
-    const personaId = generationPersonaId.trim();
-    if (!personaId) {
-      setGenerationSessions([]);
-      setGenerationSessionId("");
-      setGenerationCompletedCount(0);
-      return;
-    }
+  const syncGenerationSessionsFromDb = useCallback(
+    async (preferredSessionId?: string | null) => {
+      const personaId = generationPersonaId.trim();
+      if (!personaId) {
+        setGenerationSessions([]);
+        setGenerationSessionId("");
+        setGenerationCompletedCount(0);
+        return;
+      }
 
-    try {
-      const sessions = await dbApi.getGeneratorSessions(personaId);
-      setGenerationSessions(sessions);
-      const preferredId = (preferredSessionId ?? "").trim();
-      setGenerationSessionId((prev) => {
-        if (preferredId && sessions.some((session) => session.id === preferredId)) {
-          return preferredId;
-        }
-        if (prev && sessions.some((session) => session.id === prev)) {
-          return prev;
-        }
-        return sessions[0]?.id ?? "";
-      });
-    } catch (error) {
-      useAppStore.setState({ error: (error as Error).message });
-    }
-  };
+      try {
+        const sessions = await dbApi.getGeneratorSessions(personaId);
+        setGenerationSessions(sessions);
+        const preferredId = (preferredSessionId ?? "").trim();
+        setGenerationSessionId((prev) => {
+          if (preferredId && sessions.some((session) => session.id === preferredId)) {
+            return preferredId;
+          }
+          if (prev && sessions.some((session) => session.id === prev)) {
+            return prev;
+          }
+          return sessions[0]?.id ?? "";
+        });
+      } catch (error) {
+        useAppStore.setState({ error: (error as Error).message });
+      }
+    },
+    [generationPersonaId],
+  );
 
   useEffect(() => {
     if (!generationPersonaId && personas.length > 0) {

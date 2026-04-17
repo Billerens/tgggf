@@ -575,35 +575,85 @@ object TopicGenerationNativeExecutor {
             }
             val errorMessage = error.message?.trim().takeUnless { it.isNullOrBlank() }
                 ?: "Ошибка native topic generation"
-            markSessionError(sessions, sessionIndex, errorMessage)
-            repository.writeStoreJson("generatorSessions", sessions.toString())
-            appendStatePatch(
-                runtimeRepository = runtimeRepository,
-                scopeId = sessionId,
-                jobId = job.id,
-                stores =
-                    JSONObject().apply {
-                        put("generatorSessions", JSONArray(sessions.toString()))
+            runCatching {
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stage = "iteration_failed",
+                    level = "error",
+                    message = "Topic generation native iteration failed",
+                    details = JSONObject().apply {
+                        put("error", errorMessage)
                     },
-            )
-            jobs.cancelJob(job.id)
-            syncDesiredState(
-                runtimeRepository = runtimeRepository,
-                sessionId = sessionId,
-                enabled = false,
-                delayMs = delayMs,
-            )
-            appendRuntimeEvent(
-                runtimeRepository = runtimeRepository,
-                scopeId = sessionId,
-                jobId = job.id,
-                stage = "iteration_failed",
-                level = "error",
-                message = "Topic generation native iteration failed",
-                details = JSONObject().apply {
-                    put("error", errorMessage)
-                },
-            )
+                )
+            }
+            runCatching {
+                markSessionError(sessions, sessionIndex, errorMessage)
+                repository.writeStoreJson("generatorSessions", sessions.toString())
+                appendStatePatch(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stores =
+                        JSONObject().apply {
+                            put("generatorSessions", JSONArray(sessions.toString()))
+                        },
+                )
+            }.onFailure { stateSyncError ->
+                runCatching {
+                    appendRuntimeEvent(
+                        runtimeRepository = runtimeRepository,
+                        scopeId = sessionId,
+                        jobId = job.id,
+                        stage = "iteration_failure_state_sync_failed",
+                        level = "warn",
+                        message = "Failed to persist topic error state patch",
+                        details = JSONObject().apply {
+                            put("error", stateSyncError.message?.trim().orEmpty())
+                        },
+                    )
+                }
+            }
+            runCatching {
+                jobs.cancelJob(job.id)
+            }.onFailure { cancelError ->
+                runCatching {
+                    appendRuntimeEvent(
+                        runtimeRepository = runtimeRepository,
+                        scopeId = sessionId,
+                        jobId = job.id,
+                        stage = "iteration_failure_cancel_failed",
+                        level = "warn",
+                        message = "Failed to cancel topic job after iteration failure",
+                        details = JSONObject().apply {
+                            put("error", cancelError.message?.trim().orEmpty())
+                        },
+                    )
+                }
+            }
+            runCatching {
+                syncDesiredState(
+                    runtimeRepository = runtimeRepository,
+                    sessionId = sessionId,
+                    enabled = false,
+                    delayMs = delayMs,
+                )
+            }.onFailure { desiredStateError ->
+                runCatching {
+                    appendRuntimeEvent(
+                        runtimeRepository = runtimeRepository,
+                        scopeId = sessionId,
+                        jobId = job.id,
+                        stage = "iteration_failure_desired_state_sync_failed",
+                        level = "warn",
+                        message = "Failed to disable desired-state after iteration failure",
+                        details = JSONObject().apply {
+                            put("error", desiredStateError.message?.trim().orEmpty())
+                        },
+                    )
+                }
+            }
             ForegroundSyncService.updateWorkerStatus(
                 context = context,
                 worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
