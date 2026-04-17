@@ -20,6 +20,10 @@ import {
   reconcilePersistentMemories,
   relationshipStageFromDepth,
 } from "./personaDynamics";
+import {
+  normalizeInfluenceProfile,
+  resolveInfluenceCurrentIntent,
+} from "./influenceProfile";
 import type { PersonaControlPayload } from "./personaDynamics";
 import { splitAssistantContent } from "./messageContent";
 import {
@@ -36,6 +40,7 @@ import type {
   PersonaMemory,
   PersonaRuntimeState,
   RelationshipStage,
+  InfluenceProfile,
 } from "./types";
 
 type PersonaInput = Omit<
@@ -78,6 +83,9 @@ interface AppState {
   deleteChat: (chatId: string) => Promise<void>;
   renameChat: (chatId: string, title: string) => Promise<void>;
   setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
+  setActiveInfluenceProfile: (
+    profile: Partial<InfluenceProfile> | null,
+  ) => Promise<void>;
   updateActivePersonaState: (
     patch: Partial<
       Pick<
@@ -863,6 +871,59 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  setActiveInfluenceProfile: async (profile) => {
+    const state = get();
+    const activeChatId = state.activeChatId;
+    const activePersona = state.personas.find(
+      (persona) => persona.id === state.activePersonaId,
+    );
+    if (!activeChatId || !activePersona) return;
+
+    try {
+      const loadedState =
+        state.activePersonaState ?? (await dbApi.getPersonaState(activeChatId));
+      const currentState = ensurePersonaState(
+        loadedState ?? undefined,
+        activePersona,
+        activeChatId,
+      );
+      const updatedAt = nowIso();
+      if (!profile) {
+        const nextState = ensurePersonaState(
+          {
+            ...currentState,
+            currentIntent: undefined,
+            influenceProfile: undefined,
+            updatedAt,
+          },
+          activePersona,
+          activeChatId,
+        );
+        nextState.updatedAt = updatedAt;
+        await dbApi.savePersonaState(nextState);
+        set({ activePersonaState: nextState, error: null });
+        return;
+      }
+
+      const normalizedProfile = normalizeInfluenceProfile(profile, updatedAt);
+      const nextState = ensurePersonaState(
+        {
+          ...currentState,
+          currentIntent: resolveInfluenceCurrentIntent(normalizedProfile),
+          influenceProfile: normalizedProfile,
+          updatedAt,
+        },
+        activePersona,
+        activeChatId,
+      );
+      nextState.updatedAt = updatedAt;
+      await dbApi.savePersonaState(nextState);
+      set({ activePersonaState: nextState, error: null });
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
   updateActivePersonaState: async (patch) => {
     const state = get();
     const activeChatId = state.activeChatId;
@@ -1106,6 +1167,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChat?.lastResponseId,
         {
           runtimeState,
+          influenceProfile: runtimeState.influenceProfile,
+          currentIntent: runtimeState.currentIntent,
           memoryCard,
           recentMessages,
           conversationSummary,

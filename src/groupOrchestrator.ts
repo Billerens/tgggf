@@ -79,6 +79,48 @@ function clip(value: string, max = 220) {
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function collectMessageVisualDescriptions(message: GroupMessage) {
+  const candidates = [
+    ...(message.comfyImageDescriptions ?? []),
+    ...(message.comfyImageDescription ? [message.comfyImageDescription] : []),
+  ]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (candidates.length === 0) return [];
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const value of candidates) {
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(value);
+  }
+  return deduped;
+}
+
+function buildPromptMessageContent(message: GroupMessage, contentMaxLen: number) {
+  const baseContent = clip(message.content || "", contentMaxLen);
+  const visualDescriptions = collectMessageVisualDescriptions(message)
+    .slice(0, 2)
+    .map((value) => clip(value, 170));
+  const attachmentCount = message.imageAttachments?.length ?? 0;
+  const contextParts: string[] = [];
+  if (visualDescriptions.length > 0) {
+    contextParts.push(`visual_context: ${visualDescriptions.join(" | ")}`);
+  }
+  if (attachmentCount > 0) {
+    contextParts.push(`images_attached: ${attachmentCount}`);
+  }
+  if (contextParts.length === 0) {
+    return baseContent;
+  }
+  const combined =
+    baseContent.length > 0
+      ? `${baseContent} [${contextParts.join("; ")}]`
+      : `[${contextParts.join("; ")}]`;
+  return clip(combined, contentMaxLen + 260);
+}
+
 function sanitizePersonaVisibleText(raw: string) {
   return raw
     .replace(/!\[[^\]]*]\([^)]+\)/gi, "")
@@ -377,7 +419,7 @@ export async function requestLlmOrchestratorDecision(
     .map((message) => ({
       author: message.authorDisplayName,
       authorType: message.authorType,
-      content: clip(message.content, 180),
+      content: buildPromptMessageContent(message, 220),
     }));
   const recentEvents = input.events
     .filter((event) => event.roomId === input.room.id)
@@ -494,12 +536,16 @@ export async function requestLlmPersonaMessage(params: {
     .map((message) => ({
       author: message.authorDisplayName,
       authorType: message.authorType,
-      content: clip(message.content, params.previousResponseId ? 170 : 220),
+      content: buildPromptMessageContent(
+        message,
+        params.previousResponseId ? 220 : 280,
+      ),
     }));
 
   const systemPrompt = buildGroupPersonaSystemPrompt({
     room: params.room,
     persona: params.speaker,
+    personaState: params.personaState,
     userName: params.userName,
     participantNames: params.participantNames,
   });

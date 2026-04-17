@@ -213,6 +213,7 @@ export default function App() {
     deleteChat,
     renameChat,
     setChatStyleStrength,
+    setActiveInfluenceProfile,
     updateActivePersonaState,
     addManualMemory,
     updateActiveMemory,
@@ -241,6 +242,7 @@ export default function App() {
     selectGroupRoom,
     sendUserGroupMessage,
     setActiveGroupRoomStatus,
+    setGroupPersonaInfluenceProfile,
     runActiveGroupIteration,
     retryGroupMessageImages,
     regenerateGroupMessageResponse,
@@ -318,6 +320,12 @@ export default function App() {
     PersonaLookPack[]
   >([]);
   const [generationTopic, setGenerationTopic] = useState("");
+  const [generationPromptMode, setGenerationPromptMode] = useState<
+    "theme_llm" | "direct_prompt"
+  >("theme_llm");
+  const [generationDirectPromptSeed, setGenerationDirectPromptSeed] = useState<
+    number | null
+  >(null);
   const [generationInfinite, setGenerationInfinite] = useState(false);
   const [generationCountLimit, setGenerationCountLimit] = useState(5);
   const [generationDelaySeconds, setGenerationDelaySeconds] = useState(2);
@@ -494,11 +502,15 @@ export default function App() {
     personas,
     activePersonaId,
     generationTopic,
+    generationPromptMode,
+    generationDirectPromptSeed,
     generationInfinite,
     generationCountLimit,
     generationDelaySeconds,
     generationIsRunning,
     setGenerationTopic,
+    setGenerationPromptMode,
+    setGenerationDirectPromptSeed,
     setGenerationInfinite,
     setGenerationCountLimit,
     setGenerationDelaySeconds,
@@ -560,12 +572,19 @@ export default function App() {
     chatImageMetaByUrl,
     setGenerationSessions,
   });
-  const { runGenerationStep, startGeneration, stopGeneration } = useTopicGenerator({
+  const {
+    runGenerationStep,
+    startGeneration,
+    startSingleGeneration,
+    stopGeneration,
+  } = useTopicGenerator({
     isAndroidRuntime,
     settings,
     personas,
     generationPersonaId,
     generationTopic,
+    generationPromptMode,
+    generationDirectPromptSeed,
     generationInfinite,
     generationCountLimit,
     generationDelaySeconds,
@@ -1067,6 +1086,10 @@ export default function App() {
             generationSessionId={generationSessionId}
             topic={generationTopic}
             onTopicChange={setGenerationTopic}
+            promptMode={generationPromptMode}
+            onPromptModeChange={setGenerationPromptMode}
+            directPromptSeed={generationDirectPromptSeed}
+            onDirectPromptSeedChange={setGenerationDirectPromptSeed}
             isInfinite={generationInfinite}
             onInfiniteChange={setGenerationInfinite}
             countLimit={generationCountLimit}
@@ -1088,12 +1111,20 @@ export default function App() {
             onEnhanceImage={enhanceSharedImage}
             onRegenerateImage={regenerateSharedImage}
             onStart={() => void startGeneration()}
+            onSingleGenerate={() => void startSingleGeneration()}
+            canSingleGenerate={Boolean(
+              !generationIsRunning &&
+                generationSessionId &&
+                generationActivePersona &&
+                generationTopic.trim(),
+            )}
             onStop={stopGeneration}
           />
         ) : sidebarTab === "groups" ? (
           <GroupChatPane
             activeRoom={activeGroupRoom}
             participants={groupParticipants}
+            personaStates={groupPersonaStates}
             messages={groupMessages}
             events={groupEvents}
             personas={personas}
@@ -1129,6 +1160,9 @@ export default function App() {
                 userName: settings.userName,
               })
             }
+            onSetPersonaInfluenceProfile={(roomId, personaId, profile) =>
+              void setGroupPersonaInfluenceProfile(roomId, personaId, profile)
+            }
             onOpenChatDetails={() => setShowGroupChatDetailsModal(true)}
           />
         ) : (
@@ -1142,6 +1176,8 @@ export default function App() {
             setMessageInput={setMessageInput}
             isLoading={isLoading}
             activePersonaState={activePersonaState}
+            activeInfluenceProfile={activePersonaState?.influenceProfile ?? null}
+            activeCurrentIntent={activePersonaState?.currentIntent ?? null}
             memoryCount={activeMemories.length}
             showSystemImageBlock={settings.showSystemImageBlock}
             showStatusChangeDetails={settings.showStatusChangeDetails}
@@ -1158,6 +1194,12 @@ export default function App() {
             }}
             onResolveRelationshipProposal={(messageId, decision) => {
               void resolveRelationshipProposal(messageId, decision);
+            }}
+            onSaveInfluenceProfile={(profile) => {
+              void setActiveInfluenceProfile(profile);
+            }}
+            onResetInfluenceProfile={() => {
+              void setActiveInfluenceProfile(null);
             }}
             onOpenSidebar={() => {
               setSidebarTab("personas");

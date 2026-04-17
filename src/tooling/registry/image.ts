@@ -10,6 +10,7 @@ import type { RuntimeToolConfig, ToolValidationResult } from "./types";
 
 export interface ThemedPromptToolPayload {
   prompt: string;
+  prompts: string[];
   themeTags: string[];
 }
 
@@ -123,7 +124,10 @@ function normalizeThemedPromptToolPayload(
     toTrimmedString(record.comfyPrompt),
   ].filter(Boolean);
   const structuredPrompts = extractComfyPromptsFromStructuredRecord(record);
-  const prompt = toTrimmedString(promptCandidates[0] ?? structuredPrompts[0]);
+  const prompts = Array.from(
+    new Set([...promptCandidates, ...structuredPrompts].map((item) => item.trim())),
+  ).filter(Boolean);
+  const prompt = toTrimmedString(prompts[0]);
   if (!prompt) {
     return { ok: false, reason: "themed_prompt_missing_prompt" };
   }
@@ -132,6 +136,7 @@ function normalizeThemedPromptToolPayload(
     ok: true,
     value: {
       prompt,
+      prompts,
       themeTags: extractThemeTagsFromStructuredRecord(record),
     },
   };
@@ -147,10 +152,14 @@ function normalizeThemedPromptFromContent(
   if (!prompt) {
     return { ok: false, reason: "themed_prompt_missing_prompt" };
   }
+  const normalizedPrompts = Array.from(new Set(prompts.map((item) => item.trim()))).filter(
+    Boolean,
+  );
   return {
     ok: true,
     value: {
       prompt,
+      prompts: normalizedPrompts.length > 0 ? normalizedPrompts : [prompt],
       themeTags: extractThemeTagsFromContent(content, fallbackThemeTags, topic),
     },
   };

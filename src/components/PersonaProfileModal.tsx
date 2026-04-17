@@ -1,13 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { ExternalLink, X } from "lucide-react";
 import { dbApi } from "../db";
+import {
+  createEmptyInfluenceProfile,
+  normalizeInfluenceProfile,
+  resolveInfluenceCurrentIntent,
+} from "../influenceProfile";
 import { extractImageAssetIdFromIdbUrl } from "../personaAvatar";
-import type { Persona } from "../types";
+import type { InfluenceProfile, Persona } from "../types";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 
 interface PersonaProfileModalProps {
   open: boolean;
   persona: Persona | null;
+  influenceProfile?: InfluenceProfile | null;
+  currentIntent?: string | null;
+  onSaveInfluenceProfile?: (profile: InfluenceProfile) => void;
+  onResetInfluenceProfile?: () => void;
   onClose: () => void;
 }
 
@@ -19,6 +28,8 @@ interface PersonaImageEntry {
   imageId: string;
   externalUrl: string;
 }
+
+type PersonaProfileTab = "profile" | "behavior";
 
 function resolveExternalUrl(value: string) {
   const normalized = value.trim();
@@ -47,6 +58,10 @@ function labelForSlot(slot: PersonaImageSlot) {
 export function PersonaProfileModal({
   open,
   persona,
+  influenceProfile,
+  currentIntent,
+  onSaveInfluenceProfile,
+  onResetInfluenceProfile,
   onClose,
 }: PersonaProfileModalProps) {
   const [imageSrcBySlot, setImageSrcBySlot] = useState<
@@ -63,6 +78,11 @@ export function PersonaProfileModal({
     src: string;
     alt: string;
   } | null>(null);
+  const [influenceDraft, setInfluenceDraft] = useState<InfluenceProfile>(() =>
+    createEmptyInfluenceProfile(),
+  );
+  const [influenceDirty, setInfluenceDirty] = useState(false);
+  const [activeTab, setActiveTab] = useState<PersonaProfileTab>("profile");
 
   const imageEntries = useMemo<PersonaImageEntry[]>(() => {
     if (!persona) return [];
@@ -149,6 +169,23 @@ export function PersonaProfileModal({
   }, [imageEntries, open, persona]);
 
   useEffect(() => {
+    if (!open || !persona) {
+      setInfluenceDraft(createEmptyInfluenceProfile());
+      setInfluenceDirty(false);
+      setActiveTab("profile");
+      return;
+    }
+    setInfluenceDraft(
+      normalizeInfluenceProfile(
+        influenceProfile ?? createEmptyInfluenceProfile(),
+        influenceProfile?.updatedAt || new Date().toISOString(),
+      ),
+    );
+    setInfluenceDirty(false);
+    setActiveTab("profile");
+  }, [influenceProfile, open, persona]);
+
+  useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -160,6 +197,26 @@ export function PersonaProfileModal({
   }, [onClose, open]);
 
   if (!open || !persona) return null;
+  const canEditInfluence = Boolean(onSaveInfluenceProfile || onResetInfluenceProfile);
+  const normalizedDraft = normalizeInfluenceProfile(
+    influenceDraft,
+    influenceDraft.updatedAt || new Date().toISOString(),
+  );
+  const derivedIntent =
+    currentIntent?.trim() || resolveInfluenceCurrentIntent(normalizedDraft) || "—";
+  const sectionMeta = [
+    { key: "thoughts" as const, label: "Мысли", addLabel: "Добавить мысль" },
+    { key: "desires" as const, label: "Желания", addLabel: "Добавить желание" },
+    { key: "goals" as const, label: "Цели", addLabel: "Добавить цель" },
+  ];
+
+  const patchInfluenceDraft = (updater: (prev: InfluenceProfile) => InfluenceProfile) => {
+    setInfluenceDraft((prev) => ({
+      ...updater(prev),
+      updatedAt: new Date().toISOString(),
+    }));
+    setInfluenceDirty(true);
+  };
 
   const avatarSrc = imageSrcBySlot.avatar;
   const personalPhotoEntries = imageEntries
@@ -216,99 +273,333 @@ export function PersonaProfileModal({
           </button>
         </header>
 
+        <div className="modal-tabs persona-profile-tabs">
+          <button
+            type="button"
+            className={activeTab === "profile" ? "active" : ""}
+            onClick={() => setActiveTab("profile")}
+          >
+            Профиль
+          </button>
+          <button
+            type="button"
+            className={activeTab === "behavior" ? "active" : ""}
+            onClick={() => setActiveTab("behavior")}
+          >
+            Поведение в чате
+          </button>
+        </div>
+
         <div className="persona-profile-scroll">
-          <section className="persona-profile-head">
-            <div className="persona-profile-avatar-wrap">
-              {avatarDisplaySrc ? (
-                <img
-                  src={avatarDisplaySrc}
-                  alt={`${persona.name} avatar`}
-                  className="persona-profile-avatar"
-                  loading="lazy"
-                />
-              ) : (
-                <div className="persona-profile-avatar persona-profile-avatar-fallback">
-                  {persona.name.trim().charAt(0).toUpperCase()}
+          {activeTab === "profile" ? (
+            <>
+              <section className="persona-profile-head">
+                <div className="persona-profile-avatar-wrap">
+                  {avatarDisplaySrc ? (
+                    <img
+                      src={avatarDisplaySrc}
+                      alt={`${persona.name} avatar`}
+                      className="persona-profile-avatar"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="persona-profile-avatar persona-profile-avatar-fallback">
+                      {persona.name.trim().charAt(0).toUpperCase()}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div className="persona-profile-head-text">
-              <h3>{persona.name}</h3>
-              <p>{persona.advanced.core.archetype || "Персона"}</p>
-            </div>
-          </section>
+                <div className="persona-profile-head-text">
+                  <h3>{persona.name}</h3>
+                  <p>{persona.advanced.core.archetype || "Персона"}</p>
+                </div>
+              </section>
 
-          <section className="persona-profile-section-card">
-            <div className="persona-profile-section-head">
-              <h4>Личные фото</h4>
-              {activeImageSrc ? (
-                <a
-                  href={activeImageSrc}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="attachment-link"
-                >
-                  Открыть <ExternalLink size={14} />
-                </a>
-              ) : null}
-            </div>
+              <section className="persona-profile-section-card">
+                <div className="persona-profile-section-head">
+                  <h4>Личные фото</h4>
+                  {activeImageSrc ? (
+                    <a
+                      href={activeImageSrc}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="attachment-link"
+                    >
+                      Открыть <ExternalLink size={14} />
+                    </a>
+                  ) : null}
+                </div>
 
-            <div className="persona-profile-photo-strip" aria-label="Миниатюры фото">
-              {imageEntries.map((entry) => {
-                const src = imageSrcBySlot[entry.key];
-                const isActive = Boolean(src) && entry.key === selectedImageKey;
-                return (
-                  <button
-                    key={entry.key}
-                    type="button"
-                    className={`persona-profile-photo-thumb ${isActive ? "active" : ""}`}
-                    disabled={!src}
-                    onClick={() => {
-                      if (!src) return;
-                      setSelectedImageKey(entry.key);
-                      setPreviewImage({
-                        src,
-                        alt: `${persona.name}-${entry.label}`,
-                      });
-                    }}
-                    title={labelForSlot(entry.key)}
-                    aria-label={`Показать фото ${labelForSlot(entry.key)}`}
-                  >
-                    {src ? (
-                      <img
-                        src={src}
-                        alt={`${persona.name}-${entry.label}-thumb`}
-                        loading="lazy"
-                      />
+                <div className="persona-profile-photo-strip" aria-label="Миниатюры фото">
+                  {imageEntries.map((entry) => {
+                    const src = imageSrcBySlot[entry.key];
+                    const isActive = Boolean(src) && entry.key === selectedImageKey;
+                    return (
+                      <button
+                        key={entry.key}
+                        type="button"
+                        className={`persona-profile-photo-thumb ${isActive ? "active" : ""}`}
+                        disabled={!src}
+                        onClick={() => {
+                          if (!src) return;
+                          setSelectedImageKey(entry.key);
+                          setPreviewImage({
+                            src,
+                            alt: `${persona.name}-${entry.label}`,
+                          });
+                        }}
+                        title={labelForSlot(entry.key)}
+                        aria-label={`Показать фото ${labelForSlot(entry.key)}`}
+                      >
+                        {src ? (
+                          <img
+                            src={src}
+                            alt={`${persona.name}-${entry.label}-thumb`}
+                            loading="lazy"
+                          />
+                        ) : (
+                          <span>{labelForSlot(entry.key).charAt(0)}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                {!activeImageSrc ? (
+                  <p className="persona-profile-empty">Фото пока отсутствуют</p>
+                ) : null}
+              </section>
+
+              <section className="persona-profile-section-card">
+                <div className="persona-profile-section-head">
+                  <h4>Детали профиля</h4>
+                </div>
+                {profileRows.length === 0 ? (
+                  <p className="persona-profile-empty">Нет данных</p>
+                ) : (
+                  <dl className="persona-profile-fields">
+                    {profileRows.map((row) => (
+                      <div key={row.label}>
+                        <dt>{row.label}</dt>
+                        <dd>{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+              </section>
+            </>
+          ) : (
+            <>
+              <section className="persona-profile-head persona-profile-head-compact">
+                <div className="persona-profile-avatar-wrap">
+                  {avatarDisplaySrc ? (
+                    <img
+                      src={avatarDisplaySrc}
+                      alt={`${persona.name} avatar`}
+                      className="persona-profile-avatar"
+                      loading="lazy"
+                    />
+                  ) : (
+                    <div className="persona-profile-avatar persona-profile-avatar-fallback">
+                      {persona.name.trim().charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                </div>
+                <div className="persona-profile-head-text">
+                  <h3>Поведение: {persona.name}</h3>
+                  <p>Настройки реакций персоны в этом чате</p>
+                </div>
+              </section>
+
+              <section className="persona-profile-section-card persona-influence-card">
+                <div className="persona-influence-top">
+                  <div>
+                    <div className="persona-profile-section-head">
+                      <h4>Вектор внушения</h4>
+                    </div>
+                    <p className="persona-influence-hint">
+                      Скрытая механика: персона воспринимает этот вектор как собственные
+                      мысли и цели.
+                    </p>
+                  </div>
+                  <label className="profile-toggle-row profile-toggle-row-spread">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(influenceDraft.enabled)}
+                      disabled={!canEditInfluence}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        patchInfluenceDraft((prev) => ({
+                          ...prev,
+                          enabled: checked,
+                        }));
+                      }}
+                    />
+                    <span>Активно</span>
+                  </label>
+                </div>
+
+                <div className="persona-influence-focus">
+                  <span>Текущий фокус</span>
+                  <strong>{derivedIntent}</strong>
+                </div>
+
+                {sectionMeta.map((section) => (
+                  <div key={section.key} className="persona-influence-section">
+                    <div className="persona-influence-section-head">
+                      <h5>{section.label}</h5>
+                      <button
+                        type="button"
+                        className="mini"
+                        disabled={!canEditInfluence}
+                        onClick={() =>
+                          patchInfluenceDraft((prev) => ({
+                            ...prev,
+                            [section.key]: [
+                              ...prev[section.key],
+                              {
+                                text: "",
+                                strength:
+                                  section.key === "thoughts"
+                                    ? 45
+                                    : section.key === "desires"
+                                      ? 60
+                                      : 70,
+                              },
+                            ].slice(0, 8),
+                          }))
+                        }
+                      >
+                        {section.addLabel}
+                      </button>
+                    </div>
+                    {influenceDraft[section.key].length === 0 ? (
+                      <p className="persona-influence-empty">Пока пусто</p>
                     ) : (
-                      <span>{labelForSlot(entry.key).charAt(0)}</span>
+                      influenceDraft[section.key].map((entry, index) => (
+                        <div key={`${section.key}-${index}`} className="persona-influence-row">
+                          <input
+                            type="text"
+                            value={entry.text}
+                            disabled={!canEditInfluence}
+                            onChange={(event) => {
+                              const nextText = event.currentTarget.value;
+                              patchInfluenceDraft((prev) => ({
+                                ...prev,
+                                [section.key]: prev[section.key].map((item, itemIndex) =>
+                                  itemIndex === index
+                                    ? { ...item, text: nextText }
+                                    : item,
+                                ),
+                              }));
+                            }}
+                            placeholder="Текст влияния"
+                          />
+                          <label className="persona-influence-strength">
+                            <span>Сила</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              value={entry.strength}
+                              disabled={!canEditInfluence}
+                              onChange={(event) => {
+                                const nextStrength = Number(event.currentTarget.value) || 0;
+                                patchInfluenceDraft((prev) => ({
+                                  ...prev,
+                                  [section.key]: prev[section.key].map((item, itemIndex) =>
+                                    itemIndex === index
+                                      ? {
+                                          ...item,
+                                          strength: Math.max(
+                                            0,
+                                            Math.min(100, nextStrength),
+                                          ),
+                                        }
+                                      : item,
+                                  ),
+                                }));
+                              }}
+                              aria-label={`${section.label} сила`}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="mini"
+                            disabled={!canEditInfluence}
+                            onClick={() =>
+                              patchInfluenceDraft((prev) => ({
+                                ...prev,
+                                [section.key]: prev[section.key].filter(
+                                  (_, itemIndex) => itemIndex !== index,
+                                ),
+                              }))
+                            }
+                          >
+                            Удалить
+                          </button>
+                        </div>
+                      ))
                     )}
-                  </button>
-                );
-              })}
-            </div>
-            {!activeImageSrc ? (
-              <p className="persona-profile-empty">Фото пока отсутствуют</p>
-            ) : null}
-          </section>
-
-          <section className="persona-profile-section-card">
-            <div className="persona-profile-section-head">
-              <h4>Детали профиля</h4>
-            </div>
-            {profileRows.length === 0 ? (
-              <p className="persona-profile-empty">Нет данных</p>
-            ) : (
-              <dl className="persona-profile-fields">
-                {profileRows.map((row) => (
-                  <div key={row.label}>
-                    <dt>{row.label}</dt>
-                    <dd>{row.value}</dd>
                   </div>
                 ))}
-              </dl>
-            )}
-          </section>
+
+                <label className="persona-influence-freeform">
+                  <span>Свободная инструкция</span>
+                  <textarea
+                    value={influenceDraft.freeform}
+                    disabled={!canEditInfluence}
+                    rows={3}
+                    onChange={(event) => {
+                      const nextFreeform = event.currentTarget.value;
+                      patchInfluenceDraft((prev) => ({
+                        ...prev,
+                        freeform: nextFreeform,
+                      }));
+                    }}
+                  />
+                </label>
+                {canEditInfluence ? (
+                  <div className="persona-profile-actions">
+                    <button
+                      type="button"
+                      className="mini"
+                      disabled={!influenceDirty}
+                      onClick={() => {
+                        const cleared = createEmptyInfluenceProfile(
+                          new Date().toISOString(),
+                        );
+                        if (onResetInfluenceProfile) {
+                          onResetInfluenceProfile();
+                        } else if (onSaveInfluenceProfile) {
+                          onSaveInfluenceProfile(cleared);
+                        }
+                        setInfluenceDraft(cleared);
+                        setInfluenceDirty(false);
+                      }}
+                    >
+                      Сбросить
+                    </button>
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={!onSaveInfluenceProfile || !influenceDirty}
+                      onClick={() => {
+                        if (!onSaveInfluenceProfile) return;
+                        const nextProfile = normalizeInfluenceProfile(
+                          influenceDraft,
+                          new Date().toISOString(),
+                        );
+                        onSaveInfluenceProfile(nextProfile);
+                        setInfluenceDraft(nextProfile);
+                        setInfluenceDirty(false);
+                      }}
+                    >
+                      Сохранить
+                    </button>
+                  </div>
+                ) : null}
+              </section>
+            </>
+          )}
         </div>
       </div>
       <ImagePreviewModal

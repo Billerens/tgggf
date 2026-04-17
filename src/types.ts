@@ -56,6 +56,19 @@ export type GroupMemoryKind =
   | "rule"
   | "decision";
 export type GroupMemoryLayer = "short_term" | "episodic" | "long_term";
+export interface InfluenceProfileEntry {
+  text: string;
+  strength: number;
+}
+
+export interface InfluenceProfile {
+  enabled: boolean;
+  thoughts: InfluenceProfileEntry[];
+  desires: InfluenceProfileEntry[];
+  goals: InfluenceProfileEntry[];
+  freeform: string;
+  updatedAt: string;
+}
 export type UserGender = "unspecified" | "male" | "female" | "nonbinary";
 export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
 export type AuthMode = "none" | "bearer" | "token" | "basic" | "custom";
@@ -325,6 +338,7 @@ export interface GroupPersonaState {
   tension: number;
   activeTopics: string[];
   currentIntent?: string;
+  influenceProfile?: InfluenceProfile;
   aliveScore: number;
   updatedAt: string;
 }
@@ -410,6 +424,11 @@ export interface GeneratorSession {
   personaId: string;
   name: string;
   topic: string;
+  promptMode: "theme_llm" | "direct_prompt";
+  directPromptSeed: number | null;
+  directPromptSeedArmed: boolean;
+  singleRunRequested: boolean;
+  themePromptQueue: string[];
   isInfinite: boolean;
   requestedCount: number | null;
   delaySeconds: number;
@@ -434,6 +453,8 @@ export interface PersonaRuntimeState {
   relationshipType: RelationshipType;
   relationshipDepth: number;
   relationshipStage: RelationshipStage;
+  currentIntent?: string;
+  influenceProfile?: InfluenceProfile;
   updatedAt: string;
 }
 

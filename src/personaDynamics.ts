@@ -8,6 +8,10 @@ import type {
   RelationshipStage,
   RelationshipType,
 } from "./types";
+import {
+  normalizeInfluenceProfile,
+  resolveInfluenceCurrentIntent,
+} from "./influenceProfile";
 
 interface LegacyMemoryRecord extends Omit<PersonaMemory, "layer"> {
   layer?: PersonaMemoryLayer;
@@ -226,6 +230,14 @@ function normalizeState(state: PersonaRuntimeState, personaId: string, chatId: s
   const relationshipDepth = Number.isFinite(rawDepth)
     ? clamp(Number(rawDepth), 0, 100)
     : relationshipDepthFromTrust(state.trust);
+  const normalizedInfluenceProfile = state.influenceProfile
+    ? normalizeInfluenceProfile(state.influenceProfile, state.updatedAt)
+    : undefined;
+  const currentIntentFromState =
+    typeof state.currentIntent === "string" ? state.currentIntent.trim() : "";
+  const currentIntent =
+    currentIntentFromState ||
+    resolveInfluenceCurrentIntent(normalizedInfluenceProfile);
 
   return {
     ...state,
@@ -265,6 +277,8 @@ function normalizeState(state: PersonaRuntimeState, personaId: string, chatId: s
     relationshipType,
     relationshipDepth,
     relationshipStage: relationshipStageFromDepth(relationshipDepth),
+    currentIntent: currentIntent || undefined,
+    influenceProfile: normalizedInfluenceProfile,
   };
 }
 
@@ -285,6 +299,8 @@ export function createInitialPersonaState(persona: Persona, chatId: string): Per
     relationshipType: "neutral",
     relationshipDepth: 12,
     relationshipStage: "new",
+    currentIntent: undefined,
+    influenceProfile: undefined,
     updatedAt: now,
   };
 }

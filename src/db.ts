@@ -494,7 +494,11 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
 
   const lastTickAtRaw = toOptionalTrimmedString(source.lastTickAt);
   const lastResponseId = toOptionalTrimmedString(source.lastResponseId);
-  const orchestratorUserFocusMessageId = toOptionalTrimmedString(
+  const hasOrchestratorUserFocusMessageId = Object.prototype.hasOwnProperty.call(
+    source,
+    "orchestratorUserFocusMessageId",
+  );
+  const orchestratorUserFocusMessageId = toTrimmedString(
     source.orchestratorUserFocusMessageId,
   );
 
@@ -519,7 +523,7 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
       ? { lastTickAt: toIsoDateString(lastTickAtRaw, updatedAt) }
       : {}),
     ...(lastResponseId ? { lastResponseId } : {}),
-    ...(orchestratorUserFocusMessageId
+    ...(hasOrchestratorUserFocusMessageId
       ? { orchestratorUserFocusMessageId }
       : {}),
     orchestratorVersion: toTrimmedString(source.orchestratorVersion) || "v0",
@@ -816,11 +820,30 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
 function normalizeGeneratorSession(
   session: GeneratorSession,
 ): GeneratorSession {
+  const MAX_COMFY_SEED = 1_125_899_906_842_624;
   const normalizedName = toTrimmedString((session as { name?: string }).name);
+  const normalizedPromptMode =
+    session.promptMode === "direct_prompt" ? "direct_prompt" : "theme_llm";
+  const normalizedDirectPromptSeed =
+    typeof session.directPromptSeed === "number" &&
+    Number.isFinite(session.directPromptSeed)
+      ? Math.max(1, Math.min(MAX_COMFY_SEED, Math.floor(session.directPromptSeed)))
+      : null;
+  const normalizedThemePromptQueue = Array.isArray(session.themePromptQueue)
+    ? session.themePromptQueue
+        .map((prompt) => (typeof prompt === "string" ? prompt.trim() : ""))
+        .filter(Boolean)
+    : [];
   const next: GeneratorSession = {
     ...session,
     name: normalizedName || "Новая сессия",
     topic: session.topic.trim(),
+    promptMode: normalizedPromptMode,
+    directPromptSeed: normalizedDirectPromptSeed,
+    directPromptSeedArmed:
+      Boolean(session.directPromptSeedArmed) && normalizedDirectPromptSeed !== null,
+    singleRunRequested: Boolean(session.singleRunRequested),
+    themePromptQueue: normalizedThemePromptQueue,
     status:
       session.status === "running" ||
       session.status === "stopped" ||

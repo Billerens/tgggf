@@ -79,6 +79,15 @@ describe("stateTransitions", () => {
           affectionToUser: 50,
           tension: 20,
           activeTopics: [],
+          currentIntent: "Укрепить связь",
+          influenceProfile: {
+            enabled: true,
+            thoughts: [{ text: "Сохранять эмпатию", strength: 52 }],
+            desires: [{ text: "Больше доверия", strength: 66 }],
+            goals: [{ text: "Укрепить связь", strength: 78 }],
+            freeform: "Вести к более глубокой эмоциональной связи",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
           aliveScore: 50,
           updatedAt: "2026-01-01T00:00:00.000Z",
         },
@@ -103,6 +112,10 @@ describe("stateTransitions", () => {
     });
     expect(updatedStates[0].energy).toBe(48);
     expect(updatedStates[0].engagement).toBe(53);
+    expect(updatedStates[0].currentIntent).toBe("Укрепить связь");
+    expect(updatedStates[0].influenceProfile?.goals[0]?.text).toBe(
+      "Укрепить связь",
+    );
     expect(updatedStates[1].engagement).toBe(41);
 
     const relation = buildRelationDynamicsAfterSpeech({

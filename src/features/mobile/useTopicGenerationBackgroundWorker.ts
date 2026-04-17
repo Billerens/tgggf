@@ -51,6 +51,7 @@ interface UseTopicGenerationBackgroundWorkerParams {
 
 const TOPIC_DELTA_SINCE_ID_KEY = "tg_gf_topic_delta_since_id_v2";
 const TOPIC_DELTA_POLL_MS = 1400;
+const COMFY_SEED_MAX = 1_125_899_906_842_624;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -222,6 +223,38 @@ function normalizeGeneratorSessionStatus(
   return null;
 }
 
+function normalizeGeneratorPromptMode(
+  value: unknown,
+): GeneratorSession["promptMode"] | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (normalized === "theme_llm" || normalized === "direct_prompt") {
+    return normalized;
+  }
+  return null;
+}
+
+function normalizeComfySeedValue(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value <= 0) return null;
+    return Math.max(1, Math.min(COMFY_SEED_MAX, Math.floor(value)));
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return Math.max(1, Math.min(COMFY_SEED_MAX, Math.floor(parsed)));
+  }
+  return null;
+}
+
+function normalizeThemePromptQueue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
+}
+
 function toFiniteInt(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return Math.floor(value);
@@ -317,6 +350,50 @@ async function applyTopicStatePatch(
       const normalizedUpdatedAt = patch.updatedAt.trim();
       if (normalizedUpdatedAt !== next.updatedAt) {
         next.updatedAt = normalizedUpdatedAt;
+        changed = true;
+      }
+    }
+
+    const nextPromptMode = normalizeGeneratorPromptMode(patch.promptMode);
+    if (nextPromptMode && nextPromptMode !== next.promptMode) {
+      next.promptMode = nextPromptMode;
+      changed = true;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "directPromptSeed")) {
+      const nextDirectPromptSeed = normalizeComfySeedValue(patch.directPromptSeed);
+      if (nextDirectPromptSeed !== next.directPromptSeed) {
+        next.directPromptSeed = nextDirectPromptSeed;
+        changed = true;
+      }
+    }
+
+    if (typeof patch.directPromptSeedArmed === "boolean") {
+      const normalizedArmed =
+        patch.directPromptSeedArmed && next.directPromptSeed !== null;
+      if (normalizedArmed !== next.directPromptSeedArmed) {
+        next.directPromptSeedArmed = normalizedArmed;
+        changed = true;
+      }
+    }
+
+    if (typeof patch.singleRunRequested === "boolean") {
+      if (patch.singleRunRequested !== next.singleRunRequested) {
+        next.singleRunRequested = patch.singleRunRequested;
+        changed = true;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch, "themePromptQueue")) {
+      const nextQueue = normalizeThemePromptQueue(patch.themePromptQueue);
+      const prevQueue = Array.isArray(next.themePromptQueue)
+        ? next.themePromptQueue
+        : [];
+      const hasQueueDiff =
+        nextQueue.length !== prevQueue.length ||
+        nextQueue.some((prompt, index) => prompt !== prevQueue[index]);
+      if (hasQueueDiff) {
+        next.themePromptQueue = nextQueue;
         changed = true;
       }
     }

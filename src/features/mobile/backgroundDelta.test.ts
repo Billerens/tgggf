@@ -34,7 +34,37 @@ describe('backgroundDelta', () => {
               kind: 'state_patch',
               entityType: 'stores',
               entityId: 'job-1',
-              payload: { stores: { groupRooms: [] } },
+              payload: {
+                stores: {
+                  groupRooms: [],
+                  groupPersonaStates: [
+                    {
+                      id: 'state-1',
+                      roomId: 'room-1',
+                      personaId: 'p1',
+                      mood: 'calm',
+                      trustToUser: 52,
+                      energy: 49,
+                      engagement: 57,
+                      initiative: 55,
+                      affectionToUser: 54,
+                      tension: 18,
+                      activeTopics: [],
+                      currentIntent: 'Укрепить связь',
+                      influenceProfile: {
+                        enabled: true,
+                        thoughts: [{ text: 'Сохранять эмпатию', strength: 52 }],
+                        desires: [{ text: 'Больше доверия', strength: 66 }],
+                        goals: [{ text: 'Укрепить связь', strength: 78 }],
+                        freeform: 'Вести к более глубокой эмоциональной связи',
+                        updatedAt: '2026-01-02T00:00:00.000Z',
+                      },
+                      aliveScore: 50,
+                      updatedAt: '2026-01-02T00:00:00.000Z',
+                    },
+                  ],
+                },
+              },
               createdAtMs: 123,
             },
           ],
@@ -64,6 +94,10 @@ describe('backgroundDelta', () => {
     expect(result.items[0].id).toBe(7);
     expect(result.items[0].scopeId).toBe('room-1');
     expect(result.items[0].kind).toBe('state_patch');
+    const payload = result.items[0].payload as {
+      stores?: { groupPersonaStates?: Array<{ influenceProfile?: { enabled?: boolean } }> };
+    };
+    expect(payload.stores?.groupPersonaStates?.[0]?.influenceProfile?.enabled).toBe(true);
   });
 
   it('sends ack payload and parses ack response', async () => {
