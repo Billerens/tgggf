@@ -539,9 +539,10 @@ export function useGroupIterationBackgroundWorker({
 
         let maxAppliedId = sinceId;
         const pendingAssetIds = new Set<string>();
+        const storePatches: Array<Record<string, unknown>> = [];
         for (const item of response.items) {
           if (item.kind === 'state_patch' && isRecord(item.payload) && isRecord(item.payload.stores)) {
-            await applyGroupStatePatch(item.payload.stores, preferredRoomId, syncGroupStateFromDb);
+            storePatches.push(item.payload.stores);
             for (const assetId of collectGroupPatchAssetIds(item.payload)) {
               pendingAssetIds.add(assetId);
             }
@@ -551,7 +552,30 @@ export function useGroupIterationBackgroundWorker({
           }
         }
         if (maxAppliedId > sinceId) {
-          await hydrateMissingImageAssetsByIds(Array.from(pendingAssetIds));
+          if (pendingAssetIds.size > 0) {
+            try {
+              await hydrateMissingImageAssetsByIds(Array.from(pendingAssetIds));
+            } catch (error) {
+              const errorMessage =
+                error instanceof Error
+                  ? error.message
+                  : 'native_group_delta_asset_hydrate_failed';
+              pushSystemLog({
+                level: 'warn',
+                eventType: 'group_iteration.native_asset_hydrate_failed',
+                message: 'Failed to hydrate group image assets before state patch apply',
+                details: {
+                  reason,
+                  roomId: preferredRoomId,
+                  assetCount: pendingAssetIds.size,
+                  error: errorMessage,
+                },
+              });
+            }
+          }
+          for (const stores of storePatches) {
+            await applyGroupStatePatch(stores, preferredRoomId, syncGroupStateFromDb);
+          }
           await ackBackgroundDelta({
             ackedUpToId: maxAppliedId,
             taskType: GROUP_ITERATION_JOB_TYPE,

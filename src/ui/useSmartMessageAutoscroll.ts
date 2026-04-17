@@ -276,24 +276,27 @@ export function useSmartMessageAutoscroll({
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    const nearBottom = isNearBottom({
+    const wasNearBottom = nearBottomRef.current;
+    const nearBottomNow = isNearBottom({
       scrollTop: container.scrollTop,
       scrollHeight: container.scrollHeight,
       clientHeight: container.clientHeight,
       thresholdPx: nearBottomThresholdPx,
     });
-    nearBottomRef.current = nearBottom;
+    const shouldStickToBottom = wasNearBottom || nearBottomNow;
 
-    if (nearBottom) {
+    if (shouldStickToBottom) {
       container.scrollTo({
         top: container.scrollHeight,
         behavior: "smooth",
       });
+      nearBottomRef.current = true;
       setUnreadCount(0);
       schedulePersist();
       return;
     }
 
+    nearBottomRef.current = nearBottomNow;
     setUnreadCount((previous) => previous + newIds.length);
   }, [messageIds, nearBottomThresholdPx, schedulePersist, streamContext]);
 
