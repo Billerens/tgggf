@@ -139,7 +139,7 @@ object NativeLlmClient {
                 messages = messages,
                 roomId = roomId,
                 limit = 8,
-                contentMaxLen = 180,
+                contentMaxLen = 220,
             )
         val recentEventLines =
             buildRecentEventLines(
@@ -251,7 +251,7 @@ object NativeLlmClient {
                 messages = messages,
                 roomId = roomId,
                 limit = if (previousResponseId == null) 8 else 5,
-                contentMaxLen = if (previousResponseId == null) 220 else 170,
+                contentMaxLen = if (previousResponseId == null) 280 else 220,
             )
         val relationLines =
             buildRelationLines(
@@ -655,8 +655,15 @@ object NativeLlmClient {
     }
 
     private fun resolveFocusedUserMessage(messages: JSONArray, room: JSONObject, roomId: String): JSONObject? {
-        val marker = room.optString("orchestratorUserFocusMessageId", "").trim()
-        if (marker.isNotBlank()) {
+        if (room.has("orchestratorUserFocusMessageId")) {
+            val marker =
+                when (val raw = room.opt("orchestratorUserFocusMessageId")) {
+                    is String -> raw.trim()
+                    else -> ""
+                }
+            if (marker.isBlank()) {
+                return null
+            }
             for (index in 0 until messages.length()) {
                 val message = messages.optJSONObject(index) ?: continue
                 if (message.optString("roomId", "").trim() != roomId) continue
@@ -742,12 +749,66 @@ object NativeLlmClient {
         for (index in 0 until messages.length()) {
             val message = messages.optJSONObject(index) ?: continue
             if (message.optString("roomId", "").trim() != roomId) continue
-            val content = message.optString("content", "")
+            val content = buildPromptMessageContent(message, contentMaxLen)
             val authorName = clipText(message.optString("authorDisplayName", "").trim(), 36)
             val authorType = message.optString("authorType", "").uppercase()
-            lines.add("$authorType $authorName: ${clipText(content, contentMaxLen)}")
+            lines.add("$authorType $authorName: $content")
         }
         return lines.takeLast(max(1, limit))
+    }
+
+    private fun buildPromptMessageContent(message: JSONObject, contentMaxLen: Int): String {
+        val baseContent = clipText(message.optString("content", ""), contentMaxLen)
+        val visualDescriptions =
+            collectMessageVisualDescriptions(message)
+                .take(2)
+                .map { description -> clipText(description, 170) }
+        val attachmentCount = message.optJSONArray("imageAttachments")?.length() ?: 0
+        val contextParts = mutableListOf<String>()
+        if (visualDescriptions.isNotEmpty()) {
+            contextParts.add("visual_context: ${visualDescriptions.joinToString(" | ")}")
+        }
+        if (attachmentCount > 0) {
+            contextParts.add("images_attached: $attachmentCount")
+        }
+        if (contextParts.isEmpty()) {
+            return baseContent
+        }
+        val combined =
+            if (baseContent.isNotBlank()) {
+                "$baseContent [${contextParts.joinToString("; ")}]"
+            } else {
+                "[${contextParts.joinToString("; ")}]"
+            }
+        return clipText(combined, contentMaxLen + 260)
+    }
+
+    private fun collectMessageVisualDescriptions(message: JSONObject): List<String> {
+        val values = mutableListOf<String>()
+        values.addAll(parseStringArrayFlexible(message.opt("comfyImageDescriptions")))
+        values.addAll(parseStringArrayFlexible(message.opt("comfy_image_descriptions")))
+        val singleDescription =
+            message
+                .optString(
+                    "comfyImageDescription",
+                    message.optString("comfy_image_description", ""),
+                ).trim()
+        if (singleDescription.isNotBlank()) {
+            values.add(singleDescription)
+        }
+        if (values.isEmpty()) return emptyList()
+
+        val seen = mutableSetOf<String>()
+        val deduped = mutableListOf<String>()
+        for (value in values) {
+            val normalized = value.trim()
+            if (normalized.isBlank()) continue
+            val key = normalized.lowercase()
+            if (seen.contains(key)) continue
+            seen.add(key)
+            deduped.add(normalized)
+        }
+        return deduped
     }
 
     private fun buildRecentEventLines(
@@ -1024,6 +1085,7 @@ object NativeLlmClient {
             "- если последний пользовательский вброс уже не влияет на текущий шаг, ставь clear;",
             "- не генерировать саму реплику персонажа.",
             "- для выбора очереди учитывай не только инициативность, но и динамику диалога: кто говорил недавно, кто давно молчит, упоминания и межперсональные отношения.",
+            "- персоны не обязаны ротироваться, если по твоему мнению последней персоне еще есть что сказать/добавить/отправить",
             "- не допускай доминирования 1-2 персон при наличии активных альтернатив: поддерживай ротацию участников.",
             "- если mode=personas_only, waitForUser всегда должен быть false, статус wait недопустим.",
             "",
@@ -1215,6 +1277,8 @@ object NativeLlmClient {
             "- не начинай каждый ответ с длинного приветствия/самопрезентации;",
             "- не описывай внешность, позы и сцену без прямого запроса;",
             "- максимум один вопрос в конце, если он действительно уместен;",
+            "- указывай собеседнику на ошибки (что-то нелогичное, отутствует/забыл приложить изображения, несостыковки)"
+            "- если тебе показывают картинку/фото, но в сообщении собеседника ее нет, то спроси, где она, укажи, что собеседник забыл ее приложить"
             "",
             "Формат ответа:",
             "- верни СТРОГО JSON-объект без markdown;",

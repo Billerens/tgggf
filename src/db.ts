@@ -494,7 +494,11 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
 
   const lastTickAtRaw = toOptionalTrimmedString(source.lastTickAt);
   const lastResponseId = toOptionalTrimmedString(source.lastResponseId);
-  const orchestratorUserFocusMessageId = toOptionalTrimmedString(
+  const hasOrchestratorUserFocusMessageId = Object.prototype.hasOwnProperty.call(
+    source,
+    "orchestratorUserFocusMessageId",
+  );
+  const orchestratorUserFocusMessageId = toTrimmedString(
     source.orchestratorUserFocusMessageId,
   );
 
@@ -519,7 +523,7 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
       ? { lastTickAt: toIsoDateString(lastTickAtRaw, updatedAt) }
       : {}),
     ...(lastResponseId ? { lastResponseId } : {}),
-    ...(orchestratorUserFocusMessageId
+    ...(hasOrchestratorUserFocusMessageId
       ? { orchestratorUserFocusMessageId }
       : {}),
     orchestratorVersion: toTrimmedString(source.orchestratorVersion) || "v0",

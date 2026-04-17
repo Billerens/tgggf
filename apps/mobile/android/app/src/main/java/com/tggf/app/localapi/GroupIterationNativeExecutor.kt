@@ -1040,7 +1040,7 @@ object GroupIterationNativeExecutor {
             }
         }
         if (userContextAction == "clear") {
-            nextRoom.remove("orchestratorUserFocusMessageId")
+            nextRoom.put("orchestratorUserFocusMessageId", "")
         }
         nextRoom.put(
             "state",
@@ -1722,8 +1722,15 @@ object GroupIterationNativeExecutor {
     }
 
     private fun findFocusedUserMessage(messages: JSONArray, room: JSONObject, roomId: String): JSONObject? {
-        val marker = room.optString("orchestratorUserFocusMessageId", "").trim()
-        if (marker.isNotBlank()) {
+        if (room.has("orchestratorUserFocusMessageId")) {
+            val marker =
+                when (val raw = room.opt("orchestratorUserFocusMessageId")) {
+                    is String -> raw.trim()
+                    else -> ""
+                }
+            if (marker.isBlank()) {
+                return null
+            }
             for (index in 0 until messages.length()) {
                 val message = messages.optJSONObject(index) ?: continue
                 if (message.optString("roomId", "").trim() != roomId) continue
