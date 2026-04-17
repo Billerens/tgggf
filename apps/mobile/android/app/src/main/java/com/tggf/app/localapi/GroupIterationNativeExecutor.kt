@@ -941,6 +941,20 @@ object GroupIterationNativeExecutor {
 
             if (promptsForImageGeneration.isNotEmpty()) {
                 imageGenerationExpected = promptsForImageGeneration.size
+                appendRuntimeEvent(
+                    runtime = runtime,
+                    scopeId = roomId,
+                    jobId = job.id,
+                    stage = "group_image_generation_plan",
+                    level = "info",
+                    message = "Native group image generation plan prepared",
+                    details = JSONObject().apply {
+                        put("messageId", messageId)
+                        put("personaId", activeSpeakerPersonaId)
+                        put("promptCount", promptsForImageGeneration.size)
+                        put("nativeGroupImagesEnabled", nativeGroupImagesEnabled)
+                    },
+                )
                 if (nativeGroupImagesEnabled) {
                     val imageResult =
                         runGroupImageGeneration(
@@ -973,6 +987,31 @@ object GroupIterationNativeExecutor {
                         details = JSONObject().apply {
                             put("messageId", messageId)
                             put("expected", promptsForImageGeneration.size)
+                            put("nativeGroupImagesEnabled", nativeGroupImagesEnabled)
+                            put(
+                                "androidNativeGroupImagesV1",
+                                if (settings.has("androidNativeGroupImagesV1")) {
+                                    settings.optBoolean("androidNativeGroupImagesV1", true)
+                                } else {
+                                    JSONObject.NULL
+                                },
+                            )
+                            put(
+                                "androidNativeGroupImagesV1Disable",
+                                if (settings.has("androidNativeGroupImagesV1Disable")) {
+                                    settings.optBoolean("androidNativeGroupImagesV1Disable", false)
+                                } else {
+                                    JSONObject.NULL
+                                },
+                            )
+                            put(
+                                "androidNativeGroupIterationV1",
+                                if (settings.has("androidNativeGroupIterationV1")) {
+                                    settings.optBoolean("androidNativeGroupIterationV1", true)
+                                } else {
+                                    JSONObject.NULL
+                                },
+                            )
                         },
                     )
                 }
@@ -1894,10 +1933,15 @@ object GroupIterationNativeExecutor {
     )
 
     private fun isNativeGroupImagesEnabled(settings: JSONObject): Boolean {
-        return settings.optBoolean(
-            "androidNativeGroupImagesV1",
-            settings.optBoolean("androidNativeGroupIterationV1", false),
-        )
+        // Only explicit image-pipeline flags can disable native image generation.
+        // Legacy group iteration flag must not disable images implicitly.
+        if (settings.has("androidNativeGroupImagesV1Disable")) {
+            return !settings.optBoolean("androidNativeGroupImagesV1Disable", false)
+        }
+        if (settings.has("androidNativeGroupImagesV1")) {
+            return settings.optBoolean("androidNativeGroupImagesV1", true)
+        }
+        return true
     }
 
     private fun findLatestPendingImageMessage(messages: JSONArray, roomId: String): JSONObject? {

@@ -254,6 +254,15 @@ const IMPORT_MODE_OPTIONS: Array<{ value: BackupImportMode; label: string }> = [
   { value: "replace", label: "Заменить текущие данные" },
 ];
 
+const LOG_SANITIZE_MAX_DEPTH = 5;
+const LOG_SANITIZE_MAX_OBJECT_KEYS = 60;
+const LOG_SANITIZE_MAX_ARRAY_ITEMS = 60;
+const LOG_SANITIZE_MAX_STRING_CHARS = 4_000;
+const LOG_DETAIL_VIEW_MAX_CHARS = 24_000;
+const LOG_CLIPBOARD_DETAIL_MAX_CHARS = 10_000;
+const LOG_CLIPBOARD_MAX_ENTRIES = 250;
+const LOG_CLIPBOARD_MAX_CHARS = 900_000;
+
 function formatDriveBackupDate(value: string | undefined) {
   if (!value) return "время неизвестно";
   const parsed = new Date(value);
@@ -360,17 +369,77 @@ function collectRecordValues(record: Record<string, unknown>, keys: string[]): R
   return result;
 }
 
-function formatDetailForView(value: unknown): string {
+function truncateString(value: string, maxChars: number) {
+  if (value.length <= maxChars) return value;
+  const omitted = value.length - maxChars;
+  return `${value.slice(0, maxChars)}\n... [truncated ${omitted} chars]`;
+}
+
+function sanitizeLogValue(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) return value;
+  if (depth > LOG_SANITIZE_MAX_DEPTH) {
+    return `[truncated: depth>${LOG_SANITIZE_MAX_DEPTH}]`;
+  }
+  if (typeof value === "string") {
+    if (/^data:[^,]+;base64,/i.test(value)) {
+      const commaIndex = value.indexOf(",");
+      const mime = commaIndex > 5 ? value.slice(5, commaIndex) : "data";
+      return `[data-url ${mime}; len=${value.length}]`;
+    }
+    return value.length > LOG_SANITIZE_MAX_STRING_CHARS
+      ? `${value.slice(0, LOG_SANITIZE_MAX_STRING_CHARS)}... [truncated ${value.length - LOG_SANITIZE_MAX_STRING_CHARS} chars]`
+      : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) {
+    const limited = value
+      .slice(0, LOG_SANITIZE_MAX_ARRAY_ITEMS)
+      .map((item) => sanitizeLogValue(item, depth + 1));
+    if (value.length > LOG_SANITIZE_MAX_ARRAY_ITEMS) {
+      limited.push(
+        `[+${value.length - LOG_SANITIZE_MAX_ARRAY_ITEMS} items truncated]`,
+      );
+    }
+    return limited;
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    const limited = entries.slice(0, LOG_SANITIZE_MAX_OBJECT_KEYS);
+    const next: Record<string, unknown> = {};
+    for (const [key, nested] of limited) {
+      next[key] = sanitizeLogValue(nested, depth + 1);
+    }
+    if (entries.length > LOG_SANITIZE_MAX_OBJECT_KEYS) {
+      next.__truncatedKeys = entries.length - LOG_SANITIZE_MAX_OBJECT_KEYS;
+    }
+    return next;
+  }
+  return String(value);
+}
+
+function safeStringifyForLog(value: unknown, maxChars: number): string {
   if (value === undefined || value === null) return "Нет данных";
   if (typeof value === "string") {
     const trimmed = value.trim();
-    return trimmed || "Нет данных";
+    if (!trimmed) return "Нет данных";
+    const sanitized = sanitizeLogValue(trimmed);
+    return truncateString(String(sanitized), maxChars);
   }
+  const sanitized = sanitizeLogValue(value);
   try {
-    return JSON.stringify(value, null, 2);
+    const serialized =
+      typeof sanitized === "string"
+        ? sanitized
+        : JSON.stringify(sanitized, null, 2);
+    return truncateString(serialized || "Нет данных", maxChars);
   } catch {
-    return String(value);
+    return truncateString(String(sanitized), maxChars);
   }
+}
+
+function formatDetailForView(value: unknown): string {
+  return safeStringifyForLog(value, LOG_DETAIL_VIEW_MAX_CHARS);
 }
 
 function formatLogEntryForClipboard(entry: DevtoolsLogEntry): string {
@@ -380,9 +449,12 @@ function formatLogEntryForClipboard(entry: DevtoolsLogEntry): string {
   parts.push(`Время: ${formatSystemLogTimestamp(entry.timestamp)}`);
   parts.push(`Сообщение: ${entry.message}`);
   if (entry.runtimeMeta) {
-    parts.push(`Runtime: ${JSON.stringify(entry.runtimeMeta)}`);
+    parts.push(`Runtime: ${safeStringifyForLog(entry.runtimeMeta, LOG_CLIPBOARD_DETAIL_MAX_CHARS)}`);
   }
-  const detailsText = formatDetailForView(entry.detailsRaw);
+  const detailsText = safeStringifyForLog(
+    entry.detailsRaw,
+    LOG_CLIPBOARD_DETAIL_MAX_CHARS,
+  );
   if (detailsText !== "Нет данных") {
     parts.push("Details:");
     parts.push(detailsText);
@@ -844,24 +916,48 @@ export function SettingsModal({
       .filter((entry) => {
         if (!normalizedSearch) return true;
         const payload =
-          `${entry.eventType} ${entry.message} ${formatDetailForView(entry.detailsRaw)}`.toLowerCase();
+          `${entry.eventType} ${entry.message} ${safeStringifyForLog(entry.detailsRaw, 1_600)}`.toLowerCase();
         return payload.includes(normalizedSearch);
       });
   }, [allLogEntries, logLevelFilter, logSearchQuery, logSourceFilter, logTypeFilter]);
   const copyFilteredLogs = useCallback(async () => {
     if (filteredLogEntries.length === 0) return;
-    const exportedAt = new Date().toLocaleString("ru-RU");
-    const header = [
-      "TG-GF Logs Export",
-      `Время: ${exportedAt}`,
-      `Фильтры: level=${logLevelFilter}, source=${logSourceFilter}, type=${logTypeFilter}, search=${logSearchQuery.trim() || "-"}`,
-      `Записей: ${filteredLogEntries.length}`,
-    ].join("\n");
-    const entries = filteredLogEntries
-      .map((entry, index) => `#${index + 1}\n${formatLogEntryForClipboard(entry)}`)
-      .join("\n\n----------------------------------------\n\n");
     try {
-      await copyTextToClipboard(`${header}\n\n${entries}`);
+      const exportedAt = new Date().toLocaleString("ru-RU");
+      const selectedEntries = filteredLogEntries.slice(0, LOG_CLIPBOARD_MAX_ENTRIES);
+      const chunks: string[] = [];
+      let totalChars = 0;
+      let exportedCount = 0;
+      let truncatedBySize = false;
+      for (let index = 0; index < selectedEntries.length; index += 1) {
+        const entry = selectedEntries[index];
+        const chunk = `#${index + 1}\n${formatLogEntryForClipboard(entry)}`;
+        const separator =
+          chunks.length > 0 ? "\n\n----------------------------------------\n\n" : "";
+        if (totalChars + separator.length + chunk.length > LOG_CLIPBOARD_MAX_CHARS) {
+          truncatedBySize = true;
+          break;
+        }
+        if (separator) {
+          chunks.push(separator);
+          totalChars += separator.length;
+        }
+        chunks.push(chunk);
+        totalChars += chunk.length;
+        exportedCount += 1;
+      }
+      const truncatedByCount = filteredLogEntries.length > selectedEntries.length;
+      const truncationNote =
+        truncatedByCount || truncatedBySize
+          ? `\nЭкспорт усечен: exported=${exportedCount}, total=${filteredLogEntries.length}, maxEntries=${LOG_CLIPBOARD_MAX_ENTRIES}, maxChars=${LOG_CLIPBOARD_MAX_CHARS}`
+          : "";
+      const header = [
+        "TG-GF Logs Export",
+        `Время: ${exportedAt}`,
+        `Фильтры: level=${logLevelFilter}, source=${logSourceFilter}, type=${logTypeFilter}, search=${logSearchQuery.trim() || "-"}`,
+        `Записей: ${filteredLogEntries.length}${truncationNote}`,
+      ].join("\n");
+      await copyTextToClipboard(`${header}\n\n${chunks.join("")}`);
       setCopyLogsFeedback("Логи скопированы в буфер.");
     } catch (error) {
       setCopyLogsFeedback(

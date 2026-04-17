@@ -205,24 +205,131 @@ function collectGroupPatchAssetIds(payload: unknown) {
   return Array.from(ids);
 }
 
-async function hydrateMissingImageAssetsByIds(assetIds: string[]) {
+interface GroupPatchMessageStats {
+  messageCount: number;
+  attachmentCount: number;
+  idbAttachmentCount: number;
+}
+
+function collectGroupPatchMessageStats(payload: unknown): GroupPatchMessageStats {
+  const empty: GroupPatchMessageStats = {
+    messageCount: 0,
+    attachmentCount: 0,
+    idbAttachmentCount: 0,
+  };
+  if (!isRecord(payload) || !isRecord(payload.stores)) return empty;
+  const messages = normalizeStoreRows(payload.stores, 'groupMessages');
+  if (messages.length === 0) return empty;
+  let attachmentCount = 0;
+  let idbAttachmentCount = 0;
+  for (const message of messages) {
+    const attachments = Array.isArray(message.imageAttachments)
+      ? message.imageAttachments
+      : [];
+    for (const attachment of attachments) {
+      if (!isRecord(attachment)) continue;
+      const url = typeof attachment.url === 'string' ? attachment.url.trim() : '';
+      if (!url) continue;
+      attachmentCount += 1;
+      if (parseIdbImageAssetId(url)) {
+        idbAttachmentCount += 1;
+      }
+    }
+  }
+  return {
+    messageCount: messages.length,
+    attachmentCount,
+    idbAttachmentCount,
+  };
+}
+
+interface ImageAssetHydrationSummary {
+  requestedCount: number;
+  existingCount: number;
+  fetchedCount: number;
+  missingIds: string[];
+  retryCount: number;
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    globalThis.setTimeout(resolve, Math.max(0, Math.floor(ms)));
+  });
+}
+
+async function hydrateMissingImageAssetsByIds(
+  assetIds: string[],
+): Promise<ImageAssetHydrationSummary> {
   const normalizedIds = Array.from(new Set(assetIds.map((value) => value.trim()).filter(Boolean)));
-  if (normalizedIds.length === 0) return;
+  if (normalizedIds.length === 0) {
+    return {
+      requestedCount: 0,
+      existingCount: 0,
+      fetchedCount: 0,
+      missingIds: [],
+      retryCount: 0,
+    };
+  }
   const existing = await dbApi.getImageAssets(normalizedIds);
   const existingIds = new Set(existing.map((asset) => asset.id));
   const missing = normalizedIds.filter((id) => !existingIds.has(id));
-  if (missing.length === 0) return;
+  if (missing.length === 0) {
+    return {
+      requestedCount: normalizedIds.length,
+      existingCount: existing.length,
+      fetchedCount: 0,
+      missingIds: [],
+      retryCount: 0,
+    };
+  }
   const chunkSize = 60;
+  const maxAttempts = 4;
+  let fetchedCount = 0;
+  let retryCount = 0;
+  const unresolved = new Set<string>();
   for (let start = 0; start < missing.length; start += chunkSize) {
-    const chunk = missing.slice(start, start + chunkSize);
-    const response = await getBackgroundImageAssets({
-      ids: chunk,
-      limit: chunk.length,
-    });
-    for (const item of response.items) {
-      await dbApi.saveImageAsset(item);
+    let chunkMissing = missing.slice(start, start + chunkSize);
+    for (let attempt = 0; attempt < maxAttempts && chunkMissing.length > 0; attempt += 1) {
+      const response = await getBackgroundImageAssets({
+        ids: chunkMissing,
+        limit: chunkMissing.length,
+      });
+      const fetchedIds = new Set<string>();
+      if (response.items.length > 0) {
+        for (const item of response.items) {
+          await dbApi.saveImageAsset(item);
+          fetchedIds.add(item.id);
+        }
+        fetchedCount += response.items.length;
+      }
+      let nextMissing = chunkMissing.filter((id) => !fetchedIds.has(id));
+      if (response.missingIds.length > 0) {
+        const missingSet = new Set(
+          response.missingIds.map((value) => value.trim()).filter(Boolean),
+        );
+        nextMissing = nextMissing.filter((id) => missingSet.has(id));
+      }
+      if (nextMissing.length === 0) {
+        chunkMissing = [];
+        break;
+      }
+      chunkMissing = Array.from(new Set(nextMissing));
+      if (chunkMissing.length > 0 && attempt < maxAttempts - 1) {
+        retryCount += 1;
+        await sleep(220 * (attempt + 1));
+      }
+    }
+    for (const missingId of chunkMissing) {
+      unresolved.add(missingId);
     }
   }
+  return {
+    requestedCount: normalizedIds.length,
+    existingCount: existing.length,
+    fetchedCount,
+    missingIds: Array.from(unresolved),
+    retryCount,
+  };
 }
 
 function getStoredSinceId() {
@@ -281,6 +388,17 @@ async function syncGroupContextToNative(roomId: string) {
   const imageAssetIds = collectPersonaImageAssetIds(personasForImageSync);
   const imageAssets =
     imageAssetIds.length > 0 ? await dbApi.getImageAssets(imageAssetIds) : [];
+  const settingsRecord = settings as unknown as Record<string, unknown>;
+  // Android background runtime is native-only (always-on). Legacy rollback switches
+  // from old builds can persist in IndexedDB and must not disable group image pipeline.
+  const normalizedGroupImagesFlag = true;
+  const normalizedLegacyGroupFlag = true;
+  const settingsForNative: Record<string, unknown> = {
+    ...settingsRecord,
+    androidNativeGroupImagesV1Disable: false,
+    androidNativeGroupImagesV1: normalizedGroupImagesFlag,
+    androidNativeGroupIterationV1: normalizedLegacyGroupFlag,
+  };
 
   const response = await plugin.request({
     method: 'PUT',
@@ -288,7 +406,7 @@ async function syncGroupContextToNative(roomId: string) {
     body: {
       mode: 'merge',
       stores: {
-        settings,
+        settings: settingsForNative,
         personas,
         groupRooms,
         groupParticipants,
@@ -540,12 +658,19 @@ export function useGroupIterationBackgroundWorker({
         let maxAppliedId = sinceId;
         const pendingAssetIds = new Set<string>();
         const storePatches: Array<Record<string, unknown>> = [];
+        let patchMessageCount = 0;
+        let patchAttachmentCount = 0;
+        let patchIdbAttachmentCount = 0;
         for (const item of response.items) {
           if (item.kind === 'state_patch' && isRecord(item.payload) && isRecord(item.payload.stores)) {
             storePatches.push(item.payload.stores);
             for (const assetId of collectGroupPatchAssetIds(item.payload)) {
               pendingAssetIds.add(assetId);
             }
+            const stats = collectGroupPatchMessageStats(item.payload);
+            patchMessageCount += stats.messageCount;
+            patchAttachmentCount += stats.attachmentCount;
+            patchIdbAttachmentCount += stats.idbAttachmentCount;
           }
           if (item.id > maxAppliedId) {
             maxAppliedId = item.id;
@@ -554,7 +679,42 @@ export function useGroupIterationBackgroundWorker({
         if (maxAppliedId > sinceId) {
           if (pendingAssetIds.size > 0) {
             try {
-              await hydrateMissingImageAssetsByIds(Array.from(pendingAssetIds));
+              const hydrateStartedAt = Date.now();
+              const hydration = await hydrateMissingImageAssetsByIds(Array.from(pendingAssetIds));
+              pushSystemLog({
+                level: 'info',
+                eventType: 'group_iteration.native_asset_hydrate_result',
+                message: 'Group image asset hydration completed before state patch apply',
+                details: {
+                  reason,
+                  roomId: preferredRoomId,
+                  deltaItems: response.items.length,
+                  statePatchCount: storePatches.length,
+                  patchMessageCount,
+                  patchAttachmentCount,
+                  patchIdbAttachmentCount,
+                  pendingAssetCount: pendingAssetIds.size,
+                  requestedAssetCount: hydration.requestedCount,
+                  existingAssetCount: hydration.existingCount,
+                  fetchedAssetCount: hydration.fetchedCount,
+                  missingAssetCount: hydration.missingIds.length,
+                  retryCount: hydration.retryCount,
+                  elapsedMs: Date.now() - hydrateStartedAt,
+                },
+              });
+              if (hydration.missingIds.length > 0) {
+                pushSystemLog({
+                  level: 'warn',
+                  eventType: 'group_iteration.native_asset_hydrate_missing',
+                  message: 'Some group image assets remained missing after hydration retries',
+                  details: {
+                    reason,
+                    roomId: preferredRoomId,
+                    missingAssetCount: hydration.missingIds.length,
+                    missingAssetIds: hydration.missingIds.slice(0, 12),
+                  },
+                });
+              }
             } catch (error) {
               const errorMessage =
                 error instanceof Error

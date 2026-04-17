@@ -27,6 +27,7 @@ import {
 } from "../personaAvatar";
 import { formatShortTime } from "../ui/format";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { PersonaProfileModal } from "./PersonaProfileModal";
 import { useSmartMessageAutoscroll } from "../ui/useSmartMessageAutoscroll";
 import type {
   GroupMessage,
@@ -748,6 +749,7 @@ export function GroupChatPane({
     options: Array<{ index: number; label: string }>;
     selected: number[];
   } | null>(null);
+  const [profilePersonaId, setProfilePersonaId] = useState<string | null>(null);
   const composerWrapperRef = useRef<HTMLDivElement | null>(null);
   const messageIds = useMemo(() => messages.map((message) => message.id), [messages]);
   const {
@@ -828,14 +830,36 @@ export function GroupChatPane({
         }
       }
       if (refsById.size > 0) {
-        const assets = await dbApi.getImageAssets(Array.from(refsById.keys()));
-        const assetById = Object.fromEntries(
-          assets.map((asset) => [asset.id, asset.dataUrl]),
-        );
-        for (const [assetId, sourceUrls] of refsById.entries()) {
-          const resolvedDataUrl = assetById[assetId] ?? "";
+        const unresolved = new Set(refsById.keys());
+        const maxAttempts = 8;
+        for (
+          let attempt = 0;
+          attempt < maxAttempts && unresolved.size > 0;
+          attempt += 1
+        ) {
+          const ids = Array.from(unresolved);
+          const assets = await dbApi.getImageAssets(ids);
+          const assetById = Object.fromEntries(
+            assets.map((asset) => [asset.id, asset.dataUrl]),
+          );
+          for (const [assetId, sourceUrls] of refsById.entries()) {
+            const resolvedDataUrl = assetById[assetId] ?? "";
+            if (!resolvedDataUrl) continue;
+            unresolved.delete(assetId);
+            for (const sourceUrl of sourceUrls) {
+              nextResolved[sourceUrl] = resolvedDataUrl;
+            }
+          }
+          if (unresolved.size > 0 && attempt < maxAttempts - 1) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 320);
+            });
+          }
+        }
+        for (const unresolvedId of unresolved) {
+          const sourceUrls = refsById.get(unresolvedId) ?? [];
           for (const sourceUrl of sourceUrls) {
-            nextResolved[sourceUrl] = resolvedDataUrl;
+            nextResolved[sourceUrl] = "";
           }
         }
       }
@@ -946,6 +970,7 @@ export function GroupChatPane({
     () => Object.fromEntries(personas.map((persona) => [persona.id, persona])),
     [personas],
   );
+  const profilePersona = profilePersonaId ? personaById[profilePersonaId] ?? null : null;
   const personaNameById = useMemo(
     () =>
       Object.fromEntries(personas.map((persona) => [persona.id, persona.name])),
@@ -1176,11 +1201,12 @@ export function GroupChatPane({
       const avatarSrc = avatar || raw;
       return {
         id: participant.id,
+        personaId: participant.personaId,
         name: persona.name,
         avatarSrc,
       };
     })
-    .filter((value): value is { id: string; name: string; avatarSrc: string } =>
+    .filter((value): value is { id: string; personaId: string; name: string; avatarSrc: string } =>
       Boolean(value),
     );
 
@@ -1229,13 +1255,21 @@ export function GroupChatPane({
                   className="group-participant-pill"
                   title={item.name}
                 >
-                  <span className="group-avatar" aria-hidden="true">
-                    {item.avatarSrc ? (
-                      <img src={item.avatarSrc} alt="" loading="lazy" />
-                    ) : (
-                      <span>{item.name.trim().charAt(0).toUpperCase()}</span>
-                    )}
-                  </span>
+                  <button
+                    type="button"
+                    className="profile-avatar-btn"
+                    onClick={() => setProfilePersonaId(item.personaId)}
+                    aria-label={`Открыть профиль персоны ${item.name}`}
+                    title={`Открыть профиль ${item.name}`}
+                  >
+                    <span className="group-avatar" aria-hidden="true">
+                      {item.avatarSrc ? (
+                        <img src={item.avatarSrc} alt="" loading="lazy" />
+                      ) : (
+                        <span>{item.name.trim().charAt(0).toUpperCase()}</span>
+                      )}
+                    </span>
+                  </button>
                   <span>{item.name}</span>
                 </span>
               ))}
@@ -1482,6 +1516,10 @@ export function GroupChatPane({
             bubbleRole,
           } = renderMeta;
           const avatarSrc = resolveAvatar(message);
+          const authorPersona =
+            message.authorType === "persona" && message.authorPersonaId
+              ? personaById[message.authorPersonaId] ?? null
+              : null;
 
           return (
             <article
@@ -1491,15 +1529,35 @@ export function GroupChatPane({
               }`}
             >
               <div className="group-author">
-                <span className="group-avatar" aria-hidden="true">
-                  {avatarSrc ? (
-                    <img src={avatarSrc} alt="" loading="lazy" />
-                  ) : (
-                    <span>
-                      {message.authorDisplayName.trim().charAt(0).toUpperCase()}
-                    </span>
-                  )}
-                </span>
+                <button
+                  type="button"
+                  className="profile-avatar-btn"
+                  disabled={!authorPersona}
+                  onClick={() => {
+                    if (!authorPersona) return;
+                    setProfilePersonaId(authorPersona.id);
+                  }}
+                  aria-label={
+                    authorPersona
+                      ? `Открыть профиль персоны ${authorPersona.name}`
+                      : "Профиль недоступен"
+                  }
+                  title={
+                    authorPersona
+                      ? `Открыть профиль ${authorPersona.name}`
+                      : "Профиль недоступен"
+                  }
+                >
+                  <span className="group-avatar" aria-hidden="true">
+                    {avatarSrc ? (
+                      <img src={avatarSrc} alt="" loading="lazy" />
+                    ) : (
+                      <span>
+                        {message.authorDisplayName.trim().charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                  </span>
+                </button>
                 <strong className="group-author-name">
                   {message.authorDisplayName}
                 </strong>
@@ -1785,6 +1843,11 @@ export function GroupChatPane({
           setPreviewMeta(undefined);
           setPreviewTarget(null);
         }}
+      />
+      <PersonaProfileModal
+        open={Boolean(profilePersona)}
+        persona={profilePersona}
+        onClose={() => setProfilePersonaId(null)}
       />
     </main>
   );

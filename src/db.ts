@@ -596,6 +596,12 @@ function normalizeSettings(
   current: Partial<AppSettings> | undefined,
 ): AppSettings {
   const merged: AppSettings = { ...DEFAULT_SETTINGS, ...(current ?? {}) };
+  const mergedRecord = merged as AppSettings & Record<string, unknown>;
+  // Legacy Android rollout flags are deprecated in native-only mode.
+  // Remove persisted stale values from older builds to avoid accidental reuse.
+  delete mergedRecord.androidNativeGroupImagesV1;
+  delete mergedRecord.androidNativeGroupImagesV1Disable;
+  delete mergedRecord.androidNativeGroupIterationV1;
 
   const trimmedBaseUrl = toTrimmedString(merged.lmBaseUrl);
   if (!trimmedBaseUrl) {

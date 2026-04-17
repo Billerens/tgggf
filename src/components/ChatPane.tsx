@@ -31,6 +31,7 @@ import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { PersonaProfileModal } from "./PersonaProfileModal";
 import { useSmartMessageAutoscroll } from "../ui/useSmartMessageAutoscroll";
 
 interface ChatPaneProps {
@@ -203,6 +204,7 @@ export function ChatPane({
   } | null>(null);
   const composerWrapperRef = useRef<HTMLDivElement | null>(null);
   const [activePersonaAvatarSrc, setActivePersonaAvatarSrc] = useState("");
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
   const onRegeneratePromptAtIndexRef = useRef(onRegeneratePromptAtIndex);
   const onResolveRelationshipProposalRef = useRef(
     onResolveRelationshipProposal,
@@ -593,23 +595,36 @@ export function ChatPane({
               </button>
             </h2>
             <div className="persona-header-row">
-              <div
-                className="chat-header-persona"
-                onClick={onOpenSidebar}
-                title="Сменить персону"
-              >
-                <span className="chat-header-avatar" aria-hidden="true">
-                  {activePersonaAvatarSrc ? (
-                    <img src={activePersonaAvatarSrc} alt="" loading="lazy" />
-                  ) : (
-                    <span>
-                      {(activePersona?.name || "?")
-                        .trim()
-                        .charAt(0)
-                        .toUpperCase()}
-                    </span>
-                  )}
-                </span>
+              <div className="chat-header-persona" onClick={onOpenSidebar} title="Сменить персону">
+                <button
+                  type="button"
+                  className="profile-avatar-btn"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!activePersona) return;
+                    setProfileModalOpen(true);
+                  }}
+                  title={activePersona ? "Открыть профиль персоны" : "Персона не выбрана"}
+                  disabled={!activePersona}
+                  aria-label={
+                    activePersona
+                      ? `Открыть профиль персоны ${activePersona.name}`
+                      : "Персона не выбрана"
+                  }
+                >
+                  <span className="chat-header-avatar" aria-hidden="true">
+                    {activePersonaAvatarSrc ? (
+                      <img src={activePersonaAvatarSrc} alt="" loading="lazy" />
+                    ) : (
+                      <span>
+                        {(activePersona?.name || "?")
+                          .trim()
+                          .charAt(0)
+                          .toUpperCase()}
+                      </span>
+                    )}
+                  </span>
+                </button>
                 {activePersona?.name ?? "Не выбрана"} <ChevronDown size={14} />
               </div>
               {activePersonaState ? (
@@ -762,6 +777,11 @@ export function ChatPane({
           setPreviewMeta(undefined);
           setPreviewTarget(null);
         }}
+      />
+      <PersonaProfileModal
+        open={profileModalOpen && Boolean(activePersona)}
+        persona={activePersona}
+        onClose={() => setProfileModalOpen(false)}
       />
     </main>
   );
