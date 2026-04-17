@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { setRuntimeContext } from '../../platform/runtimeContext';
 import {
   ackBackgroundDelta,
+  getBackgroundImageAssets,
   getBackgroundDelta,
 } from './backgroundDelta';
 
@@ -98,5 +99,44 @@ describe('backgroundDelta', () => {
     expect(result.ackedUpToId).toBe(11);
     expect(result.taskType).toBe('group_iteration');
     expect(result.deletedCount).toBe(5);
+  });
+
+  it('requests image assets by ids and parses hydrated items', async () => {
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      expect(String(url)).toContain('/api/background-runtime/image-assets?');
+      expect(String(url)).toContain('ids=asset-1%2Casset-2');
+      expect(String(url)).toContain('limit=2');
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          items: [
+            {
+              id: 'asset-1',
+              dataUrl: 'data:image/png;base64,abc',
+              createdAt: '2026-01-01T00:00:00.000Z',
+              meta: { prompt: 'p1' },
+            },
+          ],
+          missingIds: ['asset-2'],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        },
+      );
+    });
+
+    const result = await getBackgroundImageAssets(
+      {
+        ids: ['asset-1', 'asset-2', 'asset-1'],
+        limit: 2,
+      },
+      { fetchImpl: fetchImpl as unknown as typeof fetch },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].id).toBe('asset-1');
+    expect(result.missingIds).toEqual(['asset-2']);
   });
 });

@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.util.Log
 
 data class BackgroundDesiredStateRecord(
     val taskType: String,
@@ -41,9 +42,18 @@ class BackgroundRuntimeRepository(
     context: Context,
     dbName: String = "tg_gf_background_runtime.db",
 ) : SQLiteOpenHelper(context, dbName, null, DB_VERSION) {
+    private val appContext = context.applicationContext
+    private val prefs =
+        appContext.getSharedPreferences("tg_gf_local_api", Context.MODE_PRIVATE)
+
     companion object {
         private const val DB_VERSION = 2
         const val GLOBAL_SCOPE_ID = "global"
+        private const val TAG = "BackgroundRuntimeRepo"
+        private const val DELTA_PAYLOAD_SAFE_SELECT_MAX_CHARS = 512_000
+        private const val DELTA_PAYLOAD_PURGE_MAX_CHARS = 256_000
+        private const val DELTA_OVERSIZE_PURGE_MARKER_KEY =
+            "background_delta_oversize_purge_v1_done"
 
         private const val TABLE_DESIRED_STATE = "background_desired_state"
         private const val COL_TASK_TYPE = "task_type"
@@ -67,6 +77,10 @@ class BackgroundRuntimeRepository(
         private const val COL_ENTITY_TYPE = "entity_type"
         private const val COL_ENTITY_ID = "entity_id"
         private const val COL_DELTA_PAYLOAD_JSON = "payload_json"
+    }
+
+    init {
+        runOneTimeOversizedDeltaCleanup()
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -433,9 +447,20 @@ class BackgroundRuntimeRepository(
                 put(COL_CREATED_AT_MS, now)
             }
             val rowId = db.insert(TABLE_DELTA, null, values)
-            val inserted = getDeltaByIdInternal(db, rowId)
+            if (rowId <= 0L) {
+                throw IllegalStateException("Failed to append background delta")
+            }
             db.setTransactionSuccessful()
-            return requireNotNull(inserted)
+            return BackgroundDeltaRecord(
+                id = rowId,
+                taskType = normalizedTaskType,
+                scopeId = normalizedScopeId,
+                kind = normalizedKind,
+                entityType = normalizedEntityType,
+                entityId = normalizedEntityId,
+                payloadJson = normalizedPayloadJson,
+                createdAtMs = now,
+            )
         } finally {
             db.endTransaction()
         }
@@ -481,16 +506,27 @@ class BackgroundRuntimeRepository(
         }
 
         val selection = clauses.joinToString(" AND ")
-        return readableDatabase.query(
-            TABLE_DELTA,
-            null,
-            selection,
-            args.toTypedArray(),
-            null,
-            null,
-            "$COL_DELTA_ID ASC",
-            normalizedLimit.toString(),
-        ).use { cursor ->
+        val queryArgs = args.toMutableList().apply { add(normalizedLimit.toString()) }
+        val sql =
+            """
+            SELECT
+              $COL_DELTA_ID,
+              $COL_TASK_TYPE,
+              $COL_SCOPE_ID,
+              $COL_KIND,
+              $COL_ENTITY_TYPE,
+              $COL_ENTITY_ID,
+              CASE
+                WHEN LENGTH($COL_DELTA_PAYLOAD_JSON) > $DELTA_PAYLOAD_SAFE_SELECT_MAX_CHARS THEN '{}'
+                ELSE COALESCE($COL_DELTA_PAYLOAD_JSON, '{}')
+              END AS $COL_DELTA_PAYLOAD_JSON,
+              $COL_CREATED_AT_MS
+            FROM $TABLE_DELTA
+            WHERE $selection
+            ORDER BY $COL_DELTA_ID ASC
+            LIMIT ?
+            """.trimIndent()
+        return readableDatabase.rawQuery(sql, queryArgs.toTypedArray()).use { cursor ->
             mapDeltaCursor(cursor)
         }
     }
@@ -530,19 +566,17 @@ class BackgroundRuntimeRepository(
         }
     }
 
-    private fun getDeltaByIdInternal(db: SQLiteDatabase, id: Long): BackgroundDeltaRecord? {
-        if (id <= 0L) return null
-        return db.query(
-            TABLE_DELTA,
-            null,
-            "$COL_DELTA_ID = ?",
-            arrayOf(id.toString()),
-            null,
-            null,
-            null,
-            "1",
-        ).use { cursor ->
-            mapDeltaCursor(cursor).firstOrNull()
+    private fun runOneTimeOversizedDeltaCleanup() {
+        if (prefs.getBoolean(DELTA_OVERSIZE_PURGE_MARKER_KEY, false)) return
+        try {
+            writableDatabase.delete(
+                TABLE_DELTA,
+                "LENGTH($COL_DELTA_PAYLOAD_JSON) > ?",
+                arrayOf(DELTA_PAYLOAD_PURGE_MAX_CHARS.toString()),
+            )
+            prefs.edit().putBoolean(DELTA_OVERSIZE_PURGE_MARKER_KEY, true).apply()
+        } catch (error: Exception) {
+            Log.w(TAG, "One-time oversized delta cleanup failed", error)
         }
     }
 

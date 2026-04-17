@@ -138,6 +138,22 @@ class LocalRepository(
         prefs.edit().remove(key).apply()
     }
 
+    fun readBooleanMarker(key: String, fallback: Boolean = false): Boolean {
+        return prefs.getBoolean(key.trim(), fallback)
+    }
+
+    fun writeBooleanMarker(key: String, value: Boolean) {
+        prefs.edit().putBoolean(key.trim(), value).apply()
+    }
+
+    fun readLongMarker(key: String, fallback: Long = 0L): Long {
+        return prefs.getLong(key.trim(), fallback)
+    }
+
+    fun writeLongMarker(key: String, value: Long) {
+        prefs.edit().putLong(key.trim(), value).apply()
+    }
+
     private fun isStructuredGroupStore(storeName: String): Boolean {
         return structuredGroupStoreNames.contains(storeName)
     }

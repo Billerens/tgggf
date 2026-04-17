@@ -13,6 +13,7 @@ import { updateForegroundWorkerStatus } from "./foregroundService";
 import { setBackgroundDesiredState } from "./backgroundRuntime";
 import {
   ackBackgroundDelta,
+  getBackgroundImageAssets,
   getBackgroundDelta,
   triggerBackgroundRuntime,
 } from "./backgroundDelta";
@@ -129,6 +130,63 @@ function collectPersonaImageAssetIds(personas: Persona[]) {
   return Array.from(ids);
 }
 
+function collectIdbAssetIdsFromValue(value: unknown, out: Set<string>) {
+  if (typeof value === "string") {
+    const id = parseIdbImageAssetId(value);
+    if (id) out.add(id);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectIdbAssetIdsFromValue(item, out);
+    }
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === "imageId" && typeof nested === "string" && nested.trim()) {
+      out.add(nested.trim());
+    }
+    collectIdbAssetIdsFromValue(nested, out);
+  }
+}
+
+function collectTopicPatchAssetIds(payload: unknown) {
+  const ids = new Set<string>();
+  if (!isRecord(payload)) return [] as string[];
+  if (Array.isArray(payload.assetIds)) {
+    for (const value of payload.assetIds) {
+      if (typeof value !== "string") continue;
+      const normalized = value.trim();
+      if (normalized) ids.add(normalized);
+    }
+  }
+  if (isRecord(payload.stores)) {
+    collectIdbAssetIdsFromValue(payload.stores, ids);
+  }
+  return Array.from(ids);
+}
+
+async function hydrateMissingImageAssetsByIds(assetIds: string[]) {
+  const normalizedIds = Array.from(new Set(assetIds.map((value) => value.trim()).filter(Boolean)));
+  if (normalizedIds.length === 0) return;
+  const existing = await dbApi.getImageAssets(normalizedIds);
+  const existingIds = new Set(existing.map((asset) => asset.id));
+  const missing = normalizedIds.filter((id) => !existingIds.has(id));
+  if (missing.length === 0) return;
+  const chunkSize = 60;
+  for (let start = 0; start < missing.length; start += chunkSize) {
+    const chunk = missing.slice(start, start + chunkSize);
+    const response = await getBackgroundImageAssets({
+      ids: chunk,
+      limit: chunk.length,
+    });
+    for (const item of response.items) {
+      await dbApi.saveImageAsset(item);
+    }
+  }
+}
+
 function getStoredSinceId() {
   const raw = globalThis.localStorage?.getItem(TOPIC_DELTA_SINCE_ID_KEY) ?? "";
   const value = Number(raw);
@@ -146,6 +204,33 @@ function normalizeStoreRows(stores: Record<string, unknown>, storeName: string) 
   const raw = stores[storeName];
   if (!Array.isArray(raw)) return [] as Record<string, unknown>[];
   return raw.filter(isRecord);
+}
+
+function normalizeGeneratorSessionStatus(
+  value: unknown,
+): GeneratorSession["status"] | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (
+    normalized === "running" ||
+    normalized === "stopped" ||
+    normalized === "completed" ||
+    normalized === "error"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function toFiniteInt(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.floor(parsed);
+  }
+  return null;
 }
 
 async function syncTopicGenerationContextToNative(sessionId: string) {
@@ -193,10 +278,75 @@ async function applyTopicStatePatch(
 ) {
   const existingSessions = await dbApi.getAllGeneratorSessions();
   const existingSessionById = new Map(existingSessions.map((session) => [session.id, session]));
+  let appliedAnySession = false;
+
+  const sessionPatches = normalizeStoreRows(stores, "generatorSessionPatches").filter(
+    hasEntityId,
+  );
+  for (const patchRow of sessionPatches) {
+    const patch = patchRow as Record<string, unknown>;
+    const patchId = patchRow.id.trim();
+    const current = existingSessionById.get(patchId);
+    if (!current) {
+      continue;
+    }
+
+    const next: GeneratorSession = {
+      ...current,
+      entries: Array.isArray(current.entries) ? [...current.entries] : [],
+    };
+    let changed = false;
+
+    const nextStatus = normalizeGeneratorSessionStatus(patch.status);
+    if (nextStatus && nextStatus !== next.status) {
+      next.status = nextStatus;
+      changed = true;
+    }
+
+    const nextCompletedCount = toFiniteInt(patch.completedCount);
+    if (
+      nextCompletedCount !== null &&
+      nextCompletedCount >= 0 &&
+      nextCompletedCount !== next.completedCount
+    ) {
+      next.completedCount = nextCompletedCount;
+      changed = true;
+    }
+
+    if (typeof patch.updatedAt === "string" && patch.updatedAt.trim()) {
+      const normalizedUpdatedAt = patch.updatedAt.trim();
+      if (normalizedUpdatedAt !== next.updatedAt) {
+        next.updatedAt = normalizedUpdatedAt;
+        changed = true;
+      }
+    }
+
+    const appendEntriesRaw = patch.appendEntries;
+    if (Array.isArray(appendEntriesRaw) && appendEntriesRaw.length > 0) {
+      const existingEntryIds = new Set(next.entries.map((entry) => entry.id));
+      for (const appendEntry of appendEntriesRaw) {
+        if (!isRecord(appendEntry) || !hasEntityId(appendEntry)) continue;
+        const typedEntry = appendEntry as unknown as GeneratorSession["entries"][number];
+        if (existingEntryIds.has(typedEntry.id)) continue;
+        next.entries.push(typedEntry);
+        existingEntryIds.add(typedEntry.id);
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      continue;
+    }
+    if (!shouldApplyIncomingSession({ current, incoming: next })) {
+      continue;
+    }
+    await dbApi.saveGeneratorSession(next);
+    existingSessionById.set(next.id, next);
+    appliedAnySession = true;
+  }
 
   const sessions = normalizeStoreRows(stores, "generatorSessions")
     .filter(hasEntityId) as unknown as GeneratorSession[];
-  let appliedAnySession = false;
   for (const session of sessions) {
     const current = existingSessionById.get(session.id);
     if (!shouldApplyIncomingSession({ current, incoming: session })) {
@@ -277,19 +427,48 @@ export function useTopicGenerationBackgroundWorker({
         }
 
         let maxAppliedId = sinceId;
+        const pendingAssetIds = new Set<string>();
+        const storePatches: Array<Record<string, unknown>> = [];
         for (const item of response.items) {
           if (item.kind === "state_patch" && isRecord(item.payload) && isRecord(item.payload.stores)) {
-            await applyTopicStatePatch(
-              item.payload.stores,
-              preferredSessionId,
-              syncGenerationSessionsFromDb,
-            );
+            storePatches.push(item.payload.stores);
+            for (const assetId of collectTopicPatchAssetIds(item.payload)) {
+              pendingAssetIds.add(assetId);
+            }
           }
           if (item.id > maxAppliedId) {
             maxAppliedId = item.id;
           }
         }
         if (maxAppliedId > sinceId) {
+          if (pendingAssetIds.size > 0) {
+            try {
+              await hydrateMissingImageAssetsByIds(Array.from(pendingAssetIds));
+            } catch (error) {
+              const errorMessage =
+                error instanceof Error
+                  ? error.message
+                  : "native_topic_delta_asset_hydrate_failed";
+              pushSystemLog({
+                level: "warn",
+                eventType: "topic_generation.native_asset_hydrate_failed",
+                message: "Failed to hydrate topic image assets before state patch apply",
+                details: {
+                  reason,
+                  sessionId: preferredSessionId,
+                  assetCount: pendingAssetIds.size,
+                  error: errorMessage,
+                },
+              });
+            }
+          }
+          for (const stores of storePatches) {
+            await applyTopicStatePatch(
+              stores,
+              preferredSessionId,
+              syncGenerationSessionsFromDb,
+            );
+          }
           await ackBackgroundDelta({
             ackedUpToId: maxAppliedId,
             taskType: TOPIC_GENERATION_JOB_TYPE,

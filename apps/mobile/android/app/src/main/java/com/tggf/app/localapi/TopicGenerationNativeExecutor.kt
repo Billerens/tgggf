@@ -19,6 +19,9 @@ object TopicGenerationNativeExecutor {
     private const val TOPIC_GENERATION_LEASE_MS = 45_000L
     private const val COMFY_SEED_MAX = 1_125_899_906_842_624L
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
+    private const val IMAGE_REF_PREFIX = "idb://"
+    private const val IMAGE_ASSET_GC_INTERVAL_MS = 15 * 60 * 1000L
+    private const val IMAGE_ASSET_GC_LAST_RUN_MARKER_KEY = "image_asset_gc_last_run_ms_v1"
 
     private val inFlight = AtomicBoolean(false)
     private val cancelledScopes = Collections.synchronizedSet(mutableSetOf<String>())
@@ -46,6 +49,13 @@ object TopicGenerationNativeExecutor {
         val imageUrls: List<String>,
         val seed: Long,
         val model: String?,
+    )
+
+    data class ImageAssetAppendResult(
+        val id: String,
+        val ref: String,
+        val meta: JSONObject,
+        val createdAt: String,
     )
 
     private data class TopicPromptResolution(
@@ -227,6 +237,65 @@ object TopicGenerationNativeExecutor {
         }
 
         val session = sessions.optJSONObject(sessionIndex) ?: JSONObject()
+        val migratedSessionAssetIds =
+            migrateSessionInlineImageRefs(
+                repository = repository,
+                session = session,
+            )
+        if (migratedSessionAssetIds.isNotEmpty()) {
+            session.put("updatedAt", nowIsoUtc())
+            sessions.put(sessionIndex, session)
+            repository.writeStoreJson("generatorSessions", sessions.toString())
+        }
+        if (!isDesiredStateEnabled(runtimeRepository, sessionId)) {
+            requestCancellation(sessionId)
+            val sessionStatus = session.optString("status", "stopped")
+            if (sessionStatus.equals("running", ignoreCase = true)) {
+                session.put("status", "stopped")
+                session.put("updatedAt", nowIsoUtc())
+                sessions.put(sessionIndex, session)
+                repository.writeStoreJson("generatorSessions", sessions.toString())
+                appendStatePatch(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stores =
+                        JSONObject().apply {
+                            put(
+                                "generatorSessionPatches",
+                                JSONArray().apply {
+                                    put(buildGeneratorSessionPatch(session))
+                                },
+                            )
+                        },
+                    assetIds = migratedSessionAssetIds,
+                )
+                maybeRunImageAssetGc(repository)
+            }
+            jobs.cancelJob(job.id)
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = sessionId,
+                jobId = job.id,
+                stage = "desired_state_disabled",
+                level = "info",
+                message = "Topic generation skipped because desired-state is disabled",
+                details = JSONObject().apply {
+                    put("sessionStatus", sessionStatus)
+                },
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
+                state = "idle",
+                scopeId = sessionId,
+                detail = "desired_state_disabled",
+                progress = false,
+                claimed = false,
+                lastError = "",
+            )
+            return
+        }
         if (isScopeCancellationRequested(sessionId)) {
             jobs.cancelJob(job.id)
             appendRuntimeEvent(
@@ -306,9 +375,16 @@ object TopicGenerationNativeExecutor {
                 jobId = job.id,
                 stores =
                     JSONObject().apply {
-                        put("generatorSessions", JSONArray(sessions.toString()))
+                        put(
+                            "generatorSessionPatches",
+                            JSONArray().apply {
+                                put(buildGeneratorSessionPatch(session))
+                            },
+                        )
                     },
+                assetIds = migratedSessionAssetIds,
             )
+            maybeRunImageAssetGc(repository)
             jobs.cancelJob(job.id)
             syncDesiredState(
                 runtimeRepository = runtimeRepository,
@@ -412,6 +488,8 @@ object TopicGenerationNativeExecutor {
                 session = session,
                 prompt = prompt,
                 iteration = iteration,
+                runtimeRepository = runtimeRepository,
+                jobId = job.id,
             )
             if (comfyResult.imageUrls.isEmpty()) {
                 throw IllegalStateException("Comfy не вернул ни одного изображения")
@@ -430,8 +508,10 @@ object TopicGenerationNativeExecutor {
                     put("model", comfyResult.model)
                 }
             }
-            val imageAssets =
+            val newImageAssets =
                 appendImageAssets(repository, comfyResult.imageUrls, meta, nowIso)
+            val imageRefs = newImageAssets.map { appended -> appended.ref }
+            val imageAssetIds = newImageAssets.map { appended -> appended.id }
 
             val entry = JSONObject().apply {
                 put("id", UUID.randomUUID().toString())
@@ -441,11 +521,11 @@ object TopicGenerationNativeExecutor {
                 if (promptResolution.themeTags.isNotEmpty()) {
                     put("themeTags", JSONArray(promptResolution.themeTags))
                 }
-                put("imageUrls", JSONArray(comfyResult.imageUrls))
+                put("imageUrls", JSONArray(imageRefs))
                 put("createdAt", nowIso)
                 val imageMetaByUrl = JSONObject()
-                for (url in comfyResult.imageUrls) {
-                    imageMetaByUrl.put(url, JSONObject(meta.toString()))
+                for (ref in imageRefs) {
+                    imageMetaByUrl.put(ref, JSONObject(meta.toString()))
                 }
                 put("imageMetaByUrl", imageMetaByUrl)
             }
@@ -454,11 +534,14 @@ object TopicGenerationNativeExecutor {
             session.put("entries", entries)
             session.put("completedCount", iteration)
 
+            val shouldStopByDesiredState =
+                isScopeCancellationRequested(sessionId) ||
+                    !isDesiredStateEnabled(runtimeRepository, sessionId)
             val nextStatus =
-                if (requestedCount != null && iteration >= requestedCount) {
-                    "completed"
-                } else {
-                    "running"
+                when {
+                    requestedCount != null && iteration >= requestedCount -> "completed"
+                    shouldStopByDesiredState -> "stopped"
+                    else -> "running"
                 }
             session.put("status", nextStatus)
             session.put("updatedAt", nowIso)
@@ -470,10 +553,23 @@ object TopicGenerationNativeExecutor {
                 jobId = job.id,
                 stores =
                     JSONObject().apply {
-                        put("generatorSessions", JSONArray(sessions.toString()))
-                        put("imageAssets", JSONArray(imageAssets.toString()))
+                        put(
+                            "generatorSessionPatches",
+                            JSONArray().apply {
+                                put(
+                                    buildGeneratorSessionPatch(
+                                        session = session,
+                                        appendedEntries = JSONArray().apply {
+                                            put(JSONObject(entry.toString()))
+                                        },
+                                    ),
+                                )
+                            },
+                        )
                     },
+                assetIds = (migratedSessionAssetIds + imageAssetIds).distinct(),
             )
+            maybeRunImageAssetGc(repository)
 
             if (nextStatus == "completed") {
                 jobs.cancelJob(job.id)
@@ -514,6 +610,37 @@ object TopicGenerationNativeExecutor {
                     state = "idle",
                     scopeId = sessionId,
                     detail = "result_completed",
+                    progress = true,
+                    claimed = true,
+                    lastError = "",
+                )
+            } else if (nextStatus == "stopped") {
+                jobs.cancelJob(job.id)
+                syncDesiredState(
+                    runtimeRepository = runtimeRepository,
+                    sessionId = sessionId,
+                    enabled = false,
+                    delayMs = delayMs,
+                )
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = sessionId,
+                    jobId = job.id,
+                    stage = "desired_state_disabled_during_iteration",
+                    level = "info",
+                    message = "Topic generation stopped after iteration by desired-state",
+                    details = JSONObject().apply {
+                        put("iteration", iteration)
+                        put("delayMs", delayMs)
+                        put("imageCount", comfyResult.imageUrls.size)
+                    },
+                )
+                ForegroundSyncService.updateWorkerStatus(
+                    context = context,
+                    worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
+                    state = "idle",
+                    scopeId = sessionId,
+                    detail = "desired_state_disabled",
                     progress = true,
                     claimed = true,
                     lastError = "",
@@ -591,15 +718,25 @@ object TopicGenerationNativeExecutor {
             runCatching {
                 markSessionError(sessions, sessionIndex, errorMessage)
                 repository.writeStoreJson("generatorSessions", sessions.toString())
+                val erroredSession = sessions.optJSONObject(sessionIndex)
                 appendStatePatch(
                     runtimeRepository = runtimeRepository,
                     scopeId = sessionId,
                     jobId = job.id,
                     stores =
                         JSONObject().apply {
-                            put("generatorSessions", JSONArray(sessions.toString()))
+                            if (erroredSession != null) {
+                                put(
+                                    "generatorSessionPatches",
+                                    JSONArray().apply {
+                                        put(buildGeneratorSessionPatch(erroredSession))
+                                    },
+                                )
+                            }
                         },
+                    assetIds = migratedSessionAssetIds,
                 )
+                maybeRunImageAssetGc(repository)
             }.onFailure { stateSyncError ->
                 runCatching {
                     appendRuntimeEvent(
@@ -709,8 +846,8 @@ object TopicGenerationNativeExecutor {
         imageUrls: List<String>,
         meta: JSONObject,
         createdAt: String,
-    ) {
-        appendImageAssets(repository, imageUrls, meta, createdAt)
+    ): List<ImageAssetAppendResult> {
+        return appendImageAssets(repository, imageUrls, meta, createdAt)
     }
 
     private fun runBaseComfyGeneration(
@@ -720,6 +857,8 @@ object TopicGenerationNativeExecutor {
         session: JSONObject,
         prompt: String,
         iteration: Int,
+        runtimeRepository: BackgroundRuntimeRepository,
+        jobId: String,
     ): ComfyRunResult {
         val sessionId = session.optString("id", "")
         val topic = session.optString("topic", "").trim()
@@ -729,6 +868,21 @@ object TopicGenerationNativeExecutor {
             persona.optString("avatarUrl", "").trim().ifEmpty {
                 persona.optString("fullBodyUrl", "").trim()
             }.ifEmpty { null }
+        val comfyDebugEmitter =
+            comfyDebug@{ stage: String, details: JSONObject ->
+                if (!shouldForwardComfyDebugEvent(stage, details)) return@comfyDebug
+                runCatching {
+                    appendRuntimeEvent(
+                        runtimeRepository = runtimeRepository,
+                        scopeId = sessionId,
+                        jobId = jobId,
+                        stage = "comfy_$stage",
+                        level = comfyDebugLevelForStage(stage),
+                        message = "Comfy debug: $stage",
+                        details = JSONObject(details.toString()),
+                    )
+                }
+            }
         val result =
             ComfyNativeClient.runBaseGeneration(
                 ComfyNativeClient.BaseGenerationRequest(
@@ -745,6 +899,7 @@ object TopicGenerationNativeExecutor {
                     workerScopeId = sessionId,
                     workerQueueDetail = "native_queue_prompt",
                     workerWaitDetail = "native_wait_history",
+                    debugEmitter = comfyDebugEmitter,
                 ),
             )
         return ComfyRunResult(
@@ -752,6 +907,29 @@ object TopicGenerationNativeExecutor {
             seed = result.seed,
             model = result.model,
         )
+    }
+
+    private fun shouldForwardComfyDebugEvent(stage: String, details: JSONObject): Boolean {
+        if (stage.startsWith("localize_", ignoreCase = true)) {
+            return true
+        }
+        if (stage.startsWith("http_", ignoreCase = true)) {
+            val traceLabel = details.optString("traceLabel", "")
+            return traceLabel.startsWith("localize_", ignoreCase = true)
+        }
+        return false
+    }
+
+    private fun comfyDebugLevelForStage(stage: String): String {
+        val normalized = stage.lowercase(Locale.ROOT)
+        return when {
+            normalized.contains("exception") ||
+                normalized.contains("failed") ||
+                normalized.contains("error") -> "error"
+            normalized.contains("fallback") ||
+                normalized.contains("retry") -> "warn"
+            else -> "info"
+        }
     }
 
     private fun parseStringList(array: JSONArray?): List<String> {
@@ -771,20 +949,253 @@ object TopicGenerationNativeExecutor {
         imageUrls: List<String>,
         meta: JSONObject,
         createdAt: String,
-    ): JSONArray {
+    ): List<ImageAssetAppendResult> {
         val imageAssets = readStoreArray(repository, "imageAssets")
+        val appended = mutableListOf<ImageAssetAppendResult>()
+        val existingAssetIdByDataUrl = mutableMapOf<String, String>()
+        for (index in 0 until imageAssets.length()) {
+            val item = imageAssets.optJSONObject(index) ?: continue
+            val assetId = item.optString("id", "").trim()
+            val dataUrl = item.optString("dataUrl", "").trim()
+            if (assetId.isNotEmpty() && dataUrl.isNotEmpty()) {
+                existingAssetIdByDataUrl[dataUrl] = assetId
+            }
+        }
+
+        var didAppend = false
         for (url in imageUrls) {
-            imageAssets.put(
+            val normalizedUrl = url.trim()
+            if (normalizedUrl.isEmpty()) continue
+            val existingAssetId = existingAssetIdByDataUrl[normalizedUrl]
+            if (existingAssetId != null) {
+                appended.add(
+                    ImageAssetAppendResult(
+                        id = existingAssetId,
+                        ref = toImageRef(existingAssetId),
+                        meta = JSONObject(meta.toString()),
+                        createdAt = createdAt,
+                    ),
+                )
+                continue
+            }
+            val assetId = UUID.randomUUID().toString()
+            val asset =
                 JSONObject().apply {
-                    put("id", UUID.randomUUID().toString())
-                    put("dataUrl", url)
+                    put("id", assetId)
+                    put("dataUrl", normalizedUrl)
                     put("meta", JSONObject(meta.toString()))
                     put("createdAt", createdAt)
-                },
+                }
+            imageAssets.put(asset)
+            existingAssetIdByDataUrl[normalizedUrl] = assetId
+            appended.add(
+                ImageAssetAppendResult(
+                    id = assetId,
+                    ref = toImageRef(assetId),
+                    meta = JSONObject(meta.toString()),
+                    createdAt = createdAt,
+                ),
             )
+            didAppend = true
         }
-        repository.writeStoreJson("imageAssets", imageAssets.toString())
-        return imageAssets
+        if (didAppend) {
+            repository.writeStoreJson("imageAssets", imageAssets.toString())
+        }
+        return appended
+    }
+
+    private fun migrateSessionInlineImageRefs(
+        repository: LocalRepository,
+        session: JSONObject,
+    ): List<String> {
+        val entries = session.optJSONArray("entries") ?: return emptyList()
+        if (entries.length() == 0) return emptyList()
+
+        val ensuredAssetsByDataUrl = mutableMapOf<String, ImageAssetAppendResult>()
+        val migratedAssetIds = linkedSetOf<String>()
+        var didChange = false
+
+        fun ensureInlineDataUrlRef(
+            rawDataUrl: String,
+            meta: JSONObject?,
+            createdAt: String,
+        ): ImageAssetAppendResult? {
+            val normalizedDataUrl = rawDataUrl.trim()
+            if (!isInlineDataUrl(normalizedDataUrl)) return null
+            val cached = ensuredAssetsByDataUrl[normalizedDataUrl]
+            if (cached != null) return cached
+            val normalizedMeta = meta?.let { value -> JSONObject(value.toString()) } ?: JSONObject()
+            val appended =
+                appendImageAssets(
+                    repository = repository,
+                    imageUrls = listOf(normalizedDataUrl),
+                    meta = normalizedMeta,
+                    createdAt = createdAt,
+                ).firstOrNull() ?: return null
+            ensuredAssetsByDataUrl[normalizedDataUrl] = appended
+            return appended
+        }
+
+        for (entryIndex in 0 until entries.length()) {
+            val entry = entries.optJSONObject(entryIndex) ?: continue
+            val createdAt = entry.optString("createdAt", "").trim().ifBlank { nowIsoUtc() }
+            val imageMetaByUrl = entry.optJSONObject("imageMetaByUrl")
+            val imageUrls = entry.optJSONArray("imageUrls") ?: JSONArray()
+
+            var entryChanged = false
+            val migratedImageUrls = JSONArray()
+            for (urlIndex in 0 until imageUrls.length()) {
+                val rawUrl = imageUrls.optString(urlIndex, "").trim()
+                if (rawUrl.isEmpty()) continue
+                if (!isInlineDataUrl(rawUrl)) {
+                    migratedImageUrls.put(rawUrl)
+                    continue
+                }
+                val metaForUrl = imageMetaByUrl?.optJSONObject(rawUrl)
+                val ensured = ensureInlineDataUrlRef(rawUrl, metaForUrl, createdAt)
+                if (ensured == null) {
+                    migratedImageUrls.put(rawUrl)
+                    continue
+                }
+                migratedImageUrls.put(ensured.ref)
+                migratedAssetIds.add(ensured.id)
+                if (ensured.ref != rawUrl) {
+                    entryChanged = true
+                }
+            }
+            if (entryChanged) {
+                entry.put("imageUrls", migratedImageUrls)
+            }
+
+            if (imageMetaByUrl != null && imageMetaByUrl.length() > 0) {
+                val migratedMetaByUrl = JSONObject()
+                var metaChanged = false
+                val keys = imageMetaByUrl.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next().trim()
+                    if (key.isEmpty()) continue
+                    val value = imageMetaByUrl.opt(key)
+                    var targetKey = key
+                    if (isInlineDataUrl(key)) {
+                        val ensured = ensureInlineDataUrlRef(key, value as? JSONObject, createdAt)
+                        if (ensured != null) {
+                            targetKey = ensured.ref
+                            migratedAssetIds.add(ensured.id)
+                        }
+                    }
+                    if (targetKey != key) {
+                        metaChanged = true
+                    }
+                    if (!migratedMetaByUrl.has(targetKey)) {
+                        migratedMetaByUrl.put(targetKey, value)
+                    }
+                }
+                if (metaChanged) {
+                    entry.put("imageMetaByUrl", migratedMetaByUrl)
+                    entryChanged = true
+                }
+            }
+
+            if (entryChanged) {
+                entries.put(entryIndex, entry)
+                didChange = true
+            }
+        }
+
+        if (didChange) {
+            session.put("entries", entries)
+        }
+        return migratedAssetIds.toList()
+    }
+
+    @JvmStatic
+    fun isImageRef(value: String?): Boolean {
+        val normalized = value?.trim().orEmpty()
+        return normalized.startsWith(IMAGE_REF_PREFIX) && normalized.length > IMAGE_REF_PREFIX.length
+    }
+
+    @JvmStatic
+    fun parseImageRefAssetId(value: String?): String {
+        val normalized = value?.trim().orEmpty()
+        if (!isImageRef(normalized)) return ""
+        return normalized.removePrefix(IMAGE_REF_PREFIX).trim()
+    }
+
+    @JvmStatic
+    fun toImageRef(assetId: String): String {
+        return "$IMAGE_REF_PREFIX${assetId.trim()}"
+    }
+
+    @JvmStatic
+    fun isInlineDataUrl(value: String?): Boolean {
+        return value?.trim()?.startsWith("data:", ignoreCase = true) == true
+    }
+
+    @JvmStatic
+    fun maybeRunImageAssetGc(repository: LocalRepository) {
+        val nowMs = System.currentTimeMillis()
+        val lastRunMs = repository.readLongMarker(IMAGE_ASSET_GC_LAST_RUN_MARKER_KEY, 0L)
+        if (nowMs - lastRunMs < IMAGE_ASSET_GC_INTERVAL_MS) return
+        val imageAssets = readStoreArray(repository, "imageAssets")
+        if (imageAssets.length() == 0) {
+            repository.writeLongMarker(IMAGE_ASSET_GC_LAST_RUN_MARKER_KEY, nowMs)
+            return
+        }
+        val referencedAssetIds = mutableSetOf<String>()
+        val storesToScan =
+            listOf("personas", "messages", "generatorSessions", "groupMessages", "groupEvents")
+        for (storeName in storesToScan) {
+            collectImageAssetIdsFromValue(readStoreArray(repository, storeName), referencedAssetIds)
+        }
+        if (referencedAssetIds.isEmpty()) {
+            repository.writeLongMarker(IMAGE_ASSET_GC_LAST_RUN_MARKER_KEY, nowMs)
+            return
+        }
+        val filtered = JSONArray()
+        var removedCount = 0
+        for (index in 0 until imageAssets.length()) {
+            val item = imageAssets.optJSONObject(index) ?: continue
+            val assetId = item.optString("id", "").trim()
+            if (assetId.isNotEmpty() && !referencedAssetIds.contains(assetId)) {
+                removedCount += 1
+                continue
+            }
+            filtered.put(item)
+        }
+        if (removedCount > 0) {
+            repository.writeStoreJson("imageAssets", filtered.toString())
+        }
+        repository.writeLongMarker(IMAGE_ASSET_GC_LAST_RUN_MARKER_KEY, nowMs)
+    }
+
+    private fun collectImageAssetIdsFromValue(value: Any?, out: MutableSet<String>) {
+        when (value) {
+            is JSONArray -> {
+                for (index in 0 until value.length()) {
+                    collectImageAssetIdsFromValue(value.opt(index), out)
+                }
+            }
+            is JSONObject -> {
+                val keys = value.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val raw = value.opt(key)
+                    if (key == "imageId") {
+                        val directId = (raw as? String)?.trim().orEmpty()
+                        if (directId.isNotEmpty()) {
+                            out.add(directId)
+                        }
+                    }
+                    collectImageAssetIdsFromValue(raw, out)
+                }
+            }
+            is String -> {
+                val assetId = parseImageRefAssetId(value)
+                if (assetId.isNotEmpty()) {
+                    out.add(assetId)
+                }
+            }
+        }
     }
 
     private fun markSessionError(sessions: JSONArray, index: Int, message: String) {
@@ -1083,10 +1494,44 @@ object TopicGenerationNativeExecutor {
         )
     }
 
+    private fun isDesiredStateEnabled(
+        runtimeRepository: BackgroundRuntimeRepository,
+        sessionId: String,
+    ): Boolean {
+        if (sessionId.isBlank()) return false
+        val record =
+            runtimeRepository.getDesiredState(
+                taskType = TOPIC_GENERATION_JOB_TYPE,
+                scopeId = sessionId.trim(),
+            )
+        return record?.enabled ?: true
+    }
+
     private fun isScopeCancellationRequested(scopeId: String): Boolean {
         val normalized = scopeId.trim()
         if (normalized.isEmpty()) return false
         return cancelledScopes.contains(normalized)
+    }
+
+    private fun buildGeneratorSessionPatch(
+        session: JSONObject,
+        appendedEntries: JSONArray? = null,
+    ): JSONObject {
+        return JSONObject().apply {
+            put("id", session.optString("id", "").trim())
+            put("status", session.optString("status", "stopped"))
+            put("completedCount", session.optInt("completedCount", 0))
+            put("updatedAt", session.optString("updatedAt", nowIsoUtc()))
+            val lastError = session.optString("lastError", "").trim()
+            if (lastError.isNotEmpty()) {
+                put("lastError", lastError)
+            } else {
+                put("lastError", "")
+            }
+            if (appendedEntries != null && appendedEntries.length() > 0) {
+                put("appendEntries", appendedEntries)
+            }
+        }
     }
 
     private fun appendStatePatch(
@@ -1094,8 +1539,11 @@ object TopicGenerationNativeExecutor {
         scopeId: String,
         jobId: String?,
         stores: JSONObject,
+        assetIds: List<String> = emptyList(),
     ) {
         val normalizedScopeId = scopeId.ifBlank { BackgroundRuntimeRepository.GLOBAL_SCOPE_ID }
+        val normalizedAssetIds =
+            assetIds.map { id -> id.trim() }.filter { id -> id.isNotEmpty() }.distinct()
         runtimeRepository.appendDelta(
             taskType = TOPIC_GENERATION_JOB_TYPE,
             scopeId = normalizedScopeId,
@@ -1105,6 +1553,16 @@ object TopicGenerationNativeExecutor {
             payloadJson =
                 JSONObject().apply {
                     put("stores", stores)
+                    if (normalizedAssetIds.isNotEmpty()) {
+                        put("assetIds", JSONArray(normalizedAssetIds))
+                        put(
+                            "assetContext",
+                            JSONObject().apply {
+                                put("scope", normalizedScopeId)
+                                put("source", TOPIC_GENERATION_JOB_TYPE)
+                            },
+                        )
+                    }
                 }.toString(),
         )
     }

@@ -18,12 +18,15 @@ import java.net.URLDecoder
 import java.lang.ref.WeakReference
 import java.io.File
 import java.io.FileOutputStream
+import java.time.Instant
+import java.util.UUID
 
 @CapacitorPlugin(name = "LocalApi")
 class LocalApiBridgePlugin : Plugin() {
     companion object {
         @Volatile
         private var activePluginRef: WeakReference<LocalApiBridgePlugin>? = null
+        private const val IMAGE_REF_MIGRATION_MARKER_KEY = "image_ref_migration_v1_done"
 
         @JvmStatic
         fun emitBackgroundTick(
@@ -59,6 +62,7 @@ class LocalApiBridgePlugin : Plugin() {
     override fun load() {
         super.load()
         activePluginRef = WeakReference(this)
+        runOneTimeStoreMaintenance()
         ForegroundSyncService.ensureStartedIfEnabled(context)
     }
 
@@ -512,6 +516,255 @@ class LocalApiBridgePlugin : Plugin() {
             }
             writeStoreArray(storeName, arrayValue)
         }
+    }
+
+    private fun runOneTimeStoreMaintenance() {
+        runCatching { runOneTimeImageRefMigration() }
+        runCatching { TopicGenerationNativeExecutor.maybeRunImageAssetGc(repository) }
+    }
+
+    private fun runOneTimeImageRefMigration() {
+        if (repository.readBooleanMarker(IMAGE_REF_MIGRATION_MARKER_KEY, false)) return
+        val imageAssets = readStoreArray("imageAssets")
+        val assetIdByDataUrl = mutableMapOf<String, String>()
+        for (index in 0 until imageAssets.length()) {
+            val item = imageAssets.optJSONObject(index) ?: continue
+            val assetId = item.optString("id", "").trim()
+            val dataUrl = item.optString("dataUrl", "").trim()
+            if (assetId.isNotEmpty() && dataUrl.isNotEmpty()) {
+                assetIdByDataUrl[dataUrl] = assetId
+            }
+        }
+
+        val sessionsChanged =
+            migrateGeneratorSessionsImageRefs(
+                imageAssets = imageAssets,
+                assetIdByDataUrl = assetIdByDataUrl,
+            )
+        val groupMessagesChanged =
+            migrateGroupMessagesImageRefs(
+                imageAssets = imageAssets,
+                assetIdByDataUrl = assetIdByDataUrl,
+            )
+        if (sessionsChanged || groupMessagesChanged) {
+            repository.writeStoreJson("imageAssets", imageAssets.toString())
+        }
+        repository.writeBooleanMarker(IMAGE_REF_MIGRATION_MARKER_KEY, true)
+    }
+
+    private fun migrateGeneratorSessionsImageRefs(
+        imageAssets: JSONArray,
+        assetIdByDataUrl: MutableMap<String, String>,
+    ): Boolean {
+        val sessions = readStoreArray("generatorSessions")
+        var changed = false
+        for (sessionIndex in 0 until sessions.length()) {
+            val session = sessions.optJSONObject(sessionIndex) ?: continue
+            val entries = session.optJSONArray("entries") ?: continue
+            var sessionChanged = false
+            for (entryIndex in 0 until entries.length()) {
+                val entry = entries.optJSONObject(entryIndex) ?: continue
+                val createdAt = entry.optString("createdAt", "").trim().ifBlank { Instant.now().toString() }
+                val imageUrls = entry.optJSONArray("imageUrls") ?: JSONArray()
+                val migratedUrls = JSONArray()
+                var entryChanged = false
+                for (urlIndex in 0 until imageUrls.length()) {
+                    val rawUrl = imageUrls.optString(urlIndex, "").trim()
+                    if (rawUrl.isEmpty()) continue
+                    if (!TopicGenerationNativeExecutor.isInlineDataUrl(rawUrl)) {
+                        migratedUrls.put(rawUrl)
+                        continue
+                    }
+                    val ref =
+                        ensureImageAssetRefFromDataUrl(
+                            imageAssets = imageAssets,
+                            assetIdByDataUrl = assetIdByDataUrl,
+                            dataUrl = rawUrl,
+                            meta = null,
+                            createdAt = createdAt,
+                        )
+                    if (ref.isNotEmpty()) {
+                        migratedUrls.put(ref)
+                        if (ref != rawUrl) {
+                            entryChanged = true
+                        }
+                    }
+                }
+                if (entryChanged) {
+                    entry.put("imageUrls", migratedUrls)
+                }
+
+                val imageMetaByUrl = entry.optJSONObject("imageMetaByUrl")
+                if (imageMetaByUrl != null && imageMetaByUrl.length() > 0) {
+                    val migratedMetaByUrl = JSONObject()
+                    var metaChanged = false
+                    val keys = imageMetaByUrl.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        val value = imageMetaByUrl.opt(key)
+                        val normalizedKey = key.trim()
+                        var targetKey = normalizedKey
+                        if (TopicGenerationNativeExecutor.isInlineDataUrl(normalizedKey)) {
+                            targetKey =
+                                ensureImageAssetRefFromDataUrl(
+                                    imageAssets = imageAssets,
+                                    assetIdByDataUrl = assetIdByDataUrl,
+                                    dataUrl = normalizedKey,
+                                    meta = value as? JSONObject,
+                                    createdAt = createdAt,
+                                )
+                            if (targetKey.isNotEmpty() && targetKey != normalizedKey) {
+                                metaChanged = true
+                            }
+                        }
+                        val finalKey = targetKey.ifBlank { normalizedKey }
+                        if (!migratedMetaByUrl.has(finalKey)) {
+                            migratedMetaByUrl.put(finalKey, value)
+                        }
+                    }
+                    if (metaChanged) {
+                        entry.put("imageMetaByUrl", migratedMetaByUrl)
+                        entryChanged = true
+                    }
+                }
+                if (entryChanged) {
+                    entries.put(entryIndex, entry)
+                    sessionChanged = true
+                }
+            }
+            if (sessionChanged) {
+                session.put("entries", entries)
+                sessions.put(sessionIndex, session)
+                changed = true
+            }
+        }
+        if (changed) {
+            repository.writeStoreJson("generatorSessions", sessions.toString())
+        }
+        return changed
+    }
+
+    private fun migrateGroupMessagesImageRefs(
+        imageAssets: JSONArray,
+        assetIdByDataUrl: MutableMap<String, String>,
+    ): Boolean {
+        val messages = readStoreArray("groupMessages")
+        var changed = false
+        for (messageIndex in 0 until messages.length()) {
+            val message = messages.optJSONObject(messageIndex) ?: continue
+            val createdAt = message.optString("createdAt", "").trim().ifBlank { Instant.now().toString() }
+            var messageChanged = false
+
+            val attachments = message.optJSONArray("imageAttachments")
+            if (attachments != null) {
+                for (attachmentIndex in 0 until attachments.length()) {
+                    val attachment = attachments.optJSONObject(attachmentIndex) ?: continue
+                    val rawUrl = attachment.optString("url", "").trim()
+                    if (rawUrl.isEmpty()) continue
+                    if (TopicGenerationNativeExecutor.isInlineDataUrl(rawUrl)) {
+                        val ref =
+                            ensureImageAssetRefFromDataUrl(
+                                imageAssets = imageAssets,
+                                assetIdByDataUrl = assetIdByDataUrl,
+                                dataUrl = rawUrl,
+                                meta = attachment.optJSONObject("meta"),
+                                createdAt = createdAt,
+                            )
+                        val imageId = TopicGenerationNativeExecutor.parseImageRefAssetId(ref)
+                        if (ref.isNotEmpty()) {
+                            attachment.put("url", ref)
+                            if (imageId.isNotEmpty()) {
+                                attachment.put("imageId", imageId)
+                            }
+                            attachments.put(attachmentIndex, attachment)
+                            messageChanged = true
+                        }
+                    } else if (TopicGenerationNativeExecutor.isImageRef(rawUrl)) {
+                        val imageId = TopicGenerationNativeExecutor.parseImageRefAssetId(rawUrl)
+                        if (
+                            imageId.isNotEmpty() &&
+                                attachment.optString("imageId", "").trim().isEmpty()
+                        ) {
+                            attachment.put("imageId", imageId)
+                            attachments.put(attachmentIndex, attachment)
+                            messageChanged = true
+                        }
+                    }
+                }
+                if (messageChanged) {
+                    message.put("imageAttachments", attachments)
+                }
+            }
+
+            val imageMetaByUrl = message.optJSONObject("imageMetaByUrl")
+            if (imageMetaByUrl != null && imageMetaByUrl.length() > 0) {
+                val migratedMetaByUrl = JSONObject()
+                var metaChanged = false
+                val keys = imageMetaByUrl.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val value = imageMetaByUrl.opt(key)
+                    val normalizedKey = key.trim()
+                    var targetKey = normalizedKey
+                    if (TopicGenerationNativeExecutor.isInlineDataUrl(normalizedKey)) {
+                        targetKey =
+                            ensureImageAssetRefFromDataUrl(
+                                imageAssets = imageAssets,
+                                assetIdByDataUrl = assetIdByDataUrl,
+                                dataUrl = normalizedKey,
+                                meta = value as? JSONObject,
+                                createdAt = createdAt,
+                            )
+                        if (targetKey.isNotEmpty() && targetKey != normalizedKey) {
+                            metaChanged = true
+                        }
+                    }
+                    val finalKey = targetKey.ifBlank { normalizedKey }
+                    if (!migratedMetaByUrl.has(finalKey)) {
+                        migratedMetaByUrl.put(finalKey, value)
+                    }
+                }
+                if (metaChanged) {
+                    message.put("imageMetaByUrl", migratedMetaByUrl)
+                    messageChanged = true
+                }
+            }
+
+            if (messageChanged) {
+                messages.put(messageIndex, message)
+                changed = true
+            }
+        }
+        if (changed) {
+            repository.writeStoreJson("groupMessages", messages.toString())
+        }
+        return changed
+    }
+
+    private fun ensureImageAssetRefFromDataUrl(
+        imageAssets: JSONArray,
+        assetIdByDataUrl: MutableMap<String, String>,
+        dataUrl: String,
+        meta: JSONObject?,
+        createdAt: String,
+    ): String {
+        val normalizedDataUrl = dataUrl.trim()
+        if (normalizedDataUrl.isEmpty()) return ""
+        val existingId = assetIdByDataUrl[normalizedDataUrl]
+        if (!existingId.isNullOrBlank()) {
+            return TopicGenerationNativeExecutor.toImageRef(existingId)
+        }
+        val assetId = UUID.randomUUID().toString()
+        imageAssets.put(
+            JSONObject().apply {
+                put("id", assetId)
+                put("dataUrl", normalizedDataUrl)
+                put("meta", JSONObject((meta ?: JSONObject()).toString()))
+                put("createdAt", createdAt.ifBlank { Instant.now().toString() })
+            },
+        )
+        assetIdByDataUrl[normalizedDataUrl] = assetId
+        return TopicGenerationNativeExecutor.toImageRef(assetId)
     }
 
     private fun readPersonasArray(): JSONArray {
@@ -1076,6 +1329,50 @@ class LocalApiBridgePlugin : Plugin() {
             return
         }
 
+        if (method == "GET" && path == "/api/background-runtime/image-assets") {
+            val requestedIds =
+                readScopeIdsQueryParam(query, "ids")
+                    .map { value -> value.trim() }
+                    .filter { value -> value.isNotEmpty() }
+                    .distinct()
+            val limit = readIntQueryParam(query, "limit", 80).coerceIn(1, 300)
+            val targetIds =
+                if (requestedIds.size > limit) {
+                    requestedIds.take(limit)
+                } else {
+                    requestedIds
+                }
+            val imageAssets = readStoreArray("imageAssets")
+            val assetById = mutableMapOf<String, JSONObject>()
+            for (index in 0 until imageAssets.length()) {
+                val item = imageAssets.optJSONObject(index) ?: continue
+                val assetId = item.optString("id", "").trim()
+                if (assetId.isNotEmpty() && !assetById.containsKey(assetId)) {
+                    assetById[assetId] = item
+                }
+            }
+            val items = JSONArray()
+            val missingIds = JSONArray()
+            for (assetId in targetIds) {
+                val asset = assetById[assetId]
+                if (asset == null) {
+                    missingIds.put(assetId)
+                } else {
+                    items.put(JSONObject(asset.toString()))
+                }
+            }
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("items", items)
+                    put("missingIds", missingIds)
+                },
+            )
+            return
+        }
+
         if (method == "PUT" && path == "/api/background-runtime/delta/ack") {
             val body = call.getObject("body")
             if (body == null) {
@@ -1576,6 +1873,7 @@ class LocalApiBridgePlugin : Plugin() {
             val modeRaw = bodyJson.optString("mode", "merge").trim().lowercase()
             val mode = if (modeRaw == "replace") "replace" else "merge"
             applyStoresPayload(storesJson, mode)
+            TopicGenerationNativeExecutor.maybeRunImageAssetGc(repository)
             respond(
                 call,
                 200,
@@ -1620,6 +1918,7 @@ class LocalApiBridgePlugin : Plugin() {
             val modeRaw = bodyJson.optString("mode", "merge").trim().lowercase()
             val mode = if (modeRaw == "replace") "replace" else "merge"
             applyStoresPayload(storesJson, mode)
+            TopicGenerationNativeExecutor.maybeRunImageAssetGc(repository)
             respond(
                 call,
                 200,

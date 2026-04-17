@@ -139,8 +139,16 @@ object ComfyNativeClient {
         context: Context,
         settings: JSONObject,
         imageUrls: List<String>,
+        debugEmitter: ((String, JSONObject) -> Unit)? = null,
     ): List<String> {
-        if (imageUrls.isEmpty()) return emptyList()
+        if (imageUrls.isEmpty()) {
+            emitDebug(
+                debugEmitter,
+                "localize_skipped_empty",
+                JSONObject().put("requestedCount", 0),
+            )
+            return emptyList()
+        }
         val requestedBaseUrl =
             normalizeBaseUrl(
                 settings.optString("comfyBaseUrl", COMFY_DEFAULT_BASE_URL).ifBlank {
@@ -149,16 +157,60 @@ object ComfyNativeClient {
             )
         val auth = settings.optJSONObject("comfyAuth")
         val baseUrl = resolveComfyBaseUrl(requestedBaseUrl, auth)
+        emitDebug(
+            debugEmitter,
+            "localize_started",
+            JSONObject().apply {
+                put("requestedCount", imageUrls.size)
+                put("baseUrl", baseUrl)
+                put("hasAuth", auth != null)
+            },
+        )
         val localized = LinkedHashSet<String>()
-        for (rawSource in imageUrls) {
+        for ((index, rawSource) in imageUrls.withIndex()) {
             val source = rawSource.trim()
-            if (source.isEmpty()) continue
-            if (source.startsWith("data:")) {
-                localized.add(source)
+            if (source.isEmpty()) {
+                emitDebug(
+                    debugEmitter,
+                    "localize_item_skipped_empty",
+                    JSONObject().put("index", index),
+                )
                 continue
             }
+            val sourcePreview = source.take(220)
+            emitDebug(
+                debugEmitter,
+                "localize_item_start",
+                JSONObject().apply {
+                    put("index", index)
+                    put("sourcePreview", sourcePreview)
+                    put("isDataUrl", source.startsWith("data:"))
+                },
+            )
+            if (source.startsWith("data:")) {
+                localized.add(source)
+                emitDebug(
+                    debugEmitter,
+                    "localize_item_passthrough_data_url",
+                    JSONObject().apply {
+                        put("index", index)
+                        put("sourceLength", source.length)
+                    },
+                )
+                continue
+            }
+            var fallbackReason = "http_fetch_failed"
             try {
                 val normalizedSource = normalizeReferenceSourceUrl(source, baseUrl)
+                emitDebug(
+                    debugEmitter,
+                    "localize_fetch_attempt",
+                    JSONObject().apply {
+                        put("index", index)
+                        put("mode", "no_auth")
+                        put("url", normalizedSource)
+                    },
+                )
                 var response =
                     requestBinary(
                         url = normalizedSource,
@@ -168,8 +220,30 @@ object ComfyNativeClient {
                         connectTimeoutMs = 10_000,
                         readTimeoutMs = 30_000,
                         cacheNoStore = true,
+                        traceLabel = "localize_download_no_auth",
+                        debugEmitter = debugEmitter,
                     )
+                emitDebug(
+                    debugEmitter,
+                    "localize_fetch_result",
+                    JSONObject().apply {
+                        put("index", index)
+                        put("mode", "no_auth")
+                        put("status", response.code)
+                        put("bytes", response.bytes.size)
+                        put("contentType", response.contentType ?: "")
+                    },
+                )
                 if (response.code !in 200..299 && auth != null) {
+                    emitDebug(
+                        debugEmitter,
+                        "localize_fetch_attempt",
+                        JSONObject().apply {
+                            put("index", index)
+                            put("mode", "auth_retry")
+                            put("url", normalizedSource)
+                        },
+                    )
                     response =
                         requestBinary(
                             url = normalizedSource,
@@ -179,7 +253,20 @@ object ComfyNativeClient {
                             connectTimeoutMs = 10_000,
                             readTimeoutMs = 30_000,
                             cacheNoStore = true,
+                            traceLabel = "localize_download_auth_retry",
+                            debugEmitter = debugEmitter,
                         )
+                    emitDebug(
+                        debugEmitter,
+                        "localize_fetch_result",
+                        JSONObject().apply {
+                            put("index", index)
+                            put("mode", "auth_retry")
+                            put("status", response.code)
+                            put("bytes", response.bytes.size)
+                            put("contentType", response.contentType ?: "")
+                        },
+                    )
                 }
                 if (response.code in 200..299 && response.bytes.isNotEmpty()) {
                     val mimeType =
@@ -189,23 +276,92 @@ object ComfyNativeClient {
                     val keepOriginalFormat =
                         mimeType.equals("image/webp", ignoreCase = true) ||
                             sourceLooksLikeWebp(source)
+                    emitDebug(
+                        debugEmitter,
+                        "localize_transform_start",
+                        JSONObject().apply {
+                            put("index", index)
+                            put("bytes", response.bytes.size)
+                            put("mimeType", mimeType)
+                            put("keepOriginalFormat", keepOriginalFormat)
+                        },
+                    )
                     if (keepOriginalFormat) {
-                        localized.add(encodeBytesAsDataUrl(response.bytes, mimeType))
+                        val dataUrl = encodeBytesAsDataUrl(response.bytes, mimeType)
+                        localized.add(dataUrl)
+                        emitDebug(
+                            debugEmitter,
+                            "localize_transform_done",
+                            JSONObject().apply {
+                                put("index", index)
+                                put("strategy", "keep_original")
+                                put("mimeType", mimeType)
+                                put("resultLength", dataUrl.length)
+                            },
+                        )
                         continue
                     }
                     val webpDataUrl = transcodeBytesToWebpDataUrl(response.bytes)
                     if (!webpDataUrl.isNullOrBlank()) {
                         localized.add(webpDataUrl)
+                        emitDebug(
+                            debugEmitter,
+                            "localize_transform_done",
+                            JSONObject().apply {
+                                put("index", index)
+                                put("strategy", "transcode_webp")
+                                put("mimeType", "image/webp")
+                                put("resultLength", webpDataUrl.length)
+                            },
+                        )
                     } else {
-                        localized.add(encodeBytesAsDataUrl(response.bytes, mimeType))
+                        val fallbackDataUrl = encodeBytesAsDataUrl(response.bytes, mimeType)
+                        localized.add(fallbackDataUrl)
+                        emitDebug(
+                            debugEmitter,
+                            "localize_transform_fallback_original",
+                            JSONObject().apply {
+                                put("index", index)
+                                put("reason", "webp_transcode_failed")
+                                put("mimeType", mimeType)
+                                put("resultLength", fallbackDataUrl.length)
+                            },
+                        )
                     }
                     continue
                 }
-            } catch (_: Exception) {
-                // Best-effort localization: keep original URL fallback.
+                fallbackReason = "http_status_${response.code}_bytes_${response.bytes.size}"
+            } catch (error: Exception) {
+                fallbackReason = "${error::class.java.simpleName}:${error.message ?: "unknown_error"}"
+                emitDebug(
+                    debugEmitter,
+                    "localize_item_exception",
+                    JSONObject().apply {
+                        put("index", index)
+                        put("errorType", error::class.java.simpleName)
+                        put("error", error.message ?: "localize_exception")
+                    },
+                )
             }
             localized.add(source)
+            emitDebug(
+                debugEmitter,
+                "localize_item_fallback_source",
+                JSONObject().apply {
+                    put("index", index)
+                    put("reason", fallbackReason)
+                    put("sourcePreview", sourcePreview)
+                },
+            )
         }
+        emitDebug(
+            debugEmitter,
+            "localize_completed",
+            JSONObject().apply {
+                put("requestedCount", imageUrls.size)
+                put("localizedCount", localized.size)
+            },
+        )
         return localized.toList()
     }
 
@@ -360,6 +516,7 @@ object ComfyNativeClient {
                     context = context,
                     settings = settings,
                     imageUrls = urls,
+                    debugEmitter = debugEmitter,
                 )
             return ComfyRunResult(
                 imageUrls = if (localizedUrls.isNotEmpty()) localizedUrls else urls,

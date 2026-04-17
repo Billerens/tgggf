@@ -4,6 +4,7 @@ import type { ImageGenerationMeta, Persona } from "../types";
 import type { LookEnhancePromptOverrides, LookEnhanceTarget } from "../ui/types";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { ImagePreviewModal } from "./ImagePreviewModal";
+import { dbApi } from "../db";
 
 interface GenerationPaneProps {
   activePersona: Persona | null;
@@ -39,6 +40,12 @@ interface GenerationPaneProps {
   onStop: () => void;
 }
 
+function parseIdbAssetId(value: string) {
+  const normalized = value.trim();
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
+
 export function GenerationPane({
   activePersona,
   generationSessionId,
@@ -68,12 +75,19 @@ export function GenerationPane({
     sourceUrl: string;
     sourceIndex: number;
   } | null>(null);
+  const [resolvedImageBySource, setResolvedImageBySource] = useState<
+    Record<string, string>
+  >({});
 
   useEffect(() => {
-    if (!previewTarget || !previewSrc) return;
+    if (!previewTarget) return;
     const nextSource = generatedImageUrls[previewTarget.sourceIndex] ?? "";
-    if (!nextSource || nextSource === previewSrc) return;
-    setPreviewSrc(nextSource);
+    if (!nextSource) return;
+    const resolvedPreview =
+      resolvedImageBySource[nextSource] ??
+      (parseIdbAssetId(nextSource) ? "" : nextSource);
+    if (resolvedPreview && resolvedPreview === previewSrc) return;
+    setPreviewSrc(resolvedPreview || null);
     setPreviewMeta(imageMetaByUrl[nextSource]);
     setPreviewTarget((prev) =>
       prev
@@ -83,7 +97,50 @@ export function GenerationPane({
           }
         : prev,
     );
-  }, [generatedImageUrls, imageMetaByUrl, previewTarget, previewSrc]);
+  }, [
+    generatedImageUrls,
+    imageMetaByUrl,
+    previewTarget,
+    previewSrc,
+    resolvedImageBySource,
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadResolved = async () => {
+      const nextResolved: Record<string, string> = {};
+      const refsById = new Map<string, string[]>();
+      for (const sourceUrl of generatedImageUrls) {
+        const assetId = parseIdbAssetId(sourceUrl);
+        if (!assetId) {
+          nextResolved[sourceUrl] = sourceUrl;
+          continue;
+        }
+        const bucket = refsById.get(assetId) ?? [];
+        bucket.push(sourceUrl);
+        refsById.set(assetId, bucket);
+      }
+      if (refsById.size > 0) {
+        const assets = await dbApi.getImageAssets(Array.from(refsById.keys()));
+        const assetDataUrlById = Object.fromEntries(
+          assets.map((asset) => [asset.id, asset.dataUrl]),
+        );
+        for (const [assetId, sourceUrls] of refsById.entries()) {
+          const resolvedDataUrl = assetDataUrlById[assetId] ?? "";
+          for (const sourceUrl of sourceUrls) {
+            nextResolved[sourceUrl] = resolvedDataUrl;
+          }
+        }
+      }
+      if (!cancelled) {
+        setResolvedImageBySource(nextResolved);
+      }
+    };
+    void loadResolved();
+    return () => {
+      cancelled = true;
+    };
+  }, [generatedImageUrls]);
   const previewResolvedMeta = previewTarget
     ? previewMeta ?? imageMetaByUrl[previewTarget.sourceUrl]
     : previewMeta;
@@ -187,7 +244,9 @@ export function GenerationPane({
                   key={`${url}-${index}`}
                   className="bubble-image-btn"
                   onClick={() => {
-                    setPreviewSrc(url);
+                    const resolvedSrc =
+                      resolvedImageBySource[url] ?? (parseIdbAssetId(url) ? "" : url);
+                    setPreviewSrc(resolvedSrc || null);
                     const meta = imageMetaByUrl[url];
                     setPreviewMeta(meta);
                     setPreviewTarget(
@@ -201,7 +260,16 @@ export function GenerationPane({
                     );
                   }}
                 >
-                  <img src={url} alt={`generated-${index + 1}`} loading="lazy" />
+                  {(() => {
+                    const resolvedSrc =
+                      resolvedImageBySource[url] ?? (parseIdbAssetId(url) ? "" : url);
+                    if (!resolvedSrc) {
+                      return <div className="image-skeleton-card" />;
+                    }
+                    return (
+                      <img src={resolvedSrc} alt={`generated-${index + 1}`} loading="lazy" />
+                    );
+                  })()}
                 </button>
               ))}
               {Array.from({ length: pendingImageCount }).map((_, index) => (

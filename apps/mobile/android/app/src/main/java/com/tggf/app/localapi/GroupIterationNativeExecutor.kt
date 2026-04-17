@@ -428,6 +428,7 @@ object GroupIterationNativeExecutor {
         val personas = readStoreArray(repository, "personas")
         val events = readStoreArray(repository, "groupEvents")
         val messages = readStoreArray(repository, "groupMessages")
+        val initialEventsLength = events.length()
         val personaStates = readStoreArray(repository, "groupPersonaStates")
         val relationEdges = readStoreArray(repository, "groupRelationEdges")
         val sharedMemories = readStoreArray(repository, "groupSharedMemories")
@@ -669,6 +670,7 @@ object GroupIterationNativeExecutor {
         var imageGenerationStatus = "not_requested"
         var imageGenerationExpected = 0
         var imageGenerationCompleted = 0
+        var generatedAssetIds: List<String> = emptyList()
         if (!speakerPersonaId.isNullOrBlank()) {
             val activeSpeakerPersonaId = speakerPersonaId.trim()
             val speakerPersona = findObjectById(personas, activeSpeakerPersonaId)
@@ -958,6 +960,7 @@ object GroupIterationNativeExecutor {
                     imageGenerationStatus = imageResult.status
                     imageGenerationExpected = imageResult.expected
                     imageGenerationCompleted = imageResult.completed
+                    generatedAssetIds = imageResult.assetIds
                 } else {
                     imageGenerationStatus = "disabled"
                     appendRuntimeEvent(
@@ -1070,19 +1073,44 @@ object GroupIterationNativeExecutor {
         if (persistedMessageId != null) {
             repository.writeStoreJson("groupMessages", messages.toString())
         }
+        val patchEvents = JSONArray()
+        if (events.length() > initialEventsLength) {
+            for (index in initialEventsLength until events.length()) {
+                val event = events.optJSONObject(index) ?: continue
+                patchEvents.put(JSONObject(event.toString()))
+            }
+        }
+        val patchStores =
+            JSONObject().apply {
+                put(
+                    "groupRooms",
+                    JSONArray().apply {
+                        put(JSONObject(nextRoom.toString()))
+                    },
+                )
+                if (patchEvents.length() > 0) {
+                    put("groupEvents", patchEvents)
+                }
+                if (persistedMessageId != null) {
+                    val persistedMessage = findObjectById(messages, persistedMessageId)
+                    if (persistedMessage != null) {
+                        put(
+                            "groupMessages",
+                            JSONArray().apply {
+                                put(JSONObject(persistedMessage.toString()))
+                            },
+                        )
+                    }
+                }
+            }
         appendStatePatch(
             runtime = runtime,
             scopeId = roomId,
             jobId = job.id,
-            stores =
-                JSONObject().apply {
-                    put("groupRooms", JSONArray(rooms.toString()))
-                    put("groupEvents", JSONArray(events.toString()))
-                    if (persistedMessageId != null) {
-                        put("groupMessages", JSONArray(messages.toString()))
-                    }
-                },
+            stores = patchStores,
+            assetIds = generatedAssetIds,
         )
+        TopicGenerationNativeExecutor.maybeRunImageAssetGc(repository)
 
         jobs.rescheduleJob(
             id = job.id,
@@ -1862,6 +1890,7 @@ object GroupIterationNativeExecutor {
         val status: String,
         val expected: Int,
         val completed: Int,
+        val assetIds: List<String> = emptyList(),
     )
 
     private fun isNativeGroupImagesEnabled(settings: JSONObject): Boolean {
@@ -1941,7 +1970,12 @@ object GroupIterationNativeExecutor {
             message.put("imageGenerationPending", false)
             message.put("imageGenerationExpected", 0)
             message.put("imageGenerationCompleted", 0)
-            return GroupImageGenerationResult(status = "no_prompts", expected = 0, completed = 0)
+            return GroupImageGenerationResult(
+                status = "no_prompts",
+                expected = 0,
+                completed = 0,
+                assetIds = emptyList(),
+            )
         }
 
         val messageId = message.optString("id", "").trim()
@@ -1980,6 +2014,7 @@ object GroupIterationNativeExecutor {
                 ?: JSONObject().also { message.put("imageMetaByUrl", it) }
 
         var completed = 0
+        val generatedAssetIds = LinkedHashSet<String>()
 
         try {
             for (index in promptsForGeneration.indices) {
@@ -2015,22 +2050,25 @@ object GroupIterationNativeExecutor {
                             put("model", comfyResult.model)
                         }
                     }
-                TopicGenerationNativeExecutor.appendGeneratedImageAssets(
+                val appendedAssets =
+                    TopicGenerationNativeExecutor.appendGeneratedImageAssets(
                     repository = repository,
                     imageUrls = comfyResult.imageUrls,
                     meta = meta,
                     createdAt = nowIsoUtc(),
                 )
-                for (url in comfyResult.imageUrls) {
-                    if (!imageAttachmentExists(imageAttachments, url)) {
+                for (appended in appendedAssets) {
+                    generatedAssetIds.add(appended.id)
+                    if (!imageAttachmentExists(imageAttachments, appended.ref)) {
                         imageAttachments.put(
                             JSONObject().apply {
-                                put("url", url)
-                                put("meta", JSONObject(meta.toString()))
+                                put("url", appended.ref)
+                                put("imageId", appended.id)
+                                put("meta", JSONObject(appended.meta.toString()))
                             },
                         )
                     }
-                    imageMetaByUrl.put(url, JSONObject(meta.toString()))
+                    imageMetaByUrl.put(appended.ref, JSONObject(appended.meta.toString()))
                 }
                 completed += 1
                 val progressStatus = if (completed >= expected) "completed" else "progress"
@@ -2069,7 +2107,12 @@ object GroupIterationNativeExecutor {
             message.put("imageAttachments", imageAttachments)
             message.put("imageMetaByUrl", imageMetaByUrl)
 
-            return GroupImageGenerationResult(status = "completed", expected = expected, completed = expected)
+            return GroupImageGenerationResult(
+                status = "completed",
+                expected = expected,
+                completed = expected,
+                assetIds = generatedAssetIds.toList(),
+            )
         } catch (error: Exception) {
             message.put("imageGenerationPending", false)
             message.put("imageGenerationExpected", expected)
@@ -2119,6 +2162,7 @@ object GroupIterationNativeExecutor {
                 status = "generation_failed",
                 expected = expected,
                 completed = completed,
+                assetIds = generatedAssetIds.toList(),
             )
         }
     }
@@ -2182,8 +2226,11 @@ object GroupIterationNativeExecutor {
         scopeId: String,
         jobId: String?,
         stores: JSONObject,
+        assetIds: List<String> = emptyList(),
     ) {
         val normalizedScopeId = scopeId.ifBlank { BackgroundRuntimeRepository.GLOBAL_SCOPE_ID }
+        val normalizedAssetIds =
+            assetIds.map { id -> id.trim() }.filter { id -> id.isNotEmpty() }.distinct()
         runtime.appendDelta(
             taskType = GROUP_ITERATION_JOB_TYPE,
             scopeId = normalizedScopeId,
@@ -2193,6 +2240,16 @@ object GroupIterationNativeExecutor {
             payloadJson =
                 JSONObject().apply {
                     put("stores", stores)
+                    if (normalizedAssetIds.isNotEmpty()) {
+                        put("assetIds", JSONArray(normalizedAssetIds))
+                        put(
+                            "assetContext",
+                            JSONObject().apply {
+                                put("scope", normalizedScopeId)
+                                put("source", GROUP_ITERATION_JOB_TYPE)
+                            },
+                        )
+                    }
                 }.toString(),
         )
     }

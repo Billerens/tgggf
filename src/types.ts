@@ -1,6 +1,7 @@
 export type ChatRole = "system" | "user" | "assistant";
 export type GroupRoomMode = "personas_only" | "personas_plus_user";
 export type GroupRoomStatus = "active" | "paused" | "archived";
+export type ImageRef = `idb://${string}`;
 export type GroupRoomRuntimePhase =
   | "idle"
   | "orchestrating"
@@ -272,7 +273,7 @@ export interface GroupMessageMention {
 }
 
 export interface GroupMessageImageAttachment {
-  url: string;
+  url: ImageRef | string;
   imageId?: string;
   meta?: ImageGenerationMeta;
 }
@@ -399,7 +400,7 @@ export interface GeneratorImageEntry {
   id: string;
   iteration: number;
   prompt: string;
-  imageUrls: string[];
+  imageUrls: Array<ImageRef | string>;
   imageMetaByUrl?: Record<string, ImageGenerationMeta>;
   createdAt: string;
 }

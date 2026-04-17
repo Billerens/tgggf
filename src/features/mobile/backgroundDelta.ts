@@ -1,4 +1,5 @@
 import { getRuntimeContext } from "../../platform/runtimeContext";
+import type { ImageAsset } from "../../types";
 
 interface LocalApiPluginRequestInput {
   method: "GET" | "PUT";
@@ -55,6 +56,11 @@ export interface AckDeltaResponse {
   ackedUpToId: number;
   taskType: string | null;
   deletedCount: number;
+}
+
+export interface GetBackgroundImageAssetsResponse {
+  items: ImageAsset[];
+  missingIds: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -220,6 +226,64 @@ export async function ackBackgroundDelta(
         : null,
     deletedCount: toSafeNumber(payload.deletedCount, 0),
   };
+}
+
+function parseImageAsset(raw: unknown): ImageAsset | null {
+  if (!isRecord(raw)) return null;
+  const id = toSafeString(raw.id).trim();
+  const dataUrl = toSafeString(raw.dataUrl).trim();
+  const createdAt = toSafeString(raw.createdAt).trim();
+  if (!id || !dataUrl || !createdAt) return null;
+  return {
+    id,
+    dataUrl,
+    createdAt,
+    meta: isRecord(raw.meta) ? (raw.meta as ImageAsset["meta"]) : undefined,
+    mimeType: typeof raw.mimeType === "string" ? raw.mimeType : undefined,
+    byteSize: typeof raw.byteSize === "number" ? raw.byteSize : undefined,
+    storageVersion:
+      typeof raw.storageVersion === "number" ? raw.storageVersion : undefined,
+  };
+}
+
+export async function getBackgroundImageAssets(
+  input: {
+    ids: string[];
+    limit?: number;
+  },
+  options: BackgroundDeltaRequestOptions = {},
+): Promise<GetBackgroundImageAssetsResponse> {
+  const normalizedIds = Array.from(
+    new Set(input.ids.map((value) => value.trim()).filter(Boolean)),
+  );
+  if (normalizedIds.length === 0) {
+    return { items: [], missingIds: [] };
+  }
+  const params = new URLSearchParams();
+  params.set("ids", normalizedIds.join(","));
+  if (typeof input.limit === "number" && Number.isFinite(input.limit)) {
+    params.set("limit", String(Math.max(1, Math.min(300, Math.floor(input.limit)))));
+  }
+  const payload = await requestBackgroundDelta(
+    "GET",
+    `/api/background-runtime/image-assets?${params.toString()}`,
+    undefined,
+    options,
+  );
+  if (!isRecord(payload)) {
+    return { items: [], missingIds: normalizedIds };
+  }
+  const items = Array.isArray(payload.items)
+    ? payload.items
+        .map(parseImageAsset)
+        .filter((row): row is ImageAsset => Boolean(row))
+    : [];
+  const missingIds = Array.isArray(payload.missingIds)
+    ? payload.missingIds
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter(Boolean)
+    : [];
+  return { items, missingIds };
 }
 
 export async function triggerBackgroundRuntime(

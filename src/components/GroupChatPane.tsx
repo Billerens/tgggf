@@ -696,6 +696,12 @@ function buildImageRetryBlockOptions(message: GroupMessage) {
   });
 }
 
+function parseIdbAssetId(value: string) {
+  const normalized = value.trim();
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
+
 export function GroupChatPane({
   activeRoom,
   participants,
@@ -732,6 +738,9 @@ export function GroupChatPane({
     sourceIndex: number;
   } | null>(null);
   const [avatarByPersonaId, setAvatarByPersonaId] = useState<
+    Record<string, string>
+  >({});
+  const [resolvedImageBySource, setResolvedImageBySource] = useState<
     Record<string, string>
   >({});
   const [imageRetryDialog, setImageRetryDialog] = useState<{
@@ -798,7 +807,50 @@ export function GroupChatPane({
   }, [personas]);
 
   useEffect(() => {
-    if (!previewTarget || !previewSrc) return;
+    let cancelled = false;
+    const loadAttachmentAssets = async () => {
+      const refsById = new Map<string, string[]>();
+      const nextResolved: Record<string, string> = {};
+      for (const message of messages) {
+        const attachments = message.imageAttachments ?? [];
+        for (const attachment of attachments) {
+          const sourceUrl = attachment.url.trim();
+          if (!sourceUrl) continue;
+          const directId =
+            attachment.imageId?.trim() || parseIdbAssetId(sourceUrl);
+          if (!directId) {
+            nextResolved[sourceUrl] = sourceUrl;
+            continue;
+          }
+          const bucket = refsById.get(directId) ?? [];
+          bucket.push(sourceUrl);
+          refsById.set(directId, bucket);
+        }
+      }
+      if (refsById.size > 0) {
+        const assets = await dbApi.getImageAssets(Array.from(refsById.keys()));
+        const assetById = Object.fromEntries(
+          assets.map((asset) => [asset.id, asset.dataUrl]),
+        );
+        for (const [assetId, sourceUrls] of refsById.entries()) {
+          const resolvedDataUrl = assetById[assetId] ?? "";
+          for (const sourceUrl of sourceUrls) {
+            nextResolved[sourceUrl] = resolvedDataUrl;
+          }
+        }
+      }
+      if (!cancelled) {
+        setResolvedImageBySource(nextResolved);
+      }
+    };
+    void loadAttachmentAssets();
+    return () => {
+      cancelled = true;
+    };
+  }, [messages]);
+
+  useEffect(() => {
+    if (!previewTarget) return;
     const message = messages.find(
       (candidate) => candidate.id === previewTarget.messageId,
     );
@@ -812,31 +864,35 @@ export function GroupChatPane({
     )
       ? previewTarget.sourceUrl
       : "";
-    const nextSource =
+    const nextSourceUrl =
       preferredByIndex ||
       preferredBySource ||
       attachments[0]?.url ||
-      previewSrc;
+      "";
 
-    if (!nextSource || nextSource === previewSrc) {
+    if (!nextSourceUrl) {
       return;
     }
+    const nextPreviewSrc =
+      resolvedImageBySource[nextSourceUrl] ??
+      (parseIdbAssetId(nextSourceUrl) ? "" : nextSourceUrl);
+    if (nextPreviewSrc && nextPreviewSrc === previewSrc) return;
 
     const resolvedMeta =
-      attachments.find((attachment) => attachment.url === nextSource)?.meta ??
-      message.imageMetaByUrl?.[nextSource];
+      attachments.find((attachment) => attachment.url === nextSourceUrl)?.meta ??
+      message.imageMetaByUrl?.[nextSourceUrl];
 
-    setPreviewSrc(nextSource);
+    setPreviewSrc(nextPreviewSrc || null);
     setPreviewMeta(resolvedMeta);
     setPreviewTarget((prev) =>
       prev
         ? {
-            ...prev,
-            sourceUrl: nextSource,
+          ...prev,
+            sourceUrl: nextSourceUrl,
           }
         : prev,
     );
-  }, [messages, previewTarget, previewSrc]);
+  }, [messages, previewTarget, previewSrc, resolvedImageBySource]);
 
   const participantCount = participants.length;
   const technicalEvents = useMemo(
@@ -1540,13 +1596,16 @@ export function GroupChatPane({
                       const resolvedMeta =
                         attachment.meta ??
                         message.imageMetaByUrl?.[attachment.url];
+                      const resolvedAttachmentSrc =
+                        resolvedImageBySource[attachment.url] ??
+                        (parseIdbAssetId(attachment.url) ? "" : attachment.url);
                       return (
                         <button
                           key={`${message.id}-attachment-${index}`}
                           type="button"
                           className="bubble-image-btn"
                           onClick={() => {
-                            setPreviewSrc(attachment.url);
+                            setPreviewSrc(resolvedAttachmentSrc || null);
                             setPreviewMeta(resolvedMeta);
                             setPreviewTarget({
                               messageId: message.id,
@@ -1555,11 +1614,15 @@ export function GroupChatPane({
                             });
                           }}
                         >
-                          <img
-                            src={attachment.url}
-                            alt={`group-generated-${index + 1}`}
-                            loading="lazy"
-                          />
+                          {resolvedAttachmentSrc ? (
+                            <img
+                              src={resolvedAttachmentSrc}
+                              alt={`group-generated-${index + 1}`}
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div className="image-skeleton-card" />
+                          )}
                         </button>
                       );
                     })}

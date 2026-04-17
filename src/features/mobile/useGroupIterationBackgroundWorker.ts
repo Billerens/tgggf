@@ -24,6 +24,7 @@ import { updateForegroundWorkerStatus } from './foregroundService';
 import { setBackgroundDesiredState } from './backgroundRuntime';
 import {
   ackBackgroundDelta,
+  getBackgroundImageAssets,
   getBackgroundDelta,
   triggerBackgroundRuntime,
 } from './backgroundDelta';
@@ -165,6 +166,63 @@ function collectPersonaImageAssetIds(personas: Persona[]) {
   }
 
   return Array.from(ids);
+}
+
+function collectIdbAssetIdsFromValue(value: unknown, out: Set<string>) {
+  if (typeof value === 'string') {
+    const id = parseIdbImageAssetId(value);
+    if (id) out.add(id);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectIdbAssetIdsFromValue(item, out);
+    }
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (key === 'imageId' && typeof nested === 'string' && nested.trim()) {
+      out.add(nested.trim());
+    }
+    collectIdbAssetIdsFromValue(nested, out);
+  }
+}
+
+function collectGroupPatchAssetIds(payload: unknown) {
+  const ids = new Set<string>();
+  if (!isRecord(payload)) return [] as string[];
+  if (Array.isArray(payload.assetIds)) {
+    for (const value of payload.assetIds) {
+      if (typeof value !== 'string') continue;
+      const normalized = value.trim();
+      if (normalized) ids.add(normalized);
+    }
+  }
+  if (isRecord(payload.stores)) {
+    collectIdbAssetIdsFromValue(payload.stores, ids);
+  }
+  return Array.from(ids);
+}
+
+async function hydrateMissingImageAssetsByIds(assetIds: string[]) {
+  const normalizedIds = Array.from(new Set(assetIds.map((value) => value.trim()).filter(Boolean)));
+  if (normalizedIds.length === 0) return;
+  const existing = await dbApi.getImageAssets(normalizedIds);
+  const existingIds = new Set(existing.map((asset) => asset.id));
+  const missing = normalizedIds.filter((id) => !existingIds.has(id));
+  if (missing.length === 0) return;
+  const chunkSize = 60;
+  for (let start = 0; start < missing.length; start += chunkSize) {
+    const chunk = missing.slice(start, start + chunkSize);
+    const response = await getBackgroundImageAssets({
+      ids: chunk,
+      limit: chunk.length,
+    });
+    for (const item of response.items) {
+      await dbApi.saveImageAsset(item);
+    }
+  }
 }
 
 function getStoredSinceId() {
@@ -480,15 +538,20 @@ export function useGroupIterationBackgroundWorker({
         }
 
         let maxAppliedId = sinceId;
+        const pendingAssetIds = new Set<string>();
         for (const item of response.items) {
           if (item.kind === 'state_patch' && isRecord(item.payload) && isRecord(item.payload.stores)) {
             await applyGroupStatePatch(item.payload.stores, preferredRoomId, syncGroupStateFromDb);
+            for (const assetId of collectGroupPatchAssetIds(item.payload)) {
+              pendingAssetIds.add(assetId);
+            }
           }
           if (item.id > maxAppliedId) {
             maxAppliedId = item.id;
           }
         }
         if (maxAppliedId > sinceId) {
+          await hydrateMissingImageAssetsByIds(Array.from(pendingAssetIds));
           await ackBackgroundDelta({
             ackedUpToId: maxAppliedId,
             taskType: GROUP_ITERATION_JOB_TYPE,
