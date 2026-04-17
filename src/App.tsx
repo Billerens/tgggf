@@ -320,6 +320,12 @@ export default function App() {
     PersonaLookPack[]
   >([]);
   const [generationTopic, setGenerationTopic] = useState("");
+  const [generationPromptMode, setGenerationPromptMode] = useState<
+    "theme_llm" | "direct_prompt"
+  >("theme_llm");
+  const [generationDirectPromptSeed, setGenerationDirectPromptSeed] = useState<
+    number | null
+  >(null);
   const [generationInfinite, setGenerationInfinite] = useState(false);
   const [generationCountLimit, setGenerationCountLimit] = useState(5);
   const [generationDelaySeconds, setGenerationDelaySeconds] = useState(2);
@@ -496,11 +502,15 @@ export default function App() {
     personas,
     activePersonaId,
     generationTopic,
+    generationPromptMode,
+    generationDirectPromptSeed,
     generationInfinite,
     generationCountLimit,
     generationDelaySeconds,
     generationIsRunning,
     setGenerationTopic,
+    setGenerationPromptMode,
+    setGenerationDirectPromptSeed,
     setGenerationInfinite,
     setGenerationCountLimit,
     setGenerationDelaySeconds,
@@ -562,12 +572,19 @@ export default function App() {
     chatImageMetaByUrl,
     setGenerationSessions,
   });
-  const { runGenerationStep, startGeneration, stopGeneration } = useTopicGenerator({
+  const {
+    runGenerationStep,
+    startGeneration,
+    startSingleGeneration,
+    stopGeneration,
+  } = useTopicGenerator({
     isAndroidRuntime,
     settings,
     personas,
     generationPersonaId,
     generationTopic,
+    generationPromptMode,
+    generationDirectPromptSeed,
     generationInfinite,
     generationCountLimit,
     generationDelaySeconds,
@@ -1069,6 +1086,10 @@ export default function App() {
             generationSessionId={generationSessionId}
             topic={generationTopic}
             onTopicChange={setGenerationTopic}
+            promptMode={generationPromptMode}
+            onPromptModeChange={setGenerationPromptMode}
+            directPromptSeed={generationDirectPromptSeed}
+            onDirectPromptSeedChange={setGenerationDirectPromptSeed}
             isInfinite={generationInfinite}
             onInfiniteChange={setGenerationInfinite}
             countLimit={generationCountLimit}
@@ -1090,6 +1111,13 @@ export default function App() {
             onEnhanceImage={enhanceSharedImage}
             onRegenerateImage={regenerateSharedImage}
             onStart={() => void startGeneration()}
+            onSingleGenerate={() => void startSingleGeneration()}
+            canSingleGenerate={Boolean(
+              !generationIsRunning &&
+                generationSessionId &&
+                generationActivePersona &&
+                generationTopic.trim(),
+            )}
             onStop={stopGeneration}
           />
         ) : sidebarTab === "groups" ? (

@@ -424,6 +424,10 @@ export interface GeneratorSession {
   personaId: string;
   name: string;
   topic: string;
+  promptMode: "theme_llm" | "direct_prompt";
+  directPromptSeed: number | null;
+  directPromptSeedArmed: boolean;
+  singleRunRequested: boolean;
   isInfinite: boolean;
   requestedCount: number | null;
   delaySeconds: number;

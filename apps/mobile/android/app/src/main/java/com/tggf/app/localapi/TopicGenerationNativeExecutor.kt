@@ -10,6 +10,7 @@ import java.util.TimeZone
 import java.util.UUID
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
@@ -442,6 +443,23 @@ object TopicGenerationNativeExecutor {
 
         val settings = parseJsonObject(repository.readSettingsJson())
         val iteration = completedCount + 1
+        val promptMode = resolvePromptMode(session)
+        val singleRunRequested = session.optBoolean("singleRunRequested", false)
+        val directPromptSeed = resolveDirectPromptSeed(session)
+        val shouldUseDirectOneShotSeed =
+            promptMode == "direct_prompt" &&
+                session.optBoolean("directPromptSeedArmed", false) &&
+                directPromptSeed != null
+        val comfySeed =
+            when {
+                promptMode == "direct_prompt" && shouldUseDirectOneShotSeed ->
+                    directPromptSeed!!
+                promptMode == "direct_prompt" -> randomComfySeed()
+                else -> {
+                    val topicSeedSource = session.optString("topic", "").trim()
+                    stableSeedFromText("$sessionId:$iteration:$topicSeedSource")
+                }
+            }
         val promptResolution =
             resolveTopicPrompt(
                 runtimeRepository = runtimeRepository,
@@ -474,6 +492,9 @@ object TopicGenerationNativeExecutor {
             details = JSONObject().apply {
                 put("iteration", iteration)
                 put("delayMs", delayMs)
+                put("promptMode", promptMode)
+                put("singleRunRequested", singleRunRequested)
+                put("directOneShotSeed", shouldUseDirectOneShotSeed)
             },
         )
 
@@ -487,6 +508,7 @@ object TopicGenerationNativeExecutor {
                 persona = persona,
                 session = session,
                 prompt = prompt,
+                seed = comfySeed,
                 iteration = iteration,
                 runtimeRepository = runtimeRepository,
                 jobId = job.id,
@@ -533,14 +555,22 @@ object TopicGenerationNativeExecutor {
             entries.put(entry)
             session.put("entries", entries)
             session.put("completedCount", iteration)
+            if (shouldUseDirectOneShotSeed) {
+                session.put("directPromptSeed", JSONObject.NULL)
+                session.put("directPromptSeedArmed", false)
+            }
+            if (singleRunRequested) {
+                session.put("singleRunRequested", false)
+            }
 
             val shouldStopByDesiredState =
                 isScopeCancellationRequested(sessionId) ||
                     !isDesiredStateEnabled(runtimeRepository, sessionId)
+            val shouldStopBySingleRun = singleRunRequested
             val nextStatus =
                 when {
                     requestedCount != null && iteration >= requestedCount -> "completed"
-                    shouldStopByDesiredState -> "stopped"
+                    shouldStopByDesiredState || shouldStopBySingleRun -> "stopped"
                     else -> "running"
                 }
             session.put("status", nextStatus)
@@ -626,13 +656,24 @@ object TopicGenerationNativeExecutor {
                     runtimeRepository = runtimeRepository,
                     scopeId = sessionId,
                     jobId = job.id,
-                    stage = "desired_state_disabled_during_iteration",
+                    stage =
+                        if (shouldStopBySingleRun) {
+                            "single_run_completed"
+                        } else {
+                            "desired_state_disabled_during_iteration"
+                        },
                     level = "info",
-                    message = "Topic generation stopped after iteration by desired-state",
+                    message =
+                        if (shouldStopBySingleRun) {
+                            "Topic generation stopped after single-run iteration"
+                        } else {
+                            "Topic generation stopped after iteration by desired-state"
+                        },
                     details = JSONObject().apply {
                         put("iteration", iteration)
                         put("delayMs", delayMs)
                         put("imageCount", comfyResult.imageUrls.size)
+                        put("singleRunRequested", shouldStopBySingleRun)
                     },
                 )
                 ForegroundSyncService.updateWorkerStatus(
@@ -640,7 +681,12 @@ object TopicGenerationNativeExecutor {
                     worker = ForegroundSyncService.WORKER_TOPIC_GENERATION,
                     state = "idle",
                     scopeId = sessionId,
-                    detail = "desired_state_disabled",
+                    detail =
+                        if (shouldStopBySingleRun) {
+                            "single_run_completed"
+                        } else {
+                            "desired_state_disabled"
+                        },
                     progress = true,
                     claimed = true,
                     lastError = "",
@@ -856,13 +902,12 @@ object TopicGenerationNativeExecutor {
         persona: JSONObject,
         session: JSONObject,
         prompt: String,
+        seed: Long,
         iteration: Int,
         runtimeRepository: BackgroundRuntimeRepository,
         jobId: String,
     ): ComfyRunResult {
         val sessionId = session.optString("id", "")
-        val topic = session.optString("topic", "").trim()
-        val seed = stableSeedFromText("$sessionId:$iteration:$topic")
         val checkpointName = persona.optString("imageCheckpoint", "").trim()
         val styleReferenceImage =
             persona.optString("avatarUrl", "").trim().ifEmpty {
@@ -1323,6 +1368,44 @@ object TopicGenerationNativeExecutor {
     ): TopicPromptResolution {
         val fallback = buildFallbackPrompt(session, persona, iteration)
         val topic = session.optString("topic", "").trim()
+        val promptMode = resolvePromptMode(session)
+        if (promptMode == "direct_prompt") {
+            if (topic.isBlank()) {
+                appendRuntimeEvent(
+                    runtimeRepository = runtimeRepository,
+                    scopeId = scopeId,
+                    jobId = jobId,
+                    stage = "topic_prompt_fallback",
+                    level = "warn",
+                    message = "Direct prompt is empty, fallback prompt applied",
+                    details =
+                        JSONObject().apply {
+                            put("reason", "direct_prompt_missing")
+                        },
+                )
+                return TopicPromptResolution(
+                    prompt = fallback,
+                    source = "fallback",
+                    themeTags = emptyList(),
+                )
+            }
+            appendRuntimeEvent(
+                runtimeRepository = runtimeRepository,
+                scopeId = scopeId,
+                jobId = jobId,
+                stage = "topic_prompt_direct",
+                level = "info",
+                message = "Direct prompt mode applied without LLM",
+                details = JSONObject().apply {
+                    put("source", "session.topic")
+                },
+            )
+            return TopicPromptResolution(
+                prompt = topic,
+                source = "direct",
+                themeTags = emptyList(),
+            )
+        }
         if (topic.isBlank()) {
             appendRuntimeEvent(
                 runtimeRepository = runtimeRepository,
@@ -1455,6 +1538,30 @@ object TopicGenerationNativeExecutor {
         return if (normalized == 0L) 1L else normalized
     }
 
+    private fun resolvePromptMode(session: JSONObject): String {
+        return if (session.optString("promptMode", "").trim() == "direct_prompt") {
+            "direct_prompt"
+        } else {
+            "theme_llm"
+        }
+    }
+
+    private fun resolveDirectPromptSeed(session: JSONObject): Long? {
+        val raw = session.opt("directPromptSeed")
+        val parsed =
+            when (raw) {
+                is Number -> raw.toLong()
+                is String -> raw.trim().toLongOrNull()
+                else -> null
+            } ?: return null
+        if (parsed <= 0L) return null
+        return if (parsed > COMFY_SEED_MAX) COMFY_SEED_MAX else parsed
+    }
+
+    private fun randomComfySeed(): Long {
+        return ThreadLocalRandom.current().nextLong(1L, COMFY_SEED_MAX + 1L)
+    }
+
     private fun parseJsonObject(raw: String?): JSONObject {
         if (raw.isNullOrBlank()) return JSONObject()
         return try {
@@ -1528,6 +1635,15 @@ object TopicGenerationNativeExecutor {
             } else {
                 put("lastError", "")
             }
+            put("promptMode", resolvePromptMode(session))
+            val directPromptSeed = resolveDirectPromptSeed(session)
+            if (directPromptSeed == null) {
+                put("directPromptSeed", JSONObject.NULL)
+            } else {
+                put("directPromptSeed", directPromptSeed)
+            }
+            put("directPromptSeedArmed", session.optBoolean("directPromptSeedArmed", false))
+            put("singleRunRequested", session.optBoolean("singleRunRequested", false))
             if (appendedEntries != null && appendedEntries.length() > 0) {
                 put("appendEntries", appendedEntries)
             }

@@ -11,6 +11,10 @@ interface GenerationPaneProps {
   generationSessionId: string;
   topic: string;
   onTopicChange: (value: string) => void;
+  promptMode: "theme_llm" | "direct_prompt";
+  onPromptModeChange: (value: "theme_llm" | "direct_prompt") => void;
+  directPromptSeed: number | null;
+  onDirectPromptSeedChange: (value: number | null) => void;
   isInfinite: boolean;
   onInfiniteChange: (value: boolean) => void;
   countLimit: number;
@@ -37,6 +41,8 @@ interface GenerationPaneProps {
     promptOverride?: string,
   ) => void;
   onStart: () => void;
+  onSingleGenerate: () => void;
+  canSingleGenerate: boolean;
   onStop: () => void;
 }
 
@@ -51,6 +57,10 @@ export function GenerationPane({
   generationSessionId,
   topic,
   onTopicChange,
+  promptMode,
+  onPromptModeChange,
+  directPromptSeed,
+  onDirectPromptSeedChange,
   isInfinite,
   onInfiniteChange,
   countLimit,
@@ -66,6 +76,8 @@ export function GenerationPane({
   onEnhanceImage,
   onRegenerateImage,
   onStart,
+  onSingleGenerate,
+  canSingleGenerate,
   onStop,
 }: GenerationPaneProps) {
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -147,6 +159,7 @@ export function GenerationPane({
   const previewEnhancePromptDefaults = previewTarget
     ? resolveSharedEnhancePromptDefaults(activePersona, previewResolvedMeta)
     : undefined;
+  const isDirectPromptMode = promptMode === "direct_prompt";
 
   return (
     <>
@@ -164,9 +177,18 @@ export function GenerationPane({
               <Square size={14} /> Стоп
             </button>
           ) : (
-            <button type="button" className="primary" onClick={onStart}>
-              <Play size={14} /> Старт
-            </button>
+            <>
+              <button type="button" className="primary" onClick={onStart}>
+                <Play size={14} /> Старт
+              </button>
+              <button
+                type="button"
+                onClick={onSingleGenerate}
+                disabled={!canSingleGenerate}
+              >
+                <Image size={14} /> Сгенерировать 1
+              </button>
+            </>
           )}
         </div>
         </header>
@@ -174,17 +196,61 @@ export function GenerationPane({
         <section className="generation-content">
         <div className="generation-form">
           <label>
-            Тематика генерации
+            {isDirectPromptMode ? "Direct ComfyUI prompt" : "Тематика генерации"}
             <textarea
               value={topic}
               onChange={(event) => onTopicChange(event.target.value)}
-              placeholder="Например: дождливый неон-город ночью, cinematic, street style"
+              placeholder={
+                isDirectPromptMode
+                  ? "Например: masterpiece, best quality, solo, one person, cinematic lighting, rainy neon city, upper body"
+                  : "Например: дождливый неон-город ночью, cinematic, street style"
+              }
               rows={3}
               disabled={isRunning}
             />
           </label>
 
           <div className="generation-grid">
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={isDirectPromptMode}
+                onChange={(event) =>
+                  onPromptModeChange(
+                    event.target.checked ? "direct_prompt" : "theme_llm",
+                  )
+                }
+                disabled={isRunning}
+              />
+              <span>Skip LLM theme (direct prompt)</span>
+            </label>
+
+            {isDirectPromptMode ? (
+              <label>
+                Seed (one-shot, optional)
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={directPromptSeed ?? ""}
+                  onChange={(event) => {
+                    const raw = event.target.value.trim();
+                    if (!raw) {
+                      onDirectPromptSeedChange(null);
+                      return;
+                    }
+                    const parsed = Number(raw);
+                    if (!Number.isFinite(parsed) || parsed <= 0) {
+                      onDirectPromptSeedChange(null);
+                      return;
+                    }
+                    onDirectPromptSeedChange(Math.floor(parsed));
+                  }}
+                  disabled={isRunning}
+                />
+              </label>
+            ) : null}
+
             <label className="checkbox-row">
               <input
                 type="checkbox"
@@ -226,6 +292,9 @@ export function GenerationPane({
 
           <div className="generation-stats">
             <span>Статус: {isRunning ? "выполняется" : "ожидание"}</span>
+            <span>
+              Режим: {isDirectPromptMode ? "direct prompt" : "LLM theme"}
+            </span>
             <span>Выполнено итераций: {completedCount}</span>
             <span>
               Изображений в активной сессии: {generatedImageUrls.length}

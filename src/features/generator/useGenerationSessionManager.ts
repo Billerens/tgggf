@@ -9,11 +9,17 @@ interface UseGenerationSessionManagerParams {
   personas: Persona[];
   activePersonaId: string | null;
   generationTopic: string;
+  generationPromptMode: GeneratorSession["promptMode"];
+  generationDirectPromptSeed: number | null;
   generationInfinite: boolean;
   generationCountLimit: number;
   generationDelaySeconds: number;
   generationIsRunning: boolean;
   setGenerationTopic: Dispatch<SetStateAction<string>>;
+  setGenerationPromptMode: Dispatch<
+    SetStateAction<GeneratorSession["promptMode"]>
+  >;
+  setGenerationDirectPromptSeed: Dispatch<SetStateAction<number | null>>;
   setGenerationInfinite: Dispatch<SetStateAction<boolean>>;
   setGenerationCountLimit: Dispatch<SetStateAction<number>>;
   setGenerationDelaySeconds: Dispatch<SetStateAction<number>>;
@@ -24,11 +30,15 @@ export function useGenerationSessionManager({
   personas,
   activePersonaId,
   generationTopic,
+  generationPromptMode,
+  generationDirectPromptSeed,
   generationInfinite,
   generationCountLimit,
   generationDelaySeconds,
   generationIsRunning,
   setGenerationTopic,
+  setGenerationPromptMode,
+  setGenerationDirectPromptSeed,
   setGenerationInfinite,
   setGenerationCountLimit,
   setGenerationDelaySeconds,
@@ -129,6 +139,8 @@ export function useGenerationSessionManager({
   useEffect(() => {
     if (!generationSession || generationIsRunning) return;
     setGenerationTopic(generationSession.topic);
+    setGenerationPromptMode(generationSession.promptMode);
+    setGenerationDirectPromptSeed(generationSession.directPromptSeed);
     setGenerationInfinite(generationSession.isInfinite);
     if (typeof generationSession.requestedCount === "number") {
       setGenerationCountLimit(generationSession.requestedCount);
@@ -138,8 +150,10 @@ export function useGenerationSessionManager({
     generationIsRunning,
     generationSession,
     setGenerationCountLimit,
+    setGenerationDirectPromptSeed,
     setGenerationDelaySeconds,
     setGenerationInfinite,
+    setGenerationPromptMode,
     setGenerationTopic,
   ]);
 
@@ -176,6 +190,10 @@ export function useGenerationSessionManager({
       personaId: fallbackPersonaId,
       name: nextName,
       topic: generationTopic.trim(),
+      promptMode: generationPromptMode,
+      directPromptSeed: generationDirectPromptSeed,
+      directPromptSeedArmed: false,
+      singleRunRequested: false,
       isInfinite: generationInfinite,
       requestedCount: generationInfinite
         ? null

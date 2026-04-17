@@ -820,11 +820,24 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
 function normalizeGeneratorSession(
   session: GeneratorSession,
 ): GeneratorSession {
+  const MAX_COMFY_SEED = 1_125_899_906_842_624;
   const normalizedName = toTrimmedString((session as { name?: string }).name);
+  const normalizedPromptMode =
+    session.promptMode === "direct_prompt" ? "direct_prompt" : "theme_llm";
+  const normalizedDirectPromptSeed =
+    typeof session.directPromptSeed === "number" &&
+    Number.isFinite(session.directPromptSeed)
+      ? Math.max(1, Math.min(MAX_COMFY_SEED, Math.floor(session.directPromptSeed)))
+      : null;
   const next: GeneratorSession = {
     ...session,
     name: normalizedName || "Новая сессия",
     topic: session.topic.trim(),
+    promptMode: normalizedPromptMode,
+    directPromptSeed: normalizedDirectPromptSeed,
+    directPromptSeedArmed:
+      Boolean(session.directPromptSeedArmed) && normalizedDirectPromptSeed !== null,
+    singleRunRequested: Boolean(session.singleRunRequested),
     status:
       session.status === "running" ||
       session.status === "stopped" ||

@@ -462,6 +462,9 @@ export function buildGroupPersonaUserInput(payload: GroupPersonaInputPayload) {
     "Личная память персоны в этой группе:",
     privateMemoryBlock,
     "",
+    "Последние события комнаты:",
+    eventsBlock,
+    "",
     "Адресация и упоминания:",
     mentionContextBlock,
   ].join("\n");
