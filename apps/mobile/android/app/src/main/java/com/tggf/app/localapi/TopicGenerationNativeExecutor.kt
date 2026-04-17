@@ -372,7 +372,8 @@ object TopicGenerationNativeExecutor {
 
         val requestedCount = resolveRequestedCount(session)
         val completedCount = session.optInt("completedCount", 0)
-        if (requestedCount != null && completedCount >= requestedCount) {
+        val singleRunRequested = session.optBoolean("singleRunRequested", false)
+        if (!singleRunRequested && requestedCount != null && completedCount >= requestedCount) {
             session.put("status", "completed")
             session.put("updatedAt", nowIsoUtc())
             sessions.put(sessionIndex, session)
@@ -451,7 +452,6 @@ object TopicGenerationNativeExecutor {
         val settings = parseJsonObject(repository.readSettingsJson())
         val iteration = completedCount + 1
         val promptMode = resolvePromptMode(session)
-        val singleRunRequested = session.optBoolean("singleRunRequested", false)
         val directPromptSeed = resolveDirectPromptSeed(session)
         val shouldUseDirectOneShotSeed =
             promptMode == "direct_prompt" &&
@@ -579,7 +579,7 @@ object TopicGenerationNativeExecutor {
             val shouldStopBySingleRun = singleRunRequested
             val nextStatus =
                 when {
-                    requestedCount != null && iteration >= requestedCount -> "completed"
+                    !shouldStopBySingleRun && requestedCount != null && iteration >= requestedCount -> "completed"
                     shouldStopByDesiredState || shouldStopBySingleRun -> "stopped"
                     else -> "running"
                 }

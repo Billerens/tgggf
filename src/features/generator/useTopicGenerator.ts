@@ -356,7 +356,8 @@ export function useTopicGenerator({
       };
 
       const completedCount = iteration;
-      const reachedLimit = total !== null && completedCount >= total;
+      const reachedLimit =
+        !forceStopAfterIteration && total !== null && completedCount >= total;
       const nextStatus: GeneratorSession["status"] = reachedLimit
         ? "completed"
         : forceStopAfterIteration
@@ -423,7 +424,11 @@ export function useTopicGenerator({
             Number.isFinite(generationSession.requestedCount)
           ? Math.max(1, Math.floor(generationSession.requestedCount))
           : null;
-    if (total !== null && generationSession.completedCount >= total) {
+    if (
+      !generationSession.singleRunRequested &&
+      total !== null &&
+      generationSession.completedCount >= total
+    ) {
       const completedSession: GeneratorSession = {
         ...generationSession,
         status: "completed",
