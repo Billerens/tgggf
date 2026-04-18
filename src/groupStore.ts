@@ -1,6 +1,11 @@
 import { create } from "zustand";
 import { dbApi } from "./db";
 import { generateComfyPromptsFromImageDescription } from "./lmstudio";
+import {
+  compactAppearanceLocksFromAppearance,
+  isComfyImageDescriptionContractInvalidError,
+  type ComfyPromptParticipantCatalogEntry,
+} from "./comfyImageDescriptionContract";
 import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
 import { localizeImageUrls } from "./imageStorage";
 import {
@@ -131,6 +136,44 @@ const randomSeed = () => {
   crypto.getRandomValues(values);
   return (values[0] ^ (values[1] << 1)) >>> 0;
 };
+
+function buildGroupParticipantCatalog(params: {
+  roomId: string;
+  participants: GroupParticipant[];
+  personas: Persona[];
+  selfPersonaId?: string;
+}): ComfyPromptParticipantCatalogEntry[] {
+  const { roomId, participants, personas, selfPersonaId } = params;
+  const personaById = new Map(personas.map((persona) => [persona.id, persona]));
+  const dedup = new Map<string, ComfyPromptParticipantCatalogEntry>();
+  for (const participant of participants) {
+    if (participant.roomId !== roomId) continue;
+    const persona = personaById.get(participant.personaId);
+    if (!persona) continue;
+    dedup.set(persona.id, {
+      id: persona.id,
+      alias: persona.name.trim() || persona.id,
+      isSelf: persona.id === selfPersonaId,
+      compactAppearanceLocks: compactAppearanceLocksFromAppearance(
+        persona.appearance,
+      ),
+    });
+  }
+  if (selfPersonaId && !dedup.has(selfPersonaId)) {
+    const selfPersona = personaById.get(selfPersonaId);
+    if (selfPersona) {
+      dedup.set(selfPersona.id, {
+        id: selfPersona.id,
+        alias: selfPersona.name.trim() || selfPersona.id,
+        isSelf: true,
+        compactAppearanceLocks: compactAppearanceLocksFromAppearance(
+          selfPersona.appearance,
+        ),
+      });
+    }
+  }
+  return Array.from(dedup.values());
+}
 
 function normalizeMessageForDedup(text: string) {
   return text
@@ -1356,6 +1399,12 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       let promptsForGeneration: string[] = [];
       let expectedGenerationCount = 0;
       if (descriptionBlocks.length > 0) {
+        const participantCatalog = buildGroupParticipantCatalog({
+          roomId,
+          participants: get().groupParticipants,
+          personas,
+          selfPersonaId: speaker.id,
+        });
         const selectedDescriptions = normalizedIndexes
           .map((index) => descriptionBlocks[index] ?? "")
           .map((value) => value.trim())
@@ -1371,6 +1420,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
               speaker,
               description,
               index + 1,
+              { participantCatalog },
             ),
           ),
         );
@@ -2519,6 +2569,12 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
           const initialPromptBlocks = comfyPromptBlocks
             .map((value) => value.trim())
             .filter(Boolean);
+          const participantCatalog = buildGroupParticipantCatalog({
+            roomId,
+            participants,
+            personas,
+            selfPersonaId: speaker.id,
+          });
           let promptsForGeneration = [...initialPromptBlocks];
           let expectedGenerationCount = requestedImageCount;
 
@@ -2531,6 +2587,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
                     speaker,
                     description,
                     index + 1,
+                    { participantCatalog },
                   ),
                 ),
               );
@@ -2553,7 +2610,10 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
                 imageGenerationCompleted: 0,
               });
             }
-          } catch {
+          } catch (error) {
+            const status = isComfyImageDescriptionContractInvalidError(error)
+              ? "contract_invalid"
+              : "prompt_generation_failed";
             await patchMessage({
               imageGenerationPending: false,
               imageGenerationExpected: requestedImageCount,
@@ -2562,7 +2622,7 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
             await appendImageEvent({
               messageId: messageRef.id,
               personaId: speaker.id,
-              status: "prompt_generation_failed",
+              status,
               expected: requestedImageCount,
               completed: 0,
             });

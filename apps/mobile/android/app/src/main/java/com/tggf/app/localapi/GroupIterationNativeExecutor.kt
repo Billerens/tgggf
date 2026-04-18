@@ -797,17 +797,21 @@ object GroupIterationNativeExecutor {
                         comfyImageDescriptions = speechComfyImageDescriptions,
                         comfyImageDescription = speechComfyImageDescription,
                     )
-                if (
-                    speechComfyPrompts.isEmpty() &&
-                        speechComfyPrompt.isNullOrBlank() &&
-                        descriptionBlocksForPromptConversion.isNotEmpty()
-                ) {
+                val participantCatalogForPromptConversion =
+                    NativeLlmClient.buildComfyParticipantCatalogForRoom(
+                        participants = participants,
+                        personas = personas,
+                        roomId = roomId,
+                        selfPersonaId = activeSpeakerPersonaId,
+                    )
+                if (descriptionBlocksForPromptConversion.isNotEmpty()) {
                     try {
                         val convertedPrompts =
                             NativeLlmClient.generateComfyPromptsFromImageDescriptions(
                                 settings = settings,
                                 speakerPersona = speakerPersona ?: JSONObject(),
                                 imageDescriptions = descriptionBlocksForPromptConversion,
+                                participantCatalog = participantCatalogForPromptConversion,
                             )
                         if (convertedPrompts.isNotEmpty()) {
                             speechComfyPrompts = convertedPrompts
@@ -827,6 +831,16 @@ object GroupIterationNativeExecutor {
                             )
                         }
                     } catch (error: Exception) {
+                        val conversionStatus =
+                            if (error.message?.contains("contract_invalid:") == true) {
+                                "contract_invalid"
+                            } else {
+                                "prompt_generation_failed"
+                            }
+                        if (conversionStatus == "contract_invalid") {
+                            speechComfyPrompts = emptyList()
+                            speechComfyPrompt = null
+                        }
                         appendRuntimeEvent(
                             runtime = runtime,
                             scopeId = roomId,
@@ -838,6 +852,7 @@ object GroupIterationNativeExecutor {
                                 put("speakerPersonaId", activeSpeakerPersonaId)
                                 put("descriptions", descriptionBlocksForPromptConversion.size)
                                 put("error", error.message ?: "unknown_error")
+                                put("status", conversionStatus)
                             },
                         )
                     }

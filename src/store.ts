@@ -6,6 +6,11 @@ import {
   requestChatCompletion,
   requestConversationSummaryUpdate,
 } from "./lmstudio";
+import {
+  compactAppearanceLocksFromAppearance,
+  isComfyImageDescriptionContractInvalidError,
+  type ComfyPromptParticipantCatalogEntry,
+} from "./comfyImageDescriptionContract";
 import { generateComfyImages, readComfyImageGenerationMeta } from "./comfy";
 import { localizeImageUrls } from "./imageStorage";
 import {
@@ -261,6 +266,23 @@ function shouldAttachPersonaReference(parsed: ParsedImageDescriptionType) {
   if (parsed.type === "other_person") return false;
   if (parsed.type === "group") return parsed.includesPersona;
   return true;
+}
+
+function buildOneToOneParticipantCatalog(
+  persona: Pick<Persona, "id" | "name" | "appearance">,
+): ComfyPromptParticipantCatalogEntry[] {
+  const id = persona.id.trim();
+  if (!id) return [];
+  return [
+    {
+      id,
+      alias: persona.name.trim() || "Self",
+      isSelf: true,
+      compactAppearanceLocks: compactAppearanceLocksFromAppearance(
+        persona.appearance,
+      ),
+    },
+  ];
 }
 
 interface MemoryRemovalDirective {
@@ -1255,6 +1277,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             typeof activeChat?.chatStyleStrength === "number"
               ? activeChat.chatStyleStrength
               : get().settings.chatStyleStrength;
+          const participantCatalog =
+            buildOneToOneParticipantCatalog(activePersona);
           let promptsForGeneration = [...promptBlocks];
           let parsedTypesForGeneration = promptsForGeneration.map((prompt) =>
             parseImageDescriptionType(prompt, activePersona.name),
@@ -1269,6 +1293,7 @@ export const useAppStore = create<AppState>((set, get) => ({
                     activePersona,
                     description,
                     index + 1,
+                    { participantCatalog },
                   ),
                 ),
               );
@@ -1307,7 +1332,13 @@ export const useAppStore = create<AppState>((set, get) => ({
                 imageGenerationCompleted: 0,
               });
             }
-          } catch {
+          } catch (error) {
+            if (isComfyImageDescriptionContractInvalidError(error)) {
+              console.warn(
+                "[image_generation] comfy_image_description contract_invalid",
+                error,
+              );
+            }
             await patchAssistantMessage({
               imageGenerationPending: false,
               imageGenerationExpected: requestedImageCount,
@@ -1537,6 +1568,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       imageDescriptions[normalizedIndex] ||
       imageDescriptions[0] ||
       currentPrompt;
+    const participantCatalog = buildOneToOneParticipantCatalog(activePersona);
 
     set({ isLoading: true, error: null });
     try {
@@ -1546,6 +1578,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           activePersona,
           sourceDescription,
           normalizedIndex + 1,
+          { participantCatalog },
         )
       ).trim();
 
@@ -1557,11 +1590,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         regeneratedPrompt = (
           await generateComfyPromptFromImageDescription(
             get().settings,
-            activePersona,
-            `${sourceDescription}\nНужна другая вариация композиции и света, сохранив смысл сцены.`,
-            normalizedIndex + 101,
-          )
-        ).trim();
+          activePersona,
+          `${sourceDescription}\nНужна другая вариация композиции и света, сохранив смысл сцены.`,
+          normalizedIndex + 101,
+          { participantCatalog },
+        )
+      ).trim();
       }
 
       if (!regeneratedPrompt) {

@@ -87,8 +87,27 @@ private data class LlmToolDefinition(
 private data class ParsedImageDescriptionContext(
     val type: String,
     val participants: String,
+    val participantTokens: List<String>,
+    val participantAliases: Map<String, String>,
+    val subjectLocks: Map<String, String>,
     val includesPersona: Boolean,
-    val hasExplicitType: Boolean,
+    val normalizedDescription: String,
+)
+
+data class ParticipantAppearanceLocks(
+    val hair: String,
+    val eyes: String,
+    val face: String,
+    val body: String,
+    val outfit: String,
+    val markers: String,
+)
+
+data class ComfyPromptParticipantCatalogEntry(
+    val id: String,
+    val alias: String,
+    val isSelf: Boolean,
+    val compactAppearanceLocks: ParticipantAppearanceLocks,
 )
 
 object NativeLlmClient {
@@ -397,6 +416,7 @@ object NativeLlmClient {
         settings: JSONObject,
         speakerPersona: JSONObject,
         imageDescriptions: List<String>,
+        participantCatalog: List<ComfyPromptParticipantCatalogEntry> = emptyList(),
     ): List<String> {
         val descriptions =
             imageDescriptions
@@ -422,13 +442,29 @@ object NativeLlmClient {
         val appearance = speakerPersona.optJSONObject("appearance")
         val lookPromptCache = speakerPersona.optJSONObject("lookPromptCache")
         val systemPrompt = buildImageDescriptionToComfyPromptSystemPrompt()
+        val normalizedCatalog = normalizeParticipantCatalog(participantCatalog)
+        val participantTokenMap = buildParticipantCatalogTokenMap(normalizedCatalog)
+        val selfTokens = mutableSetOf("persona:self")
+        normalizedCatalog
+            .filter { it.isSelf }
+            .forEach { selfTokens.add("persona:${it.id}") }
+        val participantCatalogContext = formatParticipantCatalogContext(normalizedCatalog)
 
         val prompts = mutableListOf<String>()
         for ((index, description) in descriptions.withIndex()) {
-            val sceneContext = parseImageDescriptionContext(description, personaName)
+            val sceneContext =
+                resolveImageDescriptionContract(
+                    settings = settings,
+                    description = description,
+                    iteration = index + 1,
+                    participantCatalog = normalizedCatalog,
+                )
             val shouldUsePersonaContext =
                 sceneContext.type == "person" ||
-                    (sceneContext.type == "group" && sceneContext.includesPersona)
+                    (
+                        sceneContext.type == "group" &&
+                            sceneContext.participantTokens.any { token -> selfTokens.contains(token) }
+                    )
             val appearanceContext =
                 if (shouldUsePersonaContext) {
                     formatAppearanceProfileInput(appearance)
@@ -440,6 +476,26 @@ object NativeLlmClient {
                     formatLookPromptCacheInput(lookPromptCache)
                 } else {
                     "DISABLED (persona identity prior must not be used for this type)"
+                }
+            val participantAliasesContext = formatParticipantAliasesContext(sceneContext)
+            val subjectLocksContext = formatSubjectLocksContext(sceneContext)
+            val resolvedParticipantLocksContext =
+                if (sceneContext.participantTokens.isEmpty()) {
+                    "none"
+                } else {
+                    sceneContext.participantTokens.joinToString("\n") { token ->
+                        val mapped = participantTokenMap[token]
+                        val alias =
+                            sceneContext.participantAliases[token]?.trim().orEmpty().ifBlank {
+                                mapped?.alias?.trim().orEmpty().ifBlank { token }
+                            }
+                        if (mapped != null) {
+                            "$token | alias=$alias | source=catalog | ${formatCompactLocks(mapped.compactAppearanceLocks)}"
+                        } else {
+                            val lock = sceneContext.subjectLocks[token]?.trim().orEmpty().ifBlank { "-" }
+                            "$token | alias=$alias | source=subject_locks | lock=$lock"
+                        }
+                    }
                 }
             val response =
                 requestChatCompletionsWithRetry(
@@ -458,14 +514,17 @@ object NativeLlmClient {
                         buildImageDescriptionToComfyPromptUserPrompt(
                             personaName = personaName,
                             sceneType = sceneContext.type,
-                            hasExplicitType = sceneContext.hasExplicitType,
                             participants = sceneContext.participants,
+                            participantAliases = participantAliasesContext,
+                            subjectLocks = subjectLocksContext,
+                            participantCatalog = participantCatalogContext,
+                            resolvedParticipantLocks = resolvedParticipantLocksContext,
                             shouldUsePersonaContext = shouldUsePersonaContext,
                             appearanceContext = appearanceContext,
                             stylePrompt = stylePrompt,
                             personalityPrompt = personalityPrompt,
                             lookPromptCacheContext = lookPromptCacheContext,
-                            imageDescription = description,
+                            imageDescription = sceneContext.normalizedDescription,
                             iteration = index + 1,
                         ),
                     forceJsonObject = true,
@@ -635,6 +694,62 @@ object NativeLlmClient {
             result[personaId] = personaNameById[personaId] ?: personaId
         }
         return result
+    }
+
+    private fun buildParticipantAppearanceLocks(appearance: JSONObject?): ParticipantAppearanceLocks {
+        val source = appearance ?: JSONObject()
+        return ParticipantAppearanceLocks(
+            hair = source.optString("hair", "").trim(),
+            eyes = source.optString("eyes", "").trim(),
+            face = source.optString("faceDescription", "").trim(),
+            body = source.optString("bodyType", "").trim(),
+            outfit = source.optString("clothingStyle", "").trim(),
+            markers = source.optString("markers", "").trim(),
+        )
+    }
+
+    fun buildComfyParticipantCatalogForRoom(
+        participants: JSONArray,
+        personas: JSONArray,
+        roomId: String,
+        selfPersonaId: String?,
+    ): List<ComfyPromptParticipantCatalogEntry> {
+        val personaById = mutableMapOf<String, JSONObject>()
+        for (index in 0 until personas.length()) {
+            val persona = personas.optJSONObject(index) ?: continue
+            val personaId = persona.optString("id", "").trim()
+            if (personaId.isBlank()) continue
+            personaById[personaId] = persona
+        }
+        val dedup = LinkedHashMap<String, ComfyPromptParticipantCatalogEntry>()
+        for (index in 0 until participants.length()) {
+            val participant = participants.optJSONObject(index) ?: continue
+            if (participant.optString("roomId", "").trim() != roomId) continue
+            val personaId = participant.optString("personaId", "").trim()
+            if (personaId.isBlank()) continue
+            val persona = personaById[personaId] ?: continue
+            val alias = persona.optString("name", "").trim().ifBlank { personaId }
+            dedup[personaId] =
+                ComfyPromptParticipantCatalogEntry(
+                    id = personaId,
+                    alias = alias,
+                    isSelf = !selfPersonaId.isNullOrBlank() && selfPersonaId == personaId,
+                    compactAppearanceLocks = buildParticipantAppearanceLocks(persona.optJSONObject("appearance")),
+                )
+        }
+        if (!selfPersonaId.isNullOrBlank() && !dedup.containsKey(selfPersonaId)) {
+            val selfPersona = personaById[selfPersonaId]
+            if (selfPersona != null) {
+                dedup[selfPersonaId] =
+                    ComfyPromptParticipantCatalogEntry(
+                        id = selfPersonaId,
+                        alias = selfPersona.optString("name", "").trim().ifBlank { selfPersonaId },
+                        isSelf = true,
+                        compactAppearanceLocks = buildParticipantAppearanceLocks(selfPersona.optJSONObject("appearance")),
+                    )
+            }
+        }
+        return dedup.values.toList()
     }
 
     private fun buildOrchestratorParticipantProfiles(
@@ -1297,7 +1412,23 @@ object NativeLlmClient {
             "- запрещено отправлять изображения в трёх ответах подряд, если пользователь явно не просил об этом;",
             "- после отправки изображения выдерживай минимум 3 текстовых ответа до следующего изображения, если нет явного запроса пользователя;",
             "- если изображение действительно нужно, ОБЯЗАТЕЛЬНО добавь после реплики service JSON (лучше в ```json```), ключ comfy_image_descriptions = массив описаний;",
-            "Пример: {\"comfy_image_descriptions\":[\"type: person\\nparticipants: persona\\nПодробное визуальное описание кадра...\"]}",
+            "Пример: {\"comfy_image_descriptions\":[\"type: person\\nsubject_mode: persona_self\\nparticipants: persona:self\\nparticipant_aliases: persona:self=Me\\nsubject_locks: persona:self=hair=dark bob, eyes=green, face=light freckles, body=slim, outfit=white hoodie, markers=small silver hoop\\nПодробное визуальное описание кадра...\"]}",
+            "- ЖЕСТКИЙ КОНТРАКТ (обязателен для каждого элемента comfy_image_descriptions):",
+            "- type: person|other_person|no_person|group;",
+            "- subject_mode: persona_self|other_person|no_person|group;",
+            "- participants: только persona:self | persona:<id> | external:<slug>, или none для no_person;",
+            "- participant_aliases: token=alias пары через разделитель ' | ' (или none для no_person);",
+            "- subject_locks: token=краткие визуальные locks (hair/eyes/face/body/outfit/markers) через ' | ' (или none для no_person);",
+            "- service JSON для изображений: ТОЛЬКО comfy_image_descriptions (или comfyImageDescriptions) как массив строк;",
+            "- запрещено отдавать объект вида {\"description\":\"...\"} или массив объектов вместо строк;",
+            "- после 5 служебных строк контракта обязательно минимум 1 строка визуального описания сцены;",
+            "- если планируешь отправить изображение: одних constraints (participants/participant_aliases/subject_locks) недостаточно, отдельное описание сцены обязательно;",
+            "- type=person => ровно persona:self;",
+            "- type=other_person => ровно 1 участник и это не persona:self;",
+            "- type=group => минимум 2 уникальных участника;",
+            "- type=no_person => participants: none, participant_aliases: none, subject_locks: none;",
+            "- external:<slug> обязан быть lowercase snake_case;",
+            "- запрещено отдавать свободное литературное описание без структурных строк контракта;",
             "- внутри каждого описания: только визуальные детали, без markdown и без пояснений;",
             "- для консистентности внешности повторяй стабильные признаки персоны (волосы, глаза, возрастной тип, телосложение, отличительные детали);",
             "- не меняй базовую внешность между сообщениями без явной просьбы пользователя.",
@@ -1336,6 +1467,8 @@ object NativeLlmClient {
             "- если в тексте есть упоминание НЕСКОЛЬКИХ изображений, а элементов comfy_image_descriptions меньше — перепиши ответ;",
             "- если есть ремарки в *...* про отправку фото — перепиши ответ;",
             "- если нет явного запроса на изображение, а ты добавила service JSON с comfy_image_descriptions — убери блок;",
+            "- если comfy_image_descriptions не соответствует ЖЕСТКОМУ КОНТРАКТУ (type/subject_mode/participants/participant_aliases/subject_locks) — перепиши блок;",
+            "- SELF-CHECK: если в comfy_image_descriptions есть только служебные строки/locks без явного визуального описания сцены — перепиши блок;",
             "- после self-check верни финальный ответ только один раз, без комментариев о проверке.",
         ).joinToString("\n")
     }
@@ -1736,8 +1869,9 @@ object NativeLlmClient {
             "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный элемент в prompts для каждого кадра.",
             "Если описание одного кадра, верни один элемент в prompts.",
             "Определи тип кадра из поля type в Image description: person|other_person|no_person|group.",
-            "Строку type и participants считай служебными и НЕ копируй в теги.",
-            "Сначала проанализируй присутствие людей в кадре (персона/другие/никого) по type, participants и самому описанию сцены.",
+            "Контракт Image description строгий: type, subject_mode, participants, participant_aliases, subject_locks.",
+            "Строки type/subject_mode/participants/participant_aliases/subject_locks служебные и НЕ копируй в теги.",
+            "Сначала проанализируй присутствие людей в кадре по type и participants.",
             "MULTI-CHARACTER SYNTAX: для 2+ людей используй экранированные subject-блоки \\( ... \\) и явную привязку деталей к каждому субъекту.",
             "КРИТИЧНО: между subject tag и \\(details\\) не ставь запятую.",
             "Если в кадре мужчина+женщина, используй строго: 1girl \\(female details\\), 1boy \\(male details\\), shared composition tags.",
@@ -1754,10 +1888,12 @@ object NativeLlmClient {
             "CONSISTENCY LOCKS (обязательны): key appearance traits, emotion/expression, outfit/materials, environment, scene conditions (time/weather/lighting).",
             "Все lock-детали из Image description должны перейти в prompt без потери смысла, но не перегружай prompt.",
             "Не подменяй lock-детали похожими, но другими по смыслу формулировками.",
+            "Применяй locks строго по соответствующему участнику из participants, не смешивай признаки между субъектами.",
+            "Для unknown external:* используй только subject_locks и описание сцены, без догадок из каталога персоны.",
             "type=person: используй детали персонажа из Image description + Appearance + LookPrompt cache.",
             "type=other_person: запрещено использовать Appearance и LookPrompt cache текущей персоны.",
             "type=no_person: строго без людей/лиц/персонажей; Appearance и LookPrompt cache запрещены.",
-            "type=group: используй Appearance/LookPrompt cache только если participants явно включает текущую персону; иначе запрещено.",
+            "type=group: используй Appearance/LookPrompt cache только если participants включает persona:self или токен текущей персоны; иначе запрещено.",
             "Если в input явно сказано, что Appearance/LookPrompt cache disabled, НЕ используй их ни в каком виде.",
             "Одежда должна соответствовать ситуации!",
             "ОБЯЗАТЕЛЬНО!: описывай детали сцены досконально - вид, одежда, окружение, действия, фокус на определенных частях тела и тд.",
@@ -1778,14 +1914,19 @@ object NativeLlmClient {
             "Если есть сомнение, лучше пропусти тег, не выдумывай.",
             "Учитывай свои границы дозволенного при генерации.",
             "Перед ответом сделай self-check: format delimiter, word count per tag, no duplicates, no contradictions, no banned tags, все ключевые детали из Image description покрыты.",
+            "SELF-CHECK (critical): каждый subject_* блок должен быть ТОЛЬКО в экранированном виде subject_x \\( ... \\), вариант subject_x (...) запрещён.",
+            "SELF-CHECK (critical): в каждом subject_* блоке обязательно присутствуют hair, eyes, body (и height, если он есть в subject_locks).",
         ).joinToString("\n")
     }
 
     private fun buildImageDescriptionToComfyPromptUserPrompt(
         personaName: String,
         sceneType: String,
-        hasExplicitType: Boolean,
         participants: String,
+        participantAliases: String,
+        subjectLocks: String,
+        participantCatalog: String,
+        resolvedParticipantLocks: String,
         shouldUsePersonaContext: Boolean,
         appearanceContext: String,
         stylePrompt: String,
@@ -1797,8 +1938,11 @@ object NativeLlmClient {
         return listOf(
             "Character name: $personaName",
             "Scene type (parsed): $sceneType",
-            "Type field present in description: ${if (hasExplicitType) "yes" else "no"}",
             "Participants: $participants",
+            "Participant aliases: $participantAliases",
+            "Subject locks: $subjectLocks",
+            "Participant catalog:\n$participantCatalog",
+            "Resolved participant appearance locks:\n$resolvedParticipantLocks",
             "Use persona appearance context: ${if (shouldUsePersonaContext) "yes" else "no"}",
             "Appearance: $appearanceContext",
             "Style: $stylePrompt",
@@ -1821,73 +1965,441 @@ object NativeLlmClient {
         }
     }
 
-    private fun parseImageDescriptionContext(
-        description: String,
-        personaName: String,
-    ): ParsedImageDescriptionContext {
-        val normalized = description.lowercase()
-        val typeMatch =
-            Regex("(?:^|\\n)\\s*type\\s*:\\s*([a-z_]+)\\b", RegexOption.IGNORE_CASE)
-                .find(normalized)
-                ?.groupValues
-                ?.getOrNull(1)
-        val subjectModeMatch =
+    private fun normalizeImageDescriptionSubjectModeToken(token: String?): String? {
+        val normalized = token?.trim()?.lowercase().orEmpty()
+        if (normalized.isBlank()) return null
+        return when (normalized) {
+            "persona_self", "person", "self" -> "persona_self"
+            "other_person", "other" -> "other_person"
+            "no_person", "none" -> "no_person"
+            "group", "multi_person" -> "group"
+            else -> null
+        }
+    }
+
+    private fun slugifyExternalToken(raw: String): String {
+        return raw
+            .trim()
+            .lowercase()
+            .replace(Regex("[^a-z0-9_]+"), "_")
+            .replace(Regex("^_+|_+$"), "")
+    }
+
+    private fun canonicalizeParticipantToken(rawToken: String): String? {
+        val token = rawToken.trim()
+        if (token.isBlank()) return null
+        val lower = token.lowercase()
+        if (lower == "none") return "none"
+        if (lower == "persona:self") return "persona:self"
+        if (lower.startsWith("persona:")) {
+            val id = token.substringAfter(":").trim()
+            if (id.isBlank()) return null
+            return "persona:$id"
+        }
+        if (lower.startsWith("external:")) {
+            val slug = slugifyExternalToken(token.substringAfter(":"))
+            if (slug.isBlank()) return null
+            return "external:$slug"
+        }
+        return null
+    }
+
+    private fun splitParticipantTokens(raw: String): List<String> {
+        val normalized = raw.replace(Regex("\\s+\\+\\s+"), ",")
+        return normalized
+            .split(Regex("[|,;]"))
+            .mapNotNull { part -> canonicalizeParticipantToken(part) }
+            .distinct()
+    }
+
+    private fun parseTokenValuePairs(raw: String): Map<String, String> {
+        val result = LinkedHashMap<String, String>()
+        val trimmed = raw.trim()
+        if (trimmed.isBlank() || trimmed.equals("none", ignoreCase = true)) {
+            return result
+        }
+        val strictRegex =
             Regex(
-                "(?:^|\\n)\\s*subject_mode\\s*:\\s*(persona_self|other_person|no_person|group)\\b",
-                RegexOption.IGNORE_CASE,
-            ).find(normalized)
+                "(persona:self|persona:[^=|;,]+|external:[^=|;,]+)\\s*=\\s*(.*?)(?=\\s*(?:\\||,)\\s*(?:persona:self|persona:[^=|;,]+|external:[^=|;,]+)\\s*=|\\s*$)",
+                setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+            )
+        for (match in strictRegex.findAll(trimmed)) {
+            val token = canonicalizeParticipantToken(match.groupValues.getOrNull(1).orEmpty()) ?: continue
+            val value = match.groupValues.getOrNull(2).orEmpty().trim()
+            if (value.isBlank()) continue
+            result[token] = value
+        }
+        if (result.isNotEmpty()) return result
+
+        for (part in trimmed.split(",")) {
+            val chunk = part.trim()
+            if (chunk.isBlank()) continue
+            val eqIndex = chunk.indexOf("=")
+            if (eqIndex <= 0) continue
+            val token = canonicalizeParticipantToken(chunk.substring(0, eqIndex)) ?: continue
+            val value = chunk.substring(eqIndex + 1).trim()
+            if (value.isBlank()) continue
+            result[token] = value
+        }
+        return result
+    }
+
+    private fun removeContractLines(description: String): String {
+        return description
+            .split(Regex("\\r?\\n"))
+            .filter { line ->
+                val lower = line.trim().lowercase()
+                if (lower.isBlank()) return@filter false
+                !(
+                    lower.startsWith("type:") ||
+                        lower.startsWith("subject_mode:") ||
+                        lower.startsWith("participants:") ||
+                        lower.startsWith("participant_aliases:") ||
+                        lower.startsWith("subject_locks:")
+                    )
+            }.joinToString("\n")
+            .trim()
+    }
+
+    private fun formatTokenPairs(tokens: List<String>, values: Map<String, String>): String {
+        if (tokens.isEmpty()) return "none"
+        return tokens.joinToString(" | ") { token -> "$token=${values[token] ?: "-"}" }
+    }
+
+    private fun invalidImageDescriptionContract(reason: String): Nothing {
+        throw IllegalStateException("contract_invalid:$reason")
+    }
+
+    private fun parseImageDescriptionContext(description: String): ParsedImageDescriptionContext {
+        val trimmed = description.trim()
+        if (trimmed.isBlank()) {
+            invalidImageDescriptionContract("description_empty")
+        }
+        val typeRaw =
+            Regex("(?:^|\\n)\\s*type\\s*:\\s*([a-z_]+)\\b", RegexOption.IGNORE_CASE)
+                .find(trimmed)
                 ?.groupValues
                 ?.getOrNull(1)
-        val explicitType =
-            normalizeImageDescriptionTypeToken(typeMatch) ?:
-                normalizeImageDescriptionTypeToken(subjectModeMatch)
-        val hasExplicitType = explicitType != null
-        val participants =
+        val subjectModeRaw =
+            Regex("(?:^|\\n)\\s*subject_mode\\s*:\\s*([a-z_]+)\\b", RegexOption.IGNORE_CASE)
+                .find(trimmed)
+                ?.groupValues
+                ?.getOrNull(1)
+        val participantsRaw =
             Regex("(?:^|\\n)\\s*participants\\s*:\\s*([^\\n\\r]+)", RegexOption.IGNORE_CASE)
-                .find(description)
+                .find(trimmed)
                 ?.groupValues
                 ?.getOrNull(1)
                 ?.trim()
-                ?.takeIf { it.isNotBlank() } ?: "-"
-        val personaNameNormalized = personaName.trim().lowercase()
-        val participantsNormalized = participants.lowercase()
-        val mentionsPersona =
-            normalized.contains("participants: persona") ||
-                normalized.contains("participants: персона") ||
-                normalized.contains("персона") ||
-                (personaNameNormalized.isNotBlank() && normalized.contains(personaNameNormalized))
+                .orEmpty()
+        val participantAliasesRaw =
+            Regex("(?:^|\\n)\\s*participant_aliases\\s*:\\s*([^\\n\\r]+)", RegexOption.IGNORE_CASE)
+                .find(trimmed)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                .orEmpty()
+        val subjectLocksRaw =
+            Regex("(?:^|\\n)\\s*subject_locks\\s*:\\s*([^\\n\\r]+)", RegexOption.IGNORE_CASE)
+                .find(trimmed)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                .orEmpty()
 
-        val inferredType =
-            explicitType ?: when {
-                Regex("\\bno_person\\b|\\bno person\\b|\\blandscape\\b|\\bscenery\\b|\\binterior\\b")
-                    .containsMatchIn(normalized) ||
-                    Regex("пейзаж|ландшафт|интерьер|без людей|без человека")
-                        .containsMatchIn(normalized) -> "no_person"
-                Regex("\\bgroup\\b|\\bmultiple people\\b|\\bcrowd\\b|\\bfamily\\b|\\bfriends\\b")
-                    .containsMatchIn(normalized) ||
-                    Regex("групп|компан|семь|друз|толпа|двое|трое|четверо")
-                        .containsMatchIn(normalized) -> "group"
-                else -> "person"
+        val type = normalizeImageDescriptionTypeToken(typeRaw)
+            ?: invalidImageDescriptionContract("type_missing_or_invalid")
+        val subjectMode = normalizeImageDescriptionSubjectModeToken(subjectModeRaw)
+            ?: invalidImageDescriptionContract("subject_mode_missing_or_invalid")
+        val expectedMode =
+            when (type) {
+                "person" -> "persona_self"
+                "other_person" -> "other_person"
+                "no_person" -> "no_person"
+                else -> "group"
             }
+        if (subjectMode != expectedMode) {
+            invalidImageDescriptionContract("type_subject_mode_mismatch:type=$type;subject_mode=$subjectMode;expected=$expectedMode")
+        }
+        if (participantsRaw.isBlank()) invalidImageDescriptionContract("participants_missing")
+        if (participantAliasesRaw.isBlank()) invalidImageDescriptionContract("participant_aliases_missing")
+        if (subjectLocksRaw.isBlank()) invalidImageDescriptionContract("subject_locks_missing")
 
-        val includesPersona =
-            inferredType == "person" ||
-                (
-                    inferredType == "group" && (
-                        mentionsPersona ||
-                            participantsNormalized.contains("persona") ||
-                            participantsNormalized.contains("персона") ||
-                            (personaNameNormalized.isNotBlank() &&
-                                participantsNormalized.contains(personaNameNormalized))
-                    )
-                )
+        val participants = splitParticipantTokens(participantsRaw)
+        val participantAliases = parseTokenValuePairs(participantAliasesRaw)
+        val subjectLocks = parseTokenValuePairs(subjectLocksRaw)
+
+        if (type == "no_person") {
+            if (participants.size != 1 || participants[0] != "none") {
+                invalidImageDescriptionContract("no_person_requires_participants_none")
+            }
+            if (!participantAliasesRaw.equals("none", ignoreCase = true)) {
+                invalidImageDescriptionContract("no_person_requires_participant_aliases_none")
+            }
+            if (!subjectLocksRaw.equals("none", ignoreCase = true)) {
+                invalidImageDescriptionContract("no_person_requires_subject_locks_none")
+            }
+        } else {
+            if (participants.isEmpty() || participants.contains("none")) {
+                invalidImageDescriptionContract("participants_invalid_for_person_scene")
+            }
+            if (type == "person") {
+                if (participants.size != 1 || participants[0] != "persona:self") {
+                    invalidImageDescriptionContract("person_requires_exactly_persona_self")
+                }
+            }
+            if (type == "other_person") {
+                if (participants.size != 1 || participants[0] == "persona:self") {
+                    invalidImageDescriptionContract("other_person_requires_single_non_persona_self_participant")
+                }
+            }
+            if (type == "group" && participants.size < 2) {
+                invalidImageDescriptionContract("group_requires_at_least_two_unique_participants")
+            }
+            participants.forEach { token ->
+                val alias = participantAliases[token]?.trim().orEmpty()
+                if (alias.isBlank()) {
+                    invalidImageDescriptionContract("participant_aliases_missing_for_$token")
+                }
+                val lock = subjectLocks[token]?.trim().orEmpty()
+                if (lock.isBlank()) {
+                    invalidImageDescriptionContract("subject_locks_missing_for_$token")
+                }
+                if (token.startsWith("external:")) {
+                    val slug = token.removePrefix("external:")
+                    if (!Regex("^[a-z0-9_]+$").matches(slug)) {
+                        invalidImageDescriptionContract("external_slug_invalid_for_$token")
+                    }
+                }
+            }
+        }
+
+        val sceneDescription = removeContractLines(trimmed)
+        if (sceneDescription.isBlank()) {
+            invalidImageDescriptionContract("scene_description_missing")
+        }
+
+        val participantTokens =
+            if (type == "no_person") {
+                emptyList()
+            } else {
+                participants
+            }
+        val participantsLine =
+            if (type == "no_person") {
+                "none"
+            } else {
+                participantTokens.joinToString(", ")
+            }
+        val aliasesLine =
+            if (type == "no_person") {
+                "none"
+            } else {
+                formatTokenPairs(participantTokens, participantAliases)
+            }
+        val locksLine =
+            if (type == "no_person") {
+                "none"
+            } else {
+                formatTokenPairs(participantTokens, subjectLocks)
+            }
+        val normalizedDescription =
+            listOf(
+                "type: $type",
+                "subject_mode: $subjectMode",
+                "participants: $participantsLine",
+                "participant_aliases: $aliasesLine",
+                "subject_locks: $locksLine",
+                sceneDescription,
+            ).joinToString("\n")
 
         return ParsedImageDescriptionContext(
-            type = inferredType,
-            participants = participants,
-            includesPersona = includesPersona,
-            hasExplicitType = hasExplicitType,
+            type = type,
+            participants = participantsLine,
+            participantTokens = participantTokens,
+            participantAliases = participantAliases,
+            subjectLocks = subjectLocks,
+            includesPersona = participantTokens.contains("persona:self"),
+            normalizedDescription = normalizedDescription,
         )
+    }
+
+    private fun normalizeParticipantCatalog(
+        participantCatalog: List<ComfyPromptParticipantCatalogEntry>,
+    ): List<ComfyPromptParticipantCatalogEntry> {
+        if (participantCatalog.isEmpty()) return emptyList()
+        val dedup = LinkedHashMap<String, ComfyPromptParticipantCatalogEntry>()
+        for (entry in participantCatalog) {
+            val id = entry.id.trim()
+            if (id.isBlank()) continue
+            val current = dedup[id]
+            if (current == null || (!current.isSelf && entry.isSelf)) {
+                dedup[id] =
+                    ComfyPromptParticipantCatalogEntry(
+                        id = id,
+                        alias = entry.alias.trim().ifBlank { id },
+                        isSelf = entry.isSelf,
+                        compactAppearanceLocks = entry.compactAppearanceLocks,
+                    )
+            }
+        }
+        return dedup.values.toList()
+    }
+
+    private fun buildParticipantCatalogTokenMap(
+        participantCatalog: List<ComfyPromptParticipantCatalogEntry>,
+    ): Map<String, ComfyPromptParticipantCatalogEntry> {
+        val map = LinkedHashMap<String, ComfyPromptParticipantCatalogEntry>()
+        participantCatalog.forEach { entry ->
+            map["persona:${entry.id}"] = entry
+            if (entry.isSelf) {
+                map["persona:self"] = entry
+            }
+        }
+        return map
+    }
+
+    private fun formatCompactLocks(locks: ParticipantAppearanceLocks): String {
+        return listOf(
+            "hair=${locks.hair.trim().ifBlank { "-" }}",
+            "eyes=${locks.eyes.trim().ifBlank { "-" }}",
+            "face=${locks.face.trim().ifBlank { "-" }}",
+            "body=${locks.body.trim().ifBlank { "-" }}",
+            "outfit=${locks.outfit.trim().ifBlank { "-" }}",
+            "markers=${locks.markers.trim().ifBlank { "-" }}",
+        ).joinToString(", ")
+    }
+
+    private fun formatParticipantCatalogContext(
+        participantCatalog: List<ComfyPromptParticipantCatalogEntry>,
+    ): String {
+        if (participantCatalog.isEmpty()) return "none"
+        return participantCatalog.joinToString("\n") { entry ->
+            "${if (entry.isSelf) "self" else "member"} | persona:${entry.id} | alias=${entry.alias} | ${formatCompactLocks(entry.compactAppearanceLocks)}"
+        }
+    }
+
+    private fun formatParticipantAliasesContext(sceneContext: ParsedImageDescriptionContext): String {
+        if (sceneContext.participantTokens.isEmpty()) return "none"
+        return sceneContext.participantTokens.joinToString(" | ") { token ->
+            "$token=${sceneContext.participantAliases[token]?.trim().orEmpty().ifBlank { "-" }}"
+        }
+    }
+
+    private fun formatSubjectLocksContext(sceneContext: ParsedImageDescriptionContext): String {
+        if (sceneContext.participantTokens.isEmpty()) return "none"
+        return sceneContext.participantTokens.joinToString(" | ") { token ->
+            "$token=${sceneContext.subjectLocks[token]?.trim().orEmpty().ifBlank { "-" }}"
+        }
+    }
+
+    private fun extractImageDescriptionRepairCandidate(content: String): String? {
+        val parsed = parseJsonObjectLoose(content)
+        val candidate =
+            readFirstNonBlankEntry(
+                parsed,
+                "description",
+                "fixed_description",
+                "comfy_image_description",
+                "comfyImageDescription",
+            )?.value
+                ?.trim()
+                .orEmpty()
+        return candidate.ifBlank { null }
+    }
+
+    private fun requestImageDescriptionContractRepair(
+        settings: JSONObject,
+        description: String,
+        validationError: String,
+        iteration: Int,
+        participantCatalog: List<ComfyPromptParticipantCatalogEntry>,
+    ): String? {
+        val provider = settings.optString("imagePromptProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model =
+            settings
+                .optString("imagePromptModel", settings.optString("model", ""))
+                .trim()
+        if (model.isBlank()) return null
+        val response =
+            requestChatCompletionsWithRetry(
+                baseUrl = baseUrl,
+                model = model,
+                auth = resolveProviderAuth(settings, provider),
+                temperature = clampTemperature(settings.optDouble("temperature", 0.35), minValue = 0.2, maxValue = 0.55),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 520), minValue = 220, maxValue = 900),
+                systemPrompt =
+                    listOf(
+                        "You repair one comfy_image_description string to a strict contract.",
+                        "Return JSON only, no markdown.",
+                        "Format: {\"description\":\"...\"}",
+                        "Required header lines inside description (exact keys):",
+                        "type: person|other_person|no_person|group",
+                        "subject_mode: persona_self|other_person|no_person|group",
+                        "participants: persona:self | persona:<id> | external:<slug> (or none for no_person)",
+                        "participant_aliases: token=alias pairs separated by ' | ' (or none for no_person)",
+                        "subject_locks: token=compact visual locks pairs separated by ' | ' (or none for no_person)",
+                        "Rules:",
+                        "- person => participants exactly persona:self",
+                        "- other_person => exactly one participant, not persona:self",
+                        "- group => at least two unique participants",
+                        "- external slug must be lowercase snake_case",
+                        "- keep the original visual scene details after the header",
+                        "- no anime/character references; only neutral real-world examples if needed",
+                        "Self-check before output: validate contract completeness and token consistency.",
+                    ).joinToString("\n"),
+                userPrompt =
+                    listOf(
+                        "Iteration: $iteration",
+                        "Validation error: $validationError",
+                        "Known participant catalog:",
+                        formatParticipantCatalogContext(participantCatalog),
+                        "Original description:",
+                        description,
+                    ).joinToString("\n"),
+                forceJsonObject = true,
+                toolDefinition = null,
+            )
+        return extractImageDescriptionRepairCandidate(response.content)
+    }
+
+    private fun resolveImageDescriptionContract(
+        settings: JSONObject,
+        description: String,
+        iteration: Int,
+        participantCatalog: List<ComfyPromptParticipantCatalogEntry>,
+    ): ParsedImageDescriptionContext {
+        return try {
+            parseImageDescriptionContext(description)
+        } catch (initialError: Exception) {
+            var lastError = initialError
+            var latestCandidate = description
+            for (attempt in 1..2) {
+                val repaired =
+                    try {
+                        requestImageDescriptionContractRepair(
+                            settings = settings,
+                            description = latestCandidate,
+                            validationError = lastError.message?.trim().orEmpty().ifBlank { "contract_validation_failed" },
+                            iteration = iteration + attempt,
+                            participantCatalog = participantCatalog,
+                        )
+                    } catch (_: Exception) {
+                        null
+                    }
+                if (repaired.isNullOrBlank()) continue
+                latestCandidate = repaired.trim()
+                try {
+                    return parseImageDescriptionContext(latestCandidate)
+                } catch (repairError: Exception) {
+                    lastError = repairError
+                }
+            }
+            throw IllegalStateException(
+                "contract_invalid:${lastError.message?.trim().orEmpty().ifBlank { "comfy_image_description_invalid" }}",
+            )
+        }
     }
 
     private fun extractComfyPromptsFromConversionPayload(parsed: JSONObject, rawContent: String): List<String> {

@@ -33,6 +33,11 @@ import {
   createComfyPromptsFromDescriptionToolConfig,
   createThemedComfyPromptToolConfig,
 } from "./tooling/registry";
+import {
+  parseComfyImageDescriptionContract,
+  type ComfyImageDescriptionType,
+  type ComfyPromptParticipantCatalogEntry,
+} from "./comfyImageDescriptionContract";
 
 export interface ChatCompletionContext {
   runtimeState?: PersonaRuntimeState;
@@ -330,18 +335,26 @@ export function buildSystemPrompt(
     "Проактивное изображение отправляй только если это естественно по контексту и действительно повышает вовлеченность.",
     "Если отказываешь в фото, не добавляй service JSON блок в этом ответе.",
     "Если изображения нужны, добавь в конце ответа service JSON (предпочтительно в ```json```), где ключ comfy_image_descriptions содержит массив описаний кадров.",
-    'Пример service JSON: {"comfy_image_descriptions":["type: person\\nparticipants: persona\\nПодробное описание кадра..."]}',
+    'Пример service JSON: {"comfy_image_descriptions":["type: person\\nsubject_mode: persona_self\\nparticipants: persona:self\\nparticipant_aliases: persona:self=Me\\nsubject_locks: persona:self=hair=dark bob, eyes=green, face=light freckles, body=slim, outfit=white hoodie, markers=small silver hoop\\nПодробное визуальное описание кадра..."]}',
     "",
-    "ЖЕСТКОЕ ПРАВИЛО: в каждом элементе comfy_image_descriptions первая строка ОБЯЗАТЕЛЬНО type: person|other_person|no_person|group.",
-    "type=person: в кадре текущая персона (селфи/портрет/фото персонажа).",
-    "type=other_person: в кадре другой человек, НЕ текущая персона.",
-    "type=no_person: в кадре нет людей (пейзаж/интерьер/предмет).",
-    "type=group: в кадре несколько людей.",
-    "Для type=group и type=other_person строка participants ОБЯЗАТЕЛЬНА и должна кратко перечислять состав кадра.",
-    "Для type=no_person указывай participants: none.",
+    "ЖЕСТКИЙ КОНТРАКТ comfy_image_descriptions (обязателен для КАЖДОГО элемента, без пропусков):",
+    "1) type: person|other_person|no_person|group",
+    "2) subject_mode: persona_self|other_person|no_person|group",
+    "3) participants: каноничные токены (persona:self | persona:<id> | external:<slug>) или none для no_person",
+    "4) participant_aliases: token=alias пары через разделитель ' | ' (или none для no_person)",
+    "5) subject_locks: token=краткие визуальные locks (hair/eyes/face/body/outfit/markers) через ' | ' или none для no_person",
+    "Service JSON для изображений: ТОЛЬКО ключ comfy_image_descriptions (или comfyImageDescriptions) как массив СТРОК.",
+    'Запрещено: отдельный объект вида {"description":"..."} или массив объектов вместо строк.',
+    "После 5 служебных строк ОБЯЗАТЕЛЬНО добавь минимум 1 строку визуального описания сцены; пустой scene-block недопустим.",
+    "Если собираешься отправить изображение: одних constraints (participants/participant_aliases/subject_locks) недостаточно, полноценное описание сцены обязательно.",
+    "type=person: в participants ДОЛЖЕН быть ровно persona:self.",
+    "type=other_person: в participants ровно один участник и это НЕ persona:self.",
+    "type=group: минимум 2 уникальных участника в participants.",
+    "type=no_person: participants: none, participant_aliases: none, subject_locks: none.",
+    "external:<slug> обязан быть lowercase snake_case.",
     "Если для type=other_person не хватает явных визуальных деталей человека, задай 1 уточняющий вопрос и НЕ добавляй service JSON в этом ответе.",
-    "Если type=group и в кадре есть персона, обязательно явно отметь это в participants (например: participants: persona + brother).",
     "Внутри каждого описания используй только полезные для изображения детали, без мета-комментариев и без markdown.",
+    "Запрещено отдавать свободное литературное описание без этих структурных строк контракта.",
     "Используй только наблюдаемые визуальные факты, без психологических ярлыков и мотиваций (например: narcissistic, exhibitionist, self-promotion, casual language, slang).",
     "Не добавляй детали, которых нет в запросе пользователя или в описании внешности персонажа.",
     "КРИТИЧНО: сохраняй консистентность важных деталей между запросом и описанием кадра: ключевые черты внешности, эмоция/выражение, одежда и материалы, окружение, условия сцены (время суток/погода/свет).",
@@ -352,6 +365,8 @@ export function buildSystemPrompt(
     "Для type=group применяй внешность текущей персоны только к ней и только если она указана в participants.",
     "Не меняй базовую внешность текущей персоны между сообщениями без явной просьбы пользователя.",
     "Не добавляй взаимоисключающие теги (например одновременно blonde hair и black hair).",
+    "SELF-CHECK для контракта перед выдачей service JSON: проверь обязательные строки, каноничность participants, покрытие alias/locks для всех участников и соответствие type/subject_mode.",
+    "SELF-CHECK: если в comfy_image_descriptions есть только header/locks без отдельного визуального описания сцены — перепиши блок; такой формат запрещён.",
     "Если используешь markdown для service JSON, только один короткий fenced json-блок без дополнительного текста внутри.",
     "",
     "После каждого ответа добавляй persona_control в service JSON:",
@@ -2017,89 +2032,239 @@ export async function generateThemedComfyPrompt(
   return first;
 }
 
-type ImageDescriptionType = "person" | "other_person" | "no_person" | "group";
-
 interface ParsedImageDescriptionContext {
-  type: ImageDescriptionType;
+  type: ComfyImageDescriptionType;
   participants: string;
+  participantTokens: string[];
+  participantAliases: Record<string, string>;
+  subjectLocks: Record<string, string>;
   includesPersona: boolean;
-  hasExplicitType: boolean;
+  normalizedDescription: string;
 }
 
-function normalizeImageDescriptionTypeToken(token: string | undefined) {
-  const normalized = toTrimmedString(token).toLowerCase();
-  if (!normalized) return undefined;
-  if (normalized === "person" || normalized === "persona_self" || normalized === "self") {
-    return "person" as const;
+interface ComfyDescriptionRepairCandidate {
+  description: string;
+}
+
+interface ComfyDescriptionResolveResult {
+  parsed: ParsedImageDescriptionContext;
+  repairedDescription: string;
+  repairAttemptsUsed: number;
+}
+
+function compactLocksToLine(
+  locks: Partial<{
+    hair: string;
+    eyes: string;
+    face: string;
+    body: string;
+    outfit: string;
+    markers: string;
+  }>,
+) {
+  return [
+    `hair=${toTrimmedString(locks.hair) || "-"}`,
+    `eyes=${toTrimmedString(locks.eyes) || "-"}`,
+    `face=${toTrimmedString(locks.face) || "-"}`,
+    `body=${toTrimmedString(locks.body) || "-"}`,
+    `outfit=${toTrimmedString(locks.outfit) || "-"}`,
+    `markers=${toTrimmedString(locks.markers) || "-"}`,
+  ].join(", ");
+}
+
+function normalizeParticipantCatalog(
+  participantCatalog: ComfyPromptParticipantCatalogEntry[] | undefined,
+): ComfyPromptParticipantCatalogEntry[] {
+  if (!participantCatalog || participantCatalog.length === 0) return [];
+  const dedup = new Map<string, ComfyPromptParticipantCatalogEntry>();
+  for (const entry of participantCatalog) {
+    const id = toTrimmedString(entry.id);
+    if (!id) continue;
+    const alias = toTrimmedString(entry.alias) || id;
+    dedup.set(id, {
+      id,
+      alias,
+      isSelf: Boolean(entry.isSelf),
+      compactAppearanceLocks: entry.compactAppearanceLocks ?? {},
+    });
   }
-  if (normalized === "other_person" || normalized === "other") {
-    return "other_person" as const;
+  return Array.from(dedup.values());
+}
+
+function buildParticipantCatalogTokenMap(
+  participantCatalog: ComfyPromptParticipantCatalogEntry[],
+) {
+  const map = new Map<string, ComfyPromptParticipantCatalogEntry>();
+  for (const entry of participantCatalog) {
+    const personaToken = `persona:${entry.id}`;
+    map.set(personaToken, entry);
+    if (entry.isSelf) {
+      map.set("persona:self", entry);
+    }
   }
-  if (normalized === "no_person" || normalized === "none" || normalized === "landscape") {
-    return "no_person" as const;
-  }
-  if (normalized === "group" || normalized === "multi_person") {
-    return "group" as const;
-  }
-  return undefined;
+  return map;
+}
+
+function formatParticipantCatalogContext(
+  participantCatalog: ComfyPromptParticipantCatalogEntry[],
+) {
+  if (participantCatalog.length === 0) return "none";
+  return participantCatalog
+    .map(
+      (entry) =>
+        `${entry.isSelf ? "self" : "member"} | persona:${entry.id} | alias=${entry.alias} | ${compactLocksToLine(entry.compactAppearanceLocks)}`,
+    )
+    .join("\n");
+}
+
+function formatParticipantAliasesContext(
+  parsed: ParsedImageDescriptionContext,
+) {
+  if (parsed.participantTokens.length === 0) return "none";
+  return parsed.participantTokens
+    .map((token) => `${token}=${parsed.participantAliases[token] || "-"}`)
+    .join(" | ");
+}
+
+function formatSubjectLocksContext(parsed: ParsedImageDescriptionContext) {
+  if (parsed.participantTokens.length === 0) return "none";
+  return parsed.participantTokens
+    .map((token) => `${token}=${parsed.subjectLocks[token] || "-"}`)
+    .join(" | ");
+}
+
+function extractComfyDescriptionRepairCandidate(
+  content: string,
+): ComfyDescriptionRepairCandidate | null {
+  const parsed = parseJsonObjectFromText<Record<string, unknown>>(content);
+  if (!parsed) return null;
+  const candidate = toTrimmedString(
+    parsed.description ??
+      parsed.fixed_description ??
+      parsed.comfy_image_description ??
+      parsed.comfyImageDescription,
+  );
+  if (!candidate) return null;
+  return { description: candidate };
+}
+
+async function requestComfyDescriptionContractRepair(
+  settings: AppSettings,
+  description: string,
+  validationError: string,
+  iteration: number,
+  participantCatalog: ComfyPromptParticipantCatalogEntry[],
+) {
+  const model = resolveImagePromptModel(settings);
+  const systemPrompt = [
+    "You repair one comfy_image_description string to a strict contract.",
+    "Return JSON only, no markdown.",
+    'Format: {"description":"..."}',
+    "Required header lines inside description (exact keys):",
+    "type: person|other_person|no_person|group",
+    "subject_mode: persona_self|other_person|no_person|group",
+    "participants: persona:self | persona:<id> | external:<slug> (or none for no_person)",
+    "participant_aliases: token=alias pairs separated by ' | ' (or none for no_person)",
+    "subject_locks: token=compact visual locks pairs separated by ' | ' (or none for no_person)",
+    "Rules:",
+    "- person => participants exactly persona:self",
+    "- other_person => exactly one participant, not persona:self",
+    "- group => at least two unique participants",
+    "- external slug must be lowercase snake_case",
+    "- keep the original visual scene details after the header",
+    "- no anime/character references; only neutral real-world examples if needed",
+    "Self-check before output: validate contract completeness and token consistency.",
+  ].join("\n");
+  const input = [
+    `Iteration: ${iteration}`,
+    `Validation error: ${validationError}`,
+    `Known participant catalog:\n${formatParticipantCatalogContext(participantCatalog)}`,
+    "Original description:",
+    description,
+  ].join("\n");
+  const response = await requestGenericChatCompletion(
+    settings,
+    "image_prompt",
+    {
+      model,
+      input,
+      systemPrompt,
+      maxOutputTokens: Math.max(220, Math.min(900, settings.maxTokens)),
+      temperature: Math.max(0.2, Math.min(0.55, settings.temperature)),
+      store: false,
+    },
+  );
+  return extractComfyDescriptionRepairCandidate(response.content);
 }
 
 function parseImageDescriptionContext(
   description: string,
-  personaName: string,
 ): ParsedImageDescriptionContext {
-  const normalized = description.toLowerCase();
-  const typeMatch = normalized.match(/(?:^|\n)\s*type\s*:\s*([a-z_]+)\b/i);
-  const subjectModeMatch = normalized.match(
-    /(?:^|\n)\s*subject_mode\s*:\s*(persona_self|other_person|no_person|group)\b/i,
-  );
-  const explicitType =
-    normalizeImageDescriptionTypeToken(typeMatch?.[1]) ??
-    normalizeImageDescriptionTypeToken(subjectModeMatch?.[1]);
-  const hasExplicitType = Boolean(explicitType);
-  const participantsMatch = description.match(/(?:^|\n)\s*participants\s*:\s*([^\n\r]+)/i);
-  const participants = toTrimmedString(participantsMatch?.[1]) || "-";
-  const personaNameNormalized = personaName.trim().toLowerCase();
-  const participantsNormalized = participants.toLowerCase();
-  const mentionsPersona =
-    normalized.includes("participants: persona") ||
-    normalized.includes("participants: персона") ||
-    normalized.includes("персона") ||
-    (personaNameNormalized && normalized.includes(personaNameNormalized));
-
-  const inferredType: ImageDescriptionType =
-    explicitType ??
-    (/\bno_person\b|\bno person\b|\blandscape\b|\bscenery\b|\binterior\b/.test(normalized) ||
-    /пейзаж|ландшафт|интерьер|без людей|без человека/.test(normalized)
-      ? "no_person"
-      : /\bgroup\b|\bmultiple people\b|\bcrowd\b|\bfamily\b|\bfriends\b/.test(normalized) ||
-          /групп|компан|семь|друз|толпа|двое|трое|четверо/.test(normalized)
-        ? "group"
-        : "person");
-
-  const includesPersona =
-    inferredType === "person" ||
-    (inferredType === "group" &&
-      (mentionsPersona ||
-        participantsNormalized.includes("persona") ||
-        participantsNormalized.includes("персона") ||
-        Boolean(
-          personaNameNormalized &&
-            participantsNormalized.includes(personaNameNormalized),
-        )));
-
+  const parsed = parseComfyImageDescriptionContract(description);
   return {
-    type: inferredType,
-    participants,
-    includesPersona,
-    hasExplicitType,
+    type: parsed.type,
+    participants: parsed.participantsLine,
+    participantTokens: [...parsed.participants],
+    participantAliases: { ...parsed.participantAliases },
+    subjectLocks: { ...parsed.subjectLocks },
+    includesPersona: parsed.includesPersonaSelf,
+    normalizedDescription: parsed.normalizedDescription,
   };
+}
+
+function contractInvalidError(reason: string) {
+  return new Error(`contract_invalid:${reason}`);
+}
+
+async function resolveComfyDescriptionContract(
+  settings: AppSettings,
+  description: string,
+  iteration: number,
+  participantCatalog: ComfyPromptParticipantCatalogEntry[],
+): Promise<ComfyDescriptionResolveResult> {
+  try {
+    const parsed = parseImageDescriptionContext(description);
+    return {
+      parsed,
+      repairedDescription: parsed.normalizedDescription,
+      repairAttemptsUsed: 0,
+    };
+  } catch (initialError) {
+    let lastError = initialError as Error;
+    let latestCandidate = description;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const repair = await requestComfyDescriptionContractRepair(
+        settings,
+        latestCandidate,
+        toTrimmedString(lastError.message) || "contract_validation_failed",
+        iteration + attempt,
+        participantCatalog,
+      ).catch(() => null);
+      const repairedDescription = toTrimmedString(repair?.description);
+      if (!repairedDescription) continue;
+      latestCandidate = repairedDescription;
+      try {
+        const parsed = parseImageDescriptionContext(repairedDescription);
+        return {
+          parsed,
+          repairedDescription: parsed.normalizedDescription,
+          repairAttemptsUsed: attempt,
+        };
+      } catch (repairError) {
+        lastError = repairError as Error;
+      }
+    }
+    throw contractInvalidError(
+      toTrimmedString(lastError.message) || "comfy_image_description_invalid",
+    );
+  }
 }
 
 export async function generateComfyPromptsFromImageDescription(
   settings: AppSettings,
   persona: Pick<
     Persona,
+    | "id"
     | "name"
     | "appearance"
     | "stylePrompt"
@@ -2108,6 +2273,9 @@ export async function generateComfyPromptsFromImageDescription(
   >,
   imageDescription: string,
   iteration: number,
+  options?: {
+    participantCatalog?: ComfyPromptParticipantCatalogEntry[];
+  },
 ): Promise<string[]> {
   const description = toTrimmedString(imageDescription);
   if (!description) {
@@ -2115,20 +2283,53 @@ export async function generateComfyPromptsFromImageDescription(
       "Пустое описание изображения для генерации ComfyUI prompt.",
     );
   }
-  const sceneContext = parseImageDescriptionContext(
+  const participantCatalog = normalizeParticipantCatalog(
+    options?.participantCatalog,
+  );
+  const resolveResult = await resolveComfyDescriptionContract(
+    settings,
     description,
-    persona.name || "",
+    iteration,
+    participantCatalog,
+  );
+  const sceneContext = resolveResult.parsed;
+  const participantTokenMap = buildParticipantCatalogTokenMap(participantCatalog);
+  const selfTokens = new Set<string>(["persona:self"]);
+  for (const entry of participantCatalog) {
+    if (!entry.isSelf) continue;
+    selfTokens.add(`persona:${entry.id}`);
+  }
+  const includesCurrentPersona = sceneContext.participantTokens.some((token) =>
+    selfTokens.has(token),
   );
   const imagePromptModel = resolveImagePromptModel(settings);
   const shouldUsePersonaContext =
     sceneContext.type === "person" ||
-    (sceneContext.type === "group" && sceneContext.includesPersona);
+    (sceneContext.type === "group" && includesCurrentPersona);
   const appearanceContext = shouldUsePersonaContext
     ? formatAppearanceProfile(persona.appearance)
     : "N/A (persona appearance is disabled for this type)";
   const lookPromptCacheContext = shouldUsePersonaContext
     ? formatLookPromptCacheInput(persona.lookPromptCache)
     : "DISABLED (persona identity prior must not be used for this type)";
+  const resolvedParticipantLocksContext =
+    sceneContext.participantTokens.length > 0
+      ? sceneContext.participantTokens
+          .map((token) => {
+            const mappedEntry = participantTokenMap.get(token);
+            const alias =
+              sceneContext.participantAliases[token] ||
+              mappedEntry?.alias ||
+              token;
+            if (mappedEntry) {
+              return `${token} | alias=${alias} | source=catalog | ${compactLocksToLine(mappedEntry.compactAppearanceLocks)}`;
+            }
+            return `${token} | alias=${alias} | source=subject_locks | lock=${sceneContext.subjectLocks[token] || "-"}`;
+          })
+          .join("\n")
+      : "none";
+  const participantCatalogContext =
+    formatParticipantCatalogContext(participantCatalog);
 
   const systemPrompt = [
     "Ты конвертер описания сцены в список ComfyUI prompts.",
@@ -2138,10 +2339,12 @@ export async function generateComfyPromptsFromImageDescription(
     "Если описание содержит несколько кадров/изображений (например: «первое изображение», «второе изображение», «image 1», «image 2»), верни отдельный элемент в prompts для каждого кадра.",
     "Если описание одного кадра, верни один элемент в prompts.",
     "Определи тип кадра из поля type в Image description: person|other_person|no_person|group.",
-    "Строку type и participants считай служебными и НЕ копируй в теги.",
-    "Сначала проанализируй присутствие людей в кадре (персона/другие/никого) по type, participants и самому описанию сцены.",
+    "Контракт Image description строгий: type, subject_mode, participants, participant_aliases, subject_locks.",
+    "Строки type/subject_mode/participants/participant_aliases/subject_locks служебные и НЕ копируй в теги.",
+    "Сначала проанализируй присутствие людей в кадре по type и participants.",
     "MULTI-CHARACTER SYNTAX: для 2+ людей используй экранированные subject-блоки \\( ... \\) и явную привязку деталей к каждому субъекту.",
     "КРИТИЧНО: между subject tag и \\(details\\) не ставь запятую.",
+    "Для каждого subject_* блока обязательны отличительные признаки: hair, eyes, body; height добавляй, если есть в subject_locks.",
     "Если в кадре мужчина+женщина, используй строго: 1girl \\(female details\\), 1boy \\(male details\\), shared composition tags.",
     "Если в кадре персонажи одного пола, используй именованные блоки: subject_a \\(details\\), subject_b \\(details\\) + общий счетчик (например 2girls/2boys).",
     "Лимит персональных тегов внутри каждого subject-блока: строго 8-12.",
@@ -2156,10 +2359,12 @@ export async function generateComfyPromptsFromImageDescription(
     "CONSISTENCY LOCKS (обязательны): key appearance traits, emotion/expression, outfit/materials, environment, scene conditions (time/weather/lighting).",
     "Все lock-детали из Image description должны перейти в prompt без потери смысла, но не перегружай prompt.",
     "Не подменяй lock-детали похожими, но другими по смыслу формулировками.",
+    "Применяй locks строго по соответствующему участнику из participants, не смешивай признаки между субъектами.",
+    "Для unknown external:* используй только subject_locks и описание сцены, без догадок из каталога персоны.",
     "type=person: используй детали персонажа из Image description + Appearance + LookPrompt cache.",
     "type=other_person: запрещено использовать Appearance и LookPrompt cache текущей персоны.",
     "type=no_person: строго без людей/лиц/персонажей; Appearance и LookPrompt cache запрещены.",
-    "type=group: используй Appearance/LookPrompt cache только если participants явно включает текущую персону; иначе запрещено.",
+    "type=group: используй Appearance/LookPrompt cache только если participants включает persona:self или токен текущей персоны; иначе запрещено.",
     "Если в input явно сказано, что Appearance/LookPrompt cache disabled, НЕ используй их ни в каком виде.",
     "Одежда должна соответствовать ситуации!",
     "ОБЯЗАТЕЛЬНО!: описывай детали сцены досконально - вид, одежда, окружение, действия, фокус на определенных частях тела и тд.",
@@ -2180,20 +2385,26 @@ export async function generateComfyPromptsFromImageDescription(
     "Если есть сомнение, лучше пропусти тег, не выдумывай.",
     "Учитывай свои границы дозволенного при генерации.",
     "Перед ответом сделай self-check: format delimiter, word count per tag, no duplicates, no contradictions, no banned tags, все ключевые детали из Image description покрыты.",
+    "SELF-CHECK (critical): каждый subject_* блок должен быть ТОЛЬКО в экранированном виде subject_x \\( ... \\), вариант subject_x (...) запрещён.",
+    "SELF-CHECK (critical): в каждом subject_* блоке обязательно присутствуют hair, eyes, body (и height, если он есть в subject_locks).",
   ].join("\n");
 
   const input = [
     `Character name: ${persona.name || "Unknown"}`,
     `Scene type (parsed): ${sceneContext.type}`,
-    `Type field present in description: ${sceneContext.hasExplicitType ? "yes" : "no"}`,
     `Participants: ${sceneContext.participants}`,
+    `Participant aliases: ${formatParticipantAliasesContext(sceneContext)}`,
+    `Subject locks: ${formatSubjectLocksContext(sceneContext)}`,
+    `Participant catalog:\n${participantCatalogContext}`,
+    `Resolved participant appearance locks:\n${resolvedParticipantLocksContext}`,
     `Use persona appearance context: ${shouldUsePersonaContext ? "yes" : "no"}`,
     `Appearance: ${appearanceContext}`,
     `Style: ${persona.stylePrompt || "-"}`,
     `Personality: ${persona.personalityPrompt || "-"}`,
     `LookPrompt cache:\n${lookPromptCacheContext}`,
-    `Image description: ${description}`,
+    `Image description: ${resolveResult.repairedDescription}`,
     `Iteration: ${iteration}`,
+    `Contract repair attempts used: ${resolveResult.repairAttemptsUsed}`,
   ].join("\n");
 
   const comfyPromptsToolConfig = createComfyPromptsFromDescriptionToolConfig();
@@ -2217,6 +2428,7 @@ export async function generateComfyPromptFromImageDescription(
   settings: AppSettings,
   persona: Pick<
     Persona,
+    | "id"
     | "name"
     | "appearance"
     | "stylePrompt"
@@ -2225,12 +2437,16 @@ export async function generateComfyPromptFromImageDescription(
   >,
   imageDescription: string,
   iteration: number,
+  options?: {
+    participantCatalog?: ComfyPromptParticipantCatalogEntry[];
+  },
 ): Promise<string> {
   const prompts = await generateComfyPromptsFromImageDescription(
     settings,
     persona,
     imageDescription,
     iteration,
+    options,
   );
   const first = prompts[0]?.trim();
   if (!first) {
