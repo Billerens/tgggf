@@ -1816,7 +1816,10 @@ object NativeLlmClient {
             "Пример same-gender: 2girls, subject_a \\(short blonde bob, blue eyes, pale skin, gray hoodie, black cargo pants, white sneakers, cheerful smile, waving hand, slight lean forward\\), subject_b \\(long auburn ponytail, brown eyes, warm skin tone, beige trench coat, dark jeans, ankle boots, neutral expression, folded arms, upright posture\\), city street, sunset.",
             "Если есть общие детали для всех, выноси их после subject-блоков как обычные общие теги сцены.",
             "Детали внутри каждого \\( ... \\) держи короткими и приоритетными (внешность, одежда, действие, ключевая эмоция).",
-            "Лимит персональных тегов внутри каждого subject-блока: строго 8-12.",
+            "Лимит персональных тегов внутри каждого subject-блока: строго 6-8.",
+            "При переполнении subject-блока оставляй в первую очередь hair, eyes, body (и height при наличии), а вторичные детали сокращай.",
+            "Допускается усиление максимально важных тегов весом в формате tag:1.3 (например green eyes:1.3, rainy window bokeh:1.2).",
+            "Веса применяй точечно: максимум 5 weighted tags на subject-блок; не взвешивай все теги подряд.",
             "Если в кадре один человек, не используй multi-character шаблон и держи solo/single subject/one person.",
             "Если сцена без людей, запрещены subject anchors (1girl/1boy/2girls/2boys/имена персонажей).",
             "ОБЯЗАТЕЛЬНО Сохраняй идентичность персонажа: волосы, глаза, возрастной тип, телосложение, общий стиль.",
@@ -1837,6 +1840,8 @@ object NativeLlmClient {
             "Теги только на английском языке (English only).",
             "Внешность персонажа должна быть сохранена.",
             "Обязательно перепроверяй наличие важных тегов внешности: телосложение, цвет глаз, цвет волос, прическа, эмоции (если указаны).",
+            "В каждом subject_* блоке должно быть не более 8 персональных тегов; приоритет обязателен: hair, eyes, body (height при наличии).",
+            "Если использованы веса, hair/eyes/body (и height при наличии) должны быть обязательно среди weighted tags; остальные веса — только для максимально важных тегов сцены.",
             "Если что-то не соответствует - перегенерируй.",
         ).joinToString("\n")
     }
@@ -1876,7 +1881,10 @@ object NativeLlmClient {
             "КРИТИЧНО: между subject tag и \\(details\\) не ставь запятую.",
             "Если в кадре мужчина+женщина, используй строго: 1girl \\(female details\\), 1boy \\(male details\\), shared composition tags.",
             "Если в кадре персонажи одного пола, используй именованные блоки: subject_a \\(details\\), subject_b \\(details\\) + общий счетчик (например 2girls/2boys).",
-            "Лимит персональных тегов внутри каждого subject-блока: строго 8-12.",
+            "Лимит персональных тегов внутри каждого subject-блока: строго 6-8.",
+            "При переполнении subject-блока оставляй в первую очередь hair, eyes, body (и height при наличии), а вторичные детали сокращай.",
+            "Допускается усиление максимально важных тегов весом в формате tag:1.3 (например green eyes:1.3, rainy window bokeh:1.2).",
+            "Веса применяй точечно: максимум 5 weighted tags на subject-блок; не взвешивай все теги подряд.",
             "Пример mixed-gender prompt: duo, 1girl \\(long wavy brown hair, green eyes, light freckles, white linen shirt, blue denim jacket, silver necklace, gentle smile, holding coffee cup, relaxed posture\\), 1boy \\(short dark hair, hazel eyes, light stubble, charcoal bomber jacket, black jeans, leather wristwatch, calm expression, hands in pockets, standing slight angle\\), night city, bokeh.",
             "Пример same-gender prompt: 2girls, subject_a \\(short blonde bob, blue eyes, pale skin, gray hoodie, black cargo pants, white sneakers, cheerful smile, waving hand, slight lean forward\\), subject_b \\(long auburn ponytail, brown eyes, warm skin tone, beige trench coat, dark jeans, ankle boots, neutral expression, folded arms, upright posture\\), urban crossing, evening light.",
             "Общие детали композиции выноси после subject-блоков; не дублируй их внутри каждого блока без необходимости.",
@@ -1916,6 +1924,8 @@ object NativeLlmClient {
             "Перед ответом сделай self-check: format delimiter, word count per tag, no duplicates, no contradictions, no banned tags, все ключевые детали из Image description покрыты.",
             "SELF-CHECK (critical): каждый subject_* блок должен быть ТОЛЬКО в экранированном виде subject_x \\( ... \\), вариант subject_x (...) запрещён.",
             "SELF-CHECK (critical): в каждом subject_* блоке обязательно присутствуют hair, eyes, body (и height, если он есть в subject_locks).",
+            "SELF-CHECK (critical): в каждом subject_* блоке не более 8 персональных тегов.",
+            "SELF-CHECK (critical): hair/eyes/body (и height при наличии) обязательно входят в weighted tags; дополнительно можно взвешивать только максимально важные теги сцены, суммарно не более 5 на subject-блок.",
         ).joinToString("\n")
     }
 
