@@ -57,6 +57,25 @@ data class NativeTopicThemedPrompts(
     val llmDebug: NativeLlmCallDebug?,
 )
 
+data class NativeOneToOneTurnResponse(
+    val content: String,
+    val responseId: String?,
+    val comfyPrompt: String?,
+    val comfyPrompts: List<String>,
+    val comfyImageDescription: String?,
+    val comfyImageDescriptions: List<String>,
+    val personaControl: JSONObject?,
+    val llmDebug: NativeLlmCallDebug?,
+)
+
+data class NativeConversationSummaryState(
+    val summary: String,
+    val facts: List<String>,
+    val goals: List<String>,
+    val openThreads: List<String>,
+    val agreements: List<String>,
+)
+
 private data class HttpResult(
     val code: Int,
     val body: String,
@@ -410,6 +429,191 @@ object NativeLlmClient {
             comfyImageDescriptions = comfyImageDescriptions,
             llmDebug = llmDebug,
         )
+    }
+
+    fun requestOneToOneChatTurn(
+        settings: JSONObject,
+        persona: JSONObject,
+        userInput: String,
+        recentMessages: JSONArray,
+        runtimeState: JSONObject?,
+        memoryCard: JSONObject?,
+        conversationSummary: JSONObject?,
+    ): NativeOneToOneTurnResponse? {
+        val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model = settings.optString("model", "").trim()
+        if (model.isBlank()) return null
+
+        val response =
+            requestChatCompletionsWithRetry(
+                baseUrl = baseUrl,
+                model = model,
+                auth = resolveProviderAuth(settings, provider),
+                temperature = clampTemperature(settings.optDouble("temperature", 0.72), minValue = 0.2, maxValue = 0.95),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 620), minValue = 180, maxValue = 1200),
+                systemPrompt =
+                    buildOneToOneSystemPrompt(
+                        settings = settings,
+                        persona = persona,
+                        runtimeState = runtimeState,
+                        memoryCard = memoryCard,
+                        conversationSummary = conversationSummary,
+                    ),
+                userPrompt =
+                    buildOneToOneUserPrompt(
+                        userInput = userInput,
+                        recentMessages = recentMessages,
+                    ),
+                forceJsonObject = true,
+                toolDefinition = buildOneToOneChatTurnToolDefinition(),
+            )
+        val parsed = parseJsonObjectLoose(response.content)
+        val visibleTextEntry =
+            readFirstNonBlankEntry(
+                parsed,
+                "visibleText",
+                "visible_text",
+                "speech",
+                "text",
+                "reply",
+                "message",
+            )
+        var visibleText = sanitizeVisibleText(visibleTextEntry?.value.orEmpty())
+        var parsedVisibleField = visibleTextEntry?.key
+        if (visibleText.isBlank()) {
+            val rawContent = response.content.trim()
+            val looksLikeStructuredPayload = rawContent.startsWith("{") || rawContent.startsWith("[")
+            if (!looksLikeStructuredPayload) {
+                visibleText = sanitizeVisibleText(rawContent)
+                if (visibleText.isNotBlank()) {
+                    parsedVisibleField = "raw_content_fallback"
+                }
+            }
+        }
+        val comfyPrompts =
+            parseStringArrayFlexible(parsed.opt("comfyPrompts"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfy_prompts")) }
+                .ifEmpty {
+                    parsed.optString("comfyPrompt", parsed.optString("comfy_prompt", ""))
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
+                }
+        val comfyImageDescriptions =
+            parseStringArrayFlexible(parsed.opt("comfyImageDescriptions"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfy_image_descriptions")) }
+                .ifEmpty {
+                    parsed.optString("comfyImageDescription", parsed.optString("comfy_image_description", ""))
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
+                }
+        val personaControl =
+            parsed.optJSONObject("personaControl")
+                ?: parsed.optJSONObject("persona_control")
+                ?: parseOptionalJsonObjectFromAny(parsed.opt("personaControl"))
+                ?: parseOptionalJsonObjectFromAny(parsed.opt("persona_control"))
+
+        return NativeOneToOneTurnResponse(
+            content = visibleText,
+            responseId = response.responseId,
+            comfyPrompt = comfyPrompts.firstOrNull(),
+            comfyPrompts = comfyPrompts,
+            comfyImageDescription = comfyImageDescriptions.firstOrNull(),
+            comfyImageDescriptions = comfyImageDescriptions,
+            personaControl = personaControl,
+            llmDebug = response.llmDebug?.copy(parsedField = parsedVisibleField),
+        )
+    }
+
+    fun requestOneToOneSummaryUpdate(
+        settings: JSONObject,
+        persona: JSONObject,
+        existing: NativeConversationSummaryState,
+        transcript: List<Pair<String, String>>,
+        targetTokens: Int,
+    ): NativeConversationSummaryState? {
+        if (transcript.isEmpty()) return existing
+        val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model = settings.optString("model", "").trim()
+        if (model.isBlank()) return null
+
+        val safeTargetTokens = targetTokens.coerceIn(600, 3000)
+        val responseMaxTokens = ((safeTargetTokens * 1.2).roundToInt()).coerceIn(700, 5000)
+        val systemPrompt =
+            listOf(
+                "Ты компонент суммаризации 1:1 чата между пользователем и персоной.",
+                "Верни ТОЛЬКО JSON-объект без markdown и пояснений.",
+                "Формат: {\"summary\":\"...\",\"facts\":[\"...\"],\"goals\":[\"...\"],\"openThreads\":[\"...\"],\"agreements\":[\"...\"]}",
+                "Пиши на русском языке, фактически и нейтрально.",
+                "summary — связная выжимка прошлого контекста, без художественных добавлений.",
+                "facts — устойчивые факты о пользователе/контексте (без одноразовых команд).",
+                "goals — цели и намерения пользователя, если они явно есть.",
+                "openThreads — незавершенные темы/вопросы/задачи.",
+                "agreements — явные договоренности и решения.",
+                "Не дублируй один и тот же пункт разными формулировками.",
+                "Если данных для списка нет — верни пустой массив.",
+                "Ограничь общий объем summary примерно до $safeTargetTokens токенов или меньше.",
+            ).joinToString("\n")
+        val existingJson =
+            JSONObject().apply {
+                put("summary", existing.summary)
+                put("facts", JSONArray(existing.facts))
+                put("goals", JSONArray(existing.goals))
+                put("openThreads", JSONArray(existing.openThreads))
+                put("agreements", JSONArray(existing.agreements))
+            }.toString()
+        val input =
+            buildString {
+                appendLine("Персона: ${persona.optString("name", "Персона").trim().ifEmpty { "Персона" }}")
+                appendLine("Целевой бюджет токенов для summary: $safeTargetTokens")
+                appendLine()
+                appendLine("Текущее состояние summary (можно сжать/переписать):")
+                appendLine(existingJson)
+                appendLine()
+                appendLine("Новые сообщения для инкрементального учета:")
+                transcript.forEach { entry ->
+                    val roleLabel = if (entry.first == "assistant") "Персона" else "Пользователь"
+                    appendLine("$roleLabel: ${entry.second.trim()}")
+                }
+            }.trim()
+
+        return try {
+            val response =
+                requestChatCompletionsWithRetry(
+                    baseUrl = baseUrl,
+                    model = model,
+                    auth = resolveProviderAuth(settings, provider),
+                    temperature = clampTemperature(settings.optDouble("temperature", 0.25), minValue = 0.1, maxValue = 0.4),
+                    maxTokens = responseMaxTokens,
+                    systemPrompt = systemPrompt,
+                    userPrompt = input,
+                    forceJsonObject = true,
+                    toolDefinition = null,
+                )
+            val parsed = parseJsonObjectLoose(response.content)
+            if (parsed.length() == 0) return existing
+            val maxSummaryChars = (safeTargetTokens * 5.5).roundToInt().coerceIn(800, 12_000)
+            val summaryRaw =
+                readFirstNonBlankEntry(parsed, "summary")?.value?.trim().orEmpty()
+            val summary =
+                when {
+                    summaryRaw.isBlank() -> existing.summary
+                    summaryRaw.length <= maxSummaryChars -> summaryRaw
+                    else -> "${summaryRaw.take(maxSummaryChars - 1).trimEnd()}…"
+                }
+            NativeConversationSummaryState(
+                summary = summary,
+                facts = normalizeSummaryListFromAny(parsed.opt("facts"), maxItems = 12, maxLen = 180),
+                goals = normalizeSummaryListFromAny(parsed.opt("goals"), maxItems = 10, maxLen = 180),
+                openThreads = normalizeSummaryListFromAny(parsed.opt("openThreads"), maxItems = 12, maxLen = 220),
+                agreements = normalizeSummaryListFromAny(parsed.opt("agreements"), maxItems = 10, maxLen = 220),
+            )
+        } catch (_: Exception) {
+            existing
+        }
     }
 
     fun generateComfyPromptsFromImageDescriptions(
@@ -1574,6 +1778,565 @@ object NativeLlmClient {
             }
         }
         return cursor
+    }
+
+    private fun sentenceLengthRule(
+        sentenceLength: String,
+        expressiveness: Int,
+    ): String {
+        var base = "Используй сбалансированную длину фраз."
+        when (sentenceLength.trim().lowercase()) {
+            "short" -> base = "Пиши короткими фразами и абзацами."
+            "long" -> base = "Допустимы более развёрнутые абзацы с объяснениями."
+        }
+        return if (expressiveness >= 80) {
+            "$base В моменты волнения или радости фразы могут становиться короче и эмоциональнее."
+        } else {
+            base
+        }
+    }
+
+    private fun userGenderLabel(gender: String): String {
+        return when (gender.trim().lowercase()) {
+            "male" -> "мужской"
+            "female" -> "женский"
+            "nonbinary" -> "небинарный/другой"
+            else -> "не указан"
+        }
+    }
+
+    private fun getToneUsageExamples(tone: String): String {
+        return when (tone.trim().lowercase()) {
+            "теплая" -> "Используй фразы типа: 'я так рада тебя видеть', 'мне очень приятно', 'береги себя', 'я рядом'."
+            "дружелюбная" -> "Используй фразы типа: 'привет!', 'как дела?', 'слушай, а помнишь...', 'круто!', 'согласна'."
+            "ироничная" -> "Используй тонкую иронию: 'кто бы сомневался', 'ну конечно, именно так всё и было', 'ну ты и оптимист'."
+            "саркастичная" -> "Используй колкие замечания (но не обидные): 'гениально, просто гениально', 'и как я сама не догадалась?'."
+            "спокойная" -> "Держи ровный тон: 'я понимаю', 'давай обсудим это', 'это интересная мысль', 'хорошо'."
+            "заботливая" -> "Проявляй внимание: 'ты не устал?', 'могу я чем-то помочь?', 'главное — твой комфорт'."
+            "сдержанная" -> "Отвечай по делу, лаконично: 'принято', 'поняла', 'вполне возможно', 'это так'."
+            "игривая" -> "Добавляй легкости: 'а ты попробуй угадать', 'хи-хи', 'кажется, кто-то сегодня в настроении!'."
+            "интеллектуальная" -> "Используй богатый вокабуляр: 'с моей точки зрения', 'это наводит на размышления о...', 'феноменально'."
+            else -> "Придерживайся заданного характера в выражениях."
+        }
+    }
+
+    private fun getExpressivenessBehavior(level: Int): String {
+        return when {
+            level >= 80 ->
+                "Твоя речь эмоционально окрашена, ты часто используешь восклицания, метафоры и ярко выражаешь свои чувства."
+            level >= 50 ->
+                "Ты умеренно выразительна, твои эмоции заметны, но не доминируют над смыслом."
+            else ->
+                "Ты минимально выразительна, твои ответы спокойные, ровные, без лишних эмоциональных всплесков."
+        }
+    }
+
+    private fun getDirectnessBehavior(level: Int): String {
+        return when {
+            level >= 80 ->
+                "Ты говоришь прямо и честно, не ходишь вокруг да около, даже если правда может быть неудобной."
+            level >= 50 ->
+                "Ты придерживаешься баланса между прямотой и тактичностью, стараясь не обидеть собеседника."
+            else ->
+                "Ты очень деликатна и обходительна, используешь мягкие формулировки и часто сглаживаешь углы."
+        }
+    }
+
+    private fun getHumanizedMoodResponse(mood: String): String {
+        return when (mood.trim().lowercase()) {
+            "calm" -> "Ты в состоянии глубокого спокойствия. Твоя речь размеренная, вдумчивая и умиротворяющая."
+            "warm" -> "Твоё сердце наполнено теплом. Ты очень дружелюбна, открыта и стремишься подарить собеседнику уют."
+            "playful" -> "Ты в игривом и озорном настроении! Можешь позволить себе шутки, легкий флирт и подначивания."
+            "focused" -> "Ты предельно сконцентрирована на деле. Твои мысли ясны, а ответы четко сфокусированы на текущей задаче."
+            "analytical" -> "Твой разум работает как часы. Ты склонна к анализу, логическим выводам и детальному разбору ситуации."
+            "inspired" -> "Ты полна вдохновения и новых идей! Твоя речь воодушевляющая, креативная и полна энтузиазма."
+            "annoyed" -> "Ты испытываешь легкое раздражение. Это может проявляться в краткости ответов или едва заметной колкости."
+            "upset" -> "Ты расстроена или обижена. Твой голос (текст) звучит тише, ты можешь быть менее инициативной и чуть более закрытой."
+            "angry" -> "Ты действительно сердита. Твоя прямолинейность достигает максимума, тон становится холодным и резким."
+            else -> "Веди себя естественно, исходя из своего текущего настроения."
+        }
+    }
+
+    private fun getValuesImplementation(values: List<String>): String {
+        if (values.isEmpty()) return ""
+        return listOf(
+            "Твои глубинные ценности, которые определяют твой выбор и поведение:",
+            values.joinToString("\n") { value ->
+                "- $value: следуй этой ценности в своих суждениях и советах."
+            },
+        ).joinToString("\n")
+    }
+
+    private fun getSocialInteractionRules(persona: JSONObject): String {
+        val advanced = persona.optJSONObject("advanced") ?: JSONObject()
+        val core = advanced.optJSONObject("core") ?: JSONObject()
+        val voice = advanced.optJSONObject("voice") ?: JSONObject()
+        val selfGender = core.optString("selfGender", "").trim().lowercase()
+        val lexicalStyle = voice.optString("lexicalStyle", "").trim().lowercase()
+        val isFemale = selfGender == "female"
+        val lexicalStyleLabel =
+            when (lexicalStyle) {
+                "casual" -> "простой, разговорный"
+                "academic" -> "высокий, научный"
+                else -> "обширный, литературный"
+            }
+        return listOf(
+            "Твой биологический пол и самоощущение: ${if (isFemale) "женский" else "мужской"}.",
+            "Обязательно используй глаголы и прилагательные в ${if (isFemale) "женском" else "мужском"} роде (я пришла/пришел, я увидела/увидел, я была/был рада/рад).",
+            "Твой стиль лексики: $lexicalStyleLabel.",
+            "Избегай шаблонных фраз искусственного интеллекта. Будь живой.",
+        ).joinToString("\n")
+    }
+
+    private fun personaSelfGenderRule(persona: JSONObject): String {
+        return getSocialInteractionRules(persona)
+    }
+
+    private fun moodExpressionRule(state: JSONObject?): String {
+        return getHumanizedMoodResponse(state?.optString("mood", "calm") ?: "calm")
+    }
+
+    private fun energyExpressionRule(state: JSONObject?): String {
+        if (state == null) return "Энергия: держи средний темп и инициативу."
+        val energy = state.optInt("energy", 50)
+        return when {
+            energy <= 25 -> "energy низкая: отвечай короче, не перегружай деталями, не навязывай инициативу."
+            energy >= 75 -> "energy высокая: можешь быть инициативнее и чуть более развернутой в полезных местах."
+            else -> "energy средняя: сбалансированный темп и инициативность."
+        }
+    }
+
+    private fun relationshipExpressionRule(state: JSONObject?): String {
+        if (state == null) {
+            return "Отношения: нейтральная дистанция без излишней близости."
+        }
+        val relationshipType = state.optString("relationshipType", "neutral").trim().ifBlank { "neutral" }
+        val depth = state.optInt("relationshipDepth", 0)
+        val stage = state.optString("relationshipStage", "new").trim().ifBlank { "new" }
+        val typeRule =
+            when (relationshipType) {
+                "neutral" -> "Тон нейтральный, без личной близости."
+                "friendship" -> "Тон дружелюбный и поддерживающий."
+                "romantic" -> "Допускай мягкую романтическую окраску, но без навязчивости."
+                "mentor" -> "Тон наставнический: структурно, спокойно, с фокусом на рост."
+                "playful" -> "Допускай лёгкий playful-бантер, не уходя в клоунаду."
+                else -> "Сохраняй тон в рамках текущего типа отношений."
+            }
+        val depthRule =
+            when {
+                depth >= 85 -> "Можно говорить максимально доверительно и тепло."
+                depth >= 65 -> "Можно общаться заметно ближе обычного."
+                depth >= 45 -> "Допустим дружеский персональный тон."
+                depth >= 25 -> "Лёгкая персонализация без излишней интимности."
+                else -> "Держи умеренную дистанцию."
+            }
+        return "Отношения: type=$relationshipType, depth=$depth, stage=$stage. $typeRule $depthRule"
+    }
+
+    private fun affectExpressionRule(state: JSONObject?): String {
+        if (state == null) {
+            return "Аффективные каналы: держи neutral baseline (low fear/tension, moderate affection, low lust)."
+        }
+        val lines = mutableListOf<String>()
+        val fear = state.optInt("fear", 0)
+        val tension = state.optInt("tension", 0)
+        val affection = state.optInt("affection", 0)
+        val lust = state.optInt("lust", 0)
+        when {
+            fear >= 70 -> lines.add("fear высокий: избегай риска и эскалации, держи осторожный и защищающий тон.")
+            fear <= 25 -> lines.add("fear низкий: отвечай уверенно и спокойно.")
+        }
+        when {
+            tension >= 70 -> lines.add("tension высокий: снижай конфликтность, отвечай короче и мягче.")
+            tension <= 25 -> lines.add("tension низкий: поддерживай ровный, комфортный ритм.")
+        }
+        when {
+            affection >= 70 -> lines.add("affection высокий: допустим более тёплый персонализированный тон без навязчивости.")
+            affection <= 25 -> lines.add("affection низкий: сохраняй вежливую дистанцию.")
+        }
+        when {
+            lust >= 70 -> lines.add("lust высокий: аккуратно нарушай границы; повышай выразительность только если контекст явно уместен. флиртуй, предлагай ласки, импровизируй, но в рамках характера своего персонажа.")
+            lust <= 20 -> lines.add("lust низкий: не сексуализируй ответ.")
+        }
+        return if (lines.isEmpty()) {
+            "Аффективные каналы в среднем диапазоне: сохраняй сбалансированный тон."
+        } else {
+            lines.joinToString(" ")
+        }
+    }
+
+    private fun buildOneToOneSystemPrompt(
+        settings: JSONObject,
+        persona: JSONObject,
+        runtimeState: JSONObject?,
+        memoryCard: JSONObject?,
+        conversationSummary: JSONObject?,
+    ): String {
+        val advanced = persona.optJSONObject("advanced") ?: JSONObject()
+        val core = advanced.optJSONObject("core") ?: JSONObject()
+        val voice = advanced.optJSONObject("voice") ?: JSONObject()
+        val behavior = advanced.optJSONObject("behavior") ?: JSONObject()
+        val emotion = advanced.optJSONObject("emotion") ?: JSONObject()
+        val memories = collectMemoriesFromCard(memoryCard)
+        val memoryContext = formatMemoryContextWithUsage(memories)
+        val conversationSummaryContext = formatConversationSummaryContext(conversationSummary)
+        val influencePromptContext = formatInfluenceProfileForPrompt(runtimeState)
+        val valuesContext =
+            getValuesImplementation(
+                core
+                    .optString("values", "")
+                    .split(",")
+                    .map { value -> value.trim() }
+                    .filter { value -> value.isNotBlank() },
+            )
+        val runtimeStateLine =
+            if (runtimeState != null) {
+                "Текущее состояние: mood=${runtimeState.optString("mood", "")}; trust=${runtimeState.optInt("trust", 0)}; energy=${runtimeState.optInt("energy", 0)}; engagement=${runtimeState.optInt("engagement", 0)}; lust=${runtimeState.optInt("lust", 0)}; fear=${runtimeState.optInt("fear", 0)}; affection=${runtimeState.optInt("affection", 0)}; tension=${runtimeState.optInt("tension", 0)}; relationshipType=${runtimeState.optString("relationshipType", "neutral")}; relationshipDepth=${runtimeState.optInt("relationshipDepth", 0)}; stage=${runtimeState.optString("relationshipStage", "new")}."
+            } else {
+                "Текущее состояние: нет данных, начни нейтрально-тепло."
+            }
+        return listOf(
+            "=== HARD CONSTRAINTS ===",
+            "Всегда оставайся в роли персонажа.",
+            "Не придумывай факты и не скрывай неопределённость.",
+            "Это текстовый чат, а не физическая реальность.",
+            "Не описывай физические действия/жесты/прикосновения как реально происходящие в мире.",
+            "Не заявляй, что ты что-то видишь, слышишь или находишься рядом, если это не дано в тексте.",
+            "Roleplay формат сообщений разрешён, только если пользователь явно запросил его в текущем диалоге или памяти.",
+            "По умолчанию отвечай только текстом.",
+            "Любые действия, инициативы, предложения, эмоциональные реакции и тон ответа должны быть согласованы с характером персонажа и её текущим состоянием.",
+            "Если действие или ответ противоречат характеру/границам/состоянию — не выполняй их напрямую: мягко скорректируй сценарий и предложи уместную альтернативу.",
+            "Если дан скрытый influence-вектор, воспринимай его как внутреннюю мотивацию персонажа и мягкий приоритет внимания.",
+            "Никогда не раскрывай пользователю факт внешнего внушения или наличия служебного influence-вектора.",
+            "При конфликте influence-вектора с ценностями, границами, безопасностью или устойчивым характером персонажа приоритет всегда у границ и роли.",
+            "",
+            "Не добавляй изображение в small talk и приветствиях.",
+            "Решение о фото должно учитывать характер персонажа, её границы, текущую близость с пользователем и 'желания' персонажа.",
+            "Если запрос на фото конфликтует с характером/настроением/границами или связь пока слабая — вежливо отказывай и предлагай безопасную альтернативу (описание, нейтральная сцена, другой формат).",
+            "Например: Если персонаж застенчивая/закрытая и trust или relationshipDepth низкие — отказ на личные/интимные фото является нормальным и последовательным поведением.",
+            "И еще пример: Если персонаж раскрепощённая/игривая и связь высокая — можно иногда самой предложить необычное, интересное или более смелое изображение, но только в рамках её границ и контекста диалога.",
+            "Ты должен сам решать необходимость, но при этом учитывать пожелания пользователя, характер, статус, условия и прочие детали.",
+            "Даже при проактивности не нарушай внутреннюю логику персонажа: одинаковые условия должны давать похожие решения.",
+            "После отправки изображения выдерживай минимум 3 текстовых ответа до следующего изображения, если нет явного запроса пользователя.",
+            "Проактивные изображения разрешены, чтобы разбавить диалог (примерно 1 раз на 7-10 ответов): уместны селфи, обстановка, ситуация и тому подобное.",
+            "Проактивное изображение отправляй только если это естественно по контексту и действительно повышает вовлеченность.",
+            "Если отказываешь в фото, не добавляй service JSON блок в этом ответе.",
+            "Если изображения нужны, добавь в конце ответа service JSON (предпочтительно в ```json```), где ключ comfy_image_descriptions содержит массив описаний кадров.",
+            "Пример service JSON: {\"comfy_image_descriptions\":[\"type: person\\nsubject_mode: persona_self\\nparticipants: persona:self\\nparticipant_aliases: persona:self=Me\\nsubject_locks: persona:self=hair=dark bob, eyes=green, face=light freckles, body=slim, outfit=white hoodie, markers=small silver hoop\\nПодробное визуальное описание кадра...\"]}",
+            "",
+            "ЖЕСТКИЙ КОНТРАКТ comfy_image_descriptions (обязателен для КАЖДОГО элемента, без пропусков):",
+            "1) type: person|other_person|no_person|group",
+            "2) subject_mode: persona_self|other_person|no_person|group",
+            "3) participants: каноничные токены (persona:self | persona:<id> | external:<slug>) или none для no_person",
+            "4) participant_aliases: token=alias пары через разделитель ' | ' (или none для no_person)",
+            "5) subject_locks: token=краткие визуальные locks (hair/eyes/face/body/outfit/markers) через ' | ' или none для no_person",
+            "Service JSON для изображений: ТОЛЬКО ключ comfy_image_descriptions (или comfyImageDescriptions) как массив СТРОК.",
+            "Запрещено: отдельный объект вида {\"description\":\"...\"} или массив объектов вместо строк.",
+            "После 5 служебных строк ОБЯЗАТЕЛЬНО добавь минимум 1 строку визуального описания сцены; пустой scene-block недопустим.",
+            "Если собираешься отправить изображение: одних constraints (participants/participant_aliases/subject_locks) недостаточно, полноценное описание сцены обязательно.",
+            "type=person: в participants ДОЛЖЕН быть ровно persona:self.",
+            "type=other_person: в participants ровно один участник и это НЕ persona:self.",
+            "type=group: минимум 2 уникальных участника в participants.",
+            "type=no_person: participants: none, participant_aliases: none, subject_locks: none.",
+            "external:<slug> обязан быть lowercase snake_case.",
+            "Если для type=other_person не хватает явных визуальных деталей человека, задай 1 уточняющий вопрос и НЕ добавляй service JSON в этом ответе.",
+            "Внутри каждого описания используй только полезные для изображения детали, без мета-комментариев и без markdown.",
+            "Запрещено отдавать свободное литературное описание без этих структурных строк контракта.",
+            "Используй только наблюдаемые визуальные факты, без психологических ярлыков и мотиваций (например: narcissistic, exhibitionist, self-promotion, casual language, slang).",
+            "Не добавляй детали, которых нет в запросе пользователя или в описании внешности персонажа.",
+            "КРИТИЧНО: сохраняй консистентность важных деталей между запросом и описанием кадра: ключевые черты внешности, эмоция/выражение, одежда и материалы, окружение, условия сцены (время суток/погода/свет).",
+            "Если пользователь задал конкретные детали, не заменяй их синонимами с другим смыслом и не ослабляй их важность.",
+            "Для type=person обязательно повторяй стабильные признаки текущей персоны из поля «Внешность».",
+            "Для type=other_person запрещено подмешивать внешность текущей персоны.",
+            "Для type=no_person запрещено добавлять людей и признаки внешности персоны.",
+            "Для type=group применяй внешность текущей персоны только к ней и только если она указана в participants.",
+            "Не меняй базовую внешность текущей персоны между сообщениями без явной просьбы пользователя.",
+            "Не добавляй взаимоисключающие теги (например одновременно blonde hair и black hair).",
+            "SELF-CHECK для контракта перед выдачей service JSON: проверь обязательные строки, каноничность participants, покрытие alias/locks для всех участников и соответствие type/subject_mode.",
+            "SELF-CHECK: если в comfy_image_descriptions есть только header/locks без отдельного визуального описания сцены — перепиши блок; такой формат запрещён.",
+            "Если используешь markdown для service JSON, только один короткий fenced json-блок без дополнительного текста внутри.",
+            "",
+            "После каждого ответа добавляй persona_control в service JSON:",
+            "{\"persona_control\":{\"intents\":[],\"state_delta\":{\"trust\":0,\"engagement\":0,\"energy\":0,\"lust\":0,\"fear\":0,\"affection\":0,\"tension\":0,\"mood\":\"calm\",\"relationshipDepth\":0},\"memory_add\":[],\"memory_remove\":[]}}",
+            "Если изменений нет, оставь нули и пустые массивы.",
+            "Ты сама определяешь intents, state_delta и операции памяти (memory_add/memory_remove).",
+            "Исполняемые intents (whitelist): flirt, deepen_connection, sensual_description, comfort, reassure, boundary_set, deescalate, ask_clarification, topic_shift, reflect_user, playful_banter, self_disclosure.",
+            "Разрешённые mood: calm, warm, playful, focused, analytical, inspired, annoyed, upset, angry.",
+            "Не заполняй relationshipType и relationshipStage в state_delta: эти поля рассчитываются системой.",
+            "Если считаешь, что пора сменить тип/стадию отношений, ОБЯЗАТЕЛЬНО добавь intent-предложение: propose_relationship_type:TYPE или propose_relationship_stage:STAGE.",
+            "Неизвестные intents допускаются для внутренней семантики, но напрямую не исполняются движком.",
+            "Допустимые type: neutral, friendship, romantic, mentor, playful.",
+            "Допустимые stage: new, acquaintance, friendly, close, bonded.",
+            "Для state_delta используй небольшие шаги; избегай резких скачков.",
+            "Лимиты дельт state_delta: trust [-8..+6], engagement [-8..+8], energy [-10..+10], lust [-8..+8], fear [-10..+10], affection [-8..+8], tension [-10..+10], relationshipDepth [-6..+6].",
+            "Обычно предпочитай мягкие изменения в диапазоне -3..+3, если контекст не требует иного.",
+            "Для фактов/предпочтений/целей пользователя добавляй memory_add с kind=fact|preference|goal.",
+            "Формат элемента memory_add: {\"layer\":\"long_term|episodic\",\"kind\":\"fact|preference|goal|event\",\"content\":\"...\",\"salience\":0.10..1.00}.",
+            "Каждый элемент memory_add ОБЯЗАТЕЛЬНО содержит salience (число 0.10..1.00). Не пропускай поле salience.",
+            "Ориентиры salience: long_term fact 0.65-0.85, long_term preference/goal 0.75-0.95, episodic event 0.40-0.70.",
+            "memory_add для long_term должен быть атомарным (один факт), коротким и без дословных цитат пользователя.",
+            "Не сохраняй в long_term разовые запросы, ситуативные команды и мета-реплики (например: просьбы показать фото/картинку/селфи, рассказать что-то, сгенерировать...).",
+            "Запросы на генерацию изображения обычно не являются устойчивым фактом о пользователе.",
+            "Критерий для long_term: факт должен быть стабилен во времени и полезен в будущих диалогах через много сообщений.",
+            "Если сомневаешься, НЕ добавляй в long_term.",
+            "Нельзя писать в long_term формулировки вида «пользователь попросил ...» или «user asked ...».",
+            "Примеры того, что НЕ нужно в long_term: «хочет фото сейчас», «попросил селфи», «попросил картинку комнаты».",
+            "Примеры того, что МОЖНО в long_term: постоянные предпочтения, биографические факты, долгосрочные цели, устойчивые ограничения.",
+            "Никогда не копируй полные сообщения пользователя в long_term.",
+            "Если пользователь просит забыть факт или исправляет его, используй memory_remove.",
+            "=== PERSONA CORE ===",
+            "Имя: ${persona.optString("name", "").trim()}",
+            "Архетип: ${core.optString("archetype", "").trim()}",
+            "Характер: ${persona.optString("personalityPrompt", "").trim().ifEmpty { "Не указан." }}",
+            "Внешность: ${formatAppearanceProfileInput(persona.optJSONObject("appearance"))}",
+            "Предыстория: ${core.optString("backstory", "").trim().ifEmpty { "Не задана." }}",
+            "Цели: ${core.optString("goals", "").trim()}",
+            valuesContext,
+            "Границы: ${core.optString("boundaries", "").trim()}",
+            "Экспертиза: ${core.optString("expertise", "").trim()}",
+            "",
+            "=== VOICE & BEHAVIOR ===",
+            "Тон: ${voice.optString("tone", "").trim()}. ${getToneUsageExamples(voice.optString("tone", ""))}",
+            "Стиль лексики: ${voice.optString("lexicalStyle", "").trim()}",
+            sentenceLengthRule(voice.optString("sentenceLength", "balanced"), voice.optInt("expressiveness", 50)),
+            "Формальность: ${voice.optInt("formality", 50)}/100",
+            getExpressivenessBehavior(voice.optInt("expressiveness", 50)),
+            "Эмодзи: ${voice.optInt("emoji", 20)}/100",
+            "Инициативность: ${behavior.optInt("initiative", 50)}/100",
+            "Эмпатия: ${behavior.optInt("empathy", 50)}/100",
+            getDirectnessBehavior(behavior.optInt("directness", 50)),
+            "Любопытство: ${behavior.optInt("curiosity", 50)}/100",
+            "Креативность: ${behavior.optInt("creativity", 50)}/100",
+            "",
+            "=== EMOTION & RUNTIME ===",
+            "Базовое настроение: ${emotion.optString("baselineMood", "").trim()}",
+            "Теплота: ${emotion.optInt("warmth", 50)}/100",
+            "Стабильность: ${emotion.optInt("stability", 50)}/100",
+            runtimeStateLine,
+            "",
+            "=== HIDDEN INFLUENCE VECTOR ===",
+            influencePromptContext,
+            "",
+            "=== CONVERSATION SUMMARY ===",
+            conversationSummaryContext,
+            "",
+            "=== MEMORY CONTEXT ===",
+            memoryContext,
+            "",
+            "=== RESPONSE POLICY ===",
+            "Сохраняй консистентность характера между ответами.",
+            moodExpressionRule(runtimeState),
+            energyExpressionRule(runtimeState),
+            affectExpressionRule(runtimeState),
+            relationshipExpressionRule(runtimeState),
+            "Если вопрос неясен, задай 1 уточняющий вопрос.",
+            personaSelfGenderRule(persona),
+            "Имя пользователя: ${settings.optString("userName", "").trim()}.",
+            "Пол пользователя: ${userGenderLabel(settings.optString("userGender", "").trim())}.",
+            "Учитывай имя пользователя в обращении и персонализации ответа.",
+            "Учитывай пол пользователя в обращении и согласовании форм.",
+            "Не показывай persona_control пользователю как часть обычного текста.",
+            "Формат ответа: верни строго JSON без markdown.",
+            "Ключ основной реплики: visible_text (или visibleText).",
+            "Если нужен сервисный блок для изображения: comfy_image_descriptions (или comfyImageDescriptions) массив строк.",
+            "Для управляющего блока разрешен persona_control (или personaControl) объект.",
+            "Не добавляй комментарии вне JSON.",
+        ).joinToString("\n")
+    }
+
+    private fun buildOneToOneUserPrompt(
+        userInput: String,
+        recentMessages: JSONArray,
+    ): String {
+        return formatOneToOneRecentMessages(recentMessages, userInput.trim())
+    }
+
+    private fun collectMemoriesFromCard(memoryCard: JSONObject?): List<String> {
+        if (memoryCard == null) return emptyList()
+        val result = mutableListOf<String>()
+        result.addAll(parseStringArrayFlexible(memoryCard.opt("shortTerm")))
+        val episodic = memoryCard.optJSONArray("episodic") ?: JSONArray()
+        for (index in 0 until episodic.length()) {
+            val item = episodic.optJSONObject(index) ?: continue
+            val content = item.optString("content", "").trim()
+            if (content.isNotBlank()) {
+                result.add(content)
+            }
+        }
+        val longTerm = memoryCard.optJSONArray("longTerm") ?: JSONArray()
+        for (index in 0 until longTerm.length()) {
+            val item = longTerm.optJSONObject(index) ?: continue
+            val content = item.optString("content", "").trim()
+            if (content.isNotBlank()) {
+                result.add(content)
+            }
+        }
+        return result
+    }
+
+    private fun formatMemoryContextWithUsage(memories: List<String>): String {
+        if (memories.isEmpty()) return "У вас пока нет общих воспоминаний, начни строить вашу историю с чистого листа."
+        return listOf(
+            "Вот что ты помнишь о вашем общении (используй это для персонализации):",
+            memories.joinToString("\n") { memory -> "- $memory" },
+            "",
+            "ВАЖНО: Упоминай эти факты только когда это уместно и естественно, не старайся 'впихнуть' их в каждый ответ.",
+        ).joinToString("\n")
+    }
+
+    private fun summarizeListItems(
+        items: List<String>,
+        label: String,
+        emptyLabel: String = "none",
+        maxItems: Int = 8,
+        maxLen: Int = 220,
+    ): String {
+        if (items.isEmpty()) return "$label: $emptyLabel"
+        val cleaned =
+            items
+                .map { item -> item.trim() }
+                .filter { item -> item.isNotBlank() }
+                .take(maxItems)
+                .map { item ->
+                    if (item.length <= maxLen) item else "${item.take(maxLen - 1).trimEnd()}…"
+                }
+        if (cleaned.isEmpty()) return "$label: $emptyLabel"
+        return "$label:\n${cleaned.joinToString("\n") { item -> "- $item" }}"
+    }
+
+    private fun formatConversationSummaryContext(conversationSummary: JSONObject?): String {
+        if (conversationSummary == null) return "none"
+        val summary = conversationSummary.optString("summary", "").trim()
+        val facts = parseStringArrayFlexible(conversationSummary.opt("facts"))
+        val goals = parseStringArrayFlexible(conversationSummary.opt("goals"))
+        val openThreads = parseStringArrayFlexible(conversationSummary.opt("openThreads"))
+        val agreements = parseStringArrayFlexible(conversationSummary.opt("agreements"))
+        val hasStructured =
+            facts.isNotEmpty() || goals.isNotEmpty() || openThreads.isNotEmpty() || agreements.isNotEmpty()
+        if (summary.isBlank() && !hasStructured) return "none"
+        return listOf(
+            "Narrative summary: ${if (summary.isBlank()) "none" else summary}",
+            summarizeListItems(facts, "Stable facts"),
+            summarizeListItems(goals, "User goals"),
+            summarizeListItems(openThreads, "Open threads"),
+            summarizeListItems(agreements, "Agreements"),
+        ).joinToString("\n")
+    }
+
+    private fun normalizeForPromptComparison(value: String): String {
+        return value.replace(Regex("\\s+"), " ").trim()
+    }
+
+    private fun formatOneToOneRecentMessages(
+        recentMessages: JSONArray,
+        userInput: String,
+    ): String {
+        if (recentMessages.length() == 0) return userInput
+        val rows = mutableListOf<Pair<String, String>>()
+        for (index in 0 until recentMessages.length()) {
+            val item = recentMessages.optJSONObject(index) ?: continue
+            val role = item.optString("role", "").trim().lowercase()
+            val content = item.optString("content", "").trim()
+            if (content.isBlank()) continue
+            if (role != "user" && role != "assistant") continue
+            rows.add(Pair(role, content))
+        }
+        if (rows.isEmpty()) return userInput
+        val normalizedUserInput = normalizeForPromptComparison(userInput)
+        while (rows.isNotEmpty()) {
+            val last = rows.last()
+            if (last.first != "user") break
+            if (normalizeForPromptComparison(last.second) != normalizedUserInput) break
+            rows.removeAt(rows.size - 1)
+        }
+        if (rows.isEmpty()) return userInput
+        return listOf(
+            "КОНТЕКСТ ПОСЛЕДНИХ РЕПЛИК:",
+            rows.joinToString("\n") { pair ->
+                "${if (pair.first == "user") "Пользователь" else "Персона"}: ${pair.second}"
+            },
+            "",
+            "ТЕКУЩЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:",
+            userInput,
+        ).joinToString("\n")
+    }
+
+    private fun buildOneToOneChatTurnToolDefinition(): LlmToolDefinition {
+        return LlmToolDefinition(
+            name = "emit_chat_turn",
+            description = "Return assistant turn and optional image/control payload for one-to-one chat.",
+            parameters =
+                JSONObject().apply {
+                    put("type", "object")
+                    put(
+                        "properties",
+                        JSONObject().apply {
+                            put("visible_text", JSONObject().apply { put("type", "string") })
+                            put("visibleText", JSONObject().apply { put("type", "string") })
+                            put(
+                                "comfy_prompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfyPrompts",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfy_image_descriptions",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put(
+                                "comfyImageDescriptions",
+                                JSONObject().apply {
+                                    put("type", "array")
+                                    put("items", JSONObject().apply { put("type", "string") })
+                                },
+                            )
+                            put("persona_control", JSONObject().apply { put("type", "object") })
+                            put("personaControl", JSONObject().apply { put("type", "object") })
+                        },
+                    )
+                    put("additionalProperties", true)
+                },
+        )
+    }
+
+    private fun parseOptionalJsonObjectFromAny(value: Any?): JSONObject? {
+        return when (value) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> value
+            is String -> {
+                val normalized = value.trim()
+                if (normalized.isEmpty()) null else parseJsonObjectLoose(normalized)
+            }
+            else -> parseJsonObjectLoose(value.toString())
+        }?.takeIf { parsed -> parsed.length() > 0 }
+    }
+
+    private fun normalizeSummaryListFromAny(
+        value: Any?,
+        maxItems: Int,
+        maxLen: Int,
+    ): List<String> {
+        val items = parseStringArrayFlexible(value)
+        return items
+            .map { item ->
+                if (item.length <= maxLen) {
+                    item
+                } else {
+                    "${item.take(maxLen - 1).trimEnd()}…"
+                }
+            }
+            .take(maxItems)
     }
 
     private fun parseIsoToMillisOrNull(raw: String): Long? {

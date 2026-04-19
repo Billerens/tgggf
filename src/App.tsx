@@ -56,6 +56,7 @@ import {
   type ForegroundServiceStatus,
 } from "./features/mobile/foregroundService";
 import { useGroupIterationBackgroundWorker } from "./features/mobile/useGroupIterationBackgroundWorker";
+import { useOneToOneBackgroundWorker } from "./features/mobile/useOneToOneBackgroundWorker";
 import { useTopicGenerationBackgroundWorker } from "./features/mobile/useTopicGenerationBackgroundWorker";
 import { downloadExportFileOnAndroid } from "./features/mobile/exportDownload";
 import { useGroupStore } from "./groupStore";
@@ -121,6 +122,7 @@ interface ForegroundServiceUiState {
   staleWorkers: number;
   activeTopicScopes: number;
   activeGroupScopes: number;
+  activeOneToOneScopes: number;
   lastError: string | null;
   error: string | null;
 }
@@ -138,6 +140,7 @@ function buildForegroundServiceUiState(
     staleWorkers: status.staleWorkers,
     activeTopicScopes: status.activeScopes.topicGeneration,
     activeGroupScopes: status.activeScopes.groupIteration,
+    activeOneToOneScopes: status.activeScopes.oneToOneChat,
     lastError: status.lastError,
     error: null,
   };
@@ -219,6 +222,7 @@ export default function App() {
     updateActiveMemory,
     deleteActiveMemory,
     sendMessage,
+    syncOneToOneStateFromDb,
     regenerateMessageComfyPromptAtIndex,
     resolveRelationshipProposal,
     saveSettings,
@@ -278,6 +282,7 @@ export default function App() {
       staleWorkers: 0,
       activeTopicScopes: 0,
       activeGroupScopes: 0,
+      activeOneToOneScopes: 0,
       lastError: null,
       error: null,
     });
@@ -475,6 +480,11 @@ export default function App() {
     () => groupRooms.find((room) => room.id === activeGroupRoomId) ?? null,
     [groupRooms, activeGroupRoomId],
   );
+  useOneToOneBackgroundWorker({
+    activeChat,
+    isAndroidRuntime,
+    syncOneToOneStateFromDb,
+  });
   useGroupIterationBackgroundWorker({
     activeGroupRoom,
     isAndroidRuntime,
@@ -1273,6 +1283,7 @@ export default function App() {
           foregroundServiceStaleWorkers={foregroundServiceState.staleWorkers}
           foregroundServiceActiveTopicScopes={foregroundServiceState.activeTopicScopes}
           foregroundServiceActiveGroupScopes={foregroundServiceState.activeGroupScopes}
+          foregroundServiceActiveOneToOneScopes={foregroundServiceState.activeOneToOneScopes}
           foregroundServiceLastError={foregroundServiceState.lastError}
           foregroundServiceError={foregroundServiceState.error}
           availableModelsByProvider={availableModelsByProvider}

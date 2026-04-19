@@ -1,0 +1,139 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const { mockDbApi } = vi.hoisted(() => ({
+  mockDbApi: {
+    getSettings: vi.fn(),
+    getPersonas: vi.fn(),
+    getAllChats: vi.fn(),
+    getMessages: vi.fn(),
+    getPersonaState: vi.fn(),
+    getMemories: vi.fn(),
+    getImageAssets: vi.fn(),
+    saveChat: vi.fn(),
+    saveMessage: vi.fn(),
+    savePersonaState: vi.fn(),
+    saveMemories: vi.fn(),
+    saveImageAsset: vi.fn(),
+    deleteMemories: vi.fn(),
+  },
+}));
+
+vi.mock("../../db", () => ({
+  dbApi: mockDbApi,
+}));
+
+import {
+  applyOneToOneStatePatch,
+  syncOneToOneContextToNative,
+} from "./oneToOneNativeRuntime";
+
+interface NativeContextSyncPayload {
+  method: "GET" | "PUT";
+  path: string;
+  body?: {
+    mode?: string;
+    stores?: {
+      settings?: unknown;
+      personas?: unknown[];
+      chats?: unknown[];
+      messages?: unknown[];
+      personaStates?: unknown[];
+      memories?: unknown[];
+      imageAssets?: unknown[];
+    };
+  };
+}
+
+describe("oneToOneNativeRuntime", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    (globalThis as unknown as { Capacitor?: unknown }).Capacitor = undefined;
+  });
+
+  it("syncOneToOneContextToNative sends expected stores payload", async () => {
+    const request = vi.fn(async (_payload: NativeContextSyncPayload) => ({ status: 200, body: { ok: true } }));
+    (globalThis as unknown as { Capacitor?: unknown }).Capacitor = {
+      Plugins: {
+        LocalApi: { request },
+      },
+    };
+
+    mockDbApi.getSettings.mockResolvedValue({ model: "test-model" });
+    mockDbApi.getPersonas.mockResolvedValue([
+      {
+        id: "persona-1",
+        avatarImageId: "asset-avatar",
+        fullBodyImageId: "",
+        fullBodySideImageId: "",
+        fullBodyBackImageId: "",
+        avatarUrl: "idb://asset-avatar-url",
+        fullBodyUrl: "",
+        fullBodySideUrl: "",
+        fullBodyBackUrl: "",
+      },
+    ]);
+    mockDbApi.getAllChats.mockResolvedValue([{ id: "chat-1", personaId: "persona-1" }]);
+    mockDbApi.getMessages.mockResolvedValue([
+      { id: "m1", chatId: "chat-1", imageUrls: ["idb://asset-msg"] },
+    ]);
+    mockDbApi.getPersonaState.mockResolvedValue({ id: "state-1", chatId: "chat-1" });
+    mockDbApi.getMemories.mockResolvedValue([{ id: "mem-1", chatId: "chat-1" }]);
+    mockDbApi.getImageAssets.mockResolvedValue([
+      { id: "asset-avatar", dataUrl: "data:image/png;base64,1", createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "asset-avatar-url", dataUrl: "data:image/png;base64,2", createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "asset-msg", dataUrl: "data:image/png;base64,3", createdAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+
+    await syncOneToOneContextToNative({
+      chatId: "chat-1",
+      personaId: "persona-1",
+    });
+
+    expect(request).toHaveBeenCalledOnce();
+    const payload = request.mock.calls[0]![0];
+    expect(payload.body).toBeDefined();
+    const body = payload.body!;
+    expect(body.stores).toBeDefined();
+    const stores = body.stores!;
+    expect(payload.method).toBe("PUT");
+    expect(payload.path).toBe("/api/background-runtime/context");
+    expect(body.mode).toBe("merge");
+    expect(stores.settings).toEqual({ model: "test-model" });
+    expect(stores.personas).toHaveLength(1);
+    expect(stores.chats).toHaveLength(1);
+    expect(stores.messages).toHaveLength(1);
+    expect(stores.personaStates).toHaveLength(1);
+    expect(stores.memories).toHaveLength(1);
+    expect(stores.imageAssets).toHaveLength(3);
+  });
+
+  it("applyOneToOneStatePatch persists stores and invokes sync callback", async () => {
+    const syncCallback = vi.fn(async () => undefined);
+    await applyOneToOneStatePatch(
+      {
+        chats: [{ id: "chat-1" }],
+        messages: [{ id: "message-1" }],
+        personaStates: [{ id: "state-1", chatId: "chat-1" }],
+        memories: [{ id: "memory-1", chatId: "chat-1" }],
+        imageAssets: [
+          {
+            id: "asset-1",
+            dataUrl: "data:image/png;base64,abc",
+            createdAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+        deletedMemoryIds: ["memory-2"],
+      },
+      "chat-1",
+      syncCallback,
+    );
+
+    expect(mockDbApi.saveChat).toHaveBeenCalledOnce();
+    expect(mockDbApi.saveMessage).toHaveBeenCalledOnce();
+    expect(mockDbApi.savePersonaState).toHaveBeenCalledOnce();
+    expect(mockDbApi.saveMemories).toHaveBeenCalledOnce();
+    expect(mockDbApi.saveImageAsset).toHaveBeenCalledOnce();
+    expect(mockDbApi.deleteMemories).toHaveBeenCalledWith(["memory-2"]);
+    expect(syncCallback).toHaveBeenCalledWith("chat-1");
+  });
+});

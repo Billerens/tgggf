@@ -14,6 +14,7 @@ import type {
   LookEnhancePromptOverrides,
   LookEnhanceTarget,
 } from "../ui/types";
+import { dbApi } from "../db";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { splitAssistantContent } from "../messageContent";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -95,6 +96,12 @@ interface ImageAttachment {
 
 const IMAGE_URL_REGEX = /(https?:\/\/[^\s)"'<>]+\.(?:png|jpe?g|gif|webp|bmp|svg|avif)(?:\?[^\s)"'<>]*)?)/gi;
 const MARKDOWN_IMAGE_REGEX = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gi;
+
+function parseIdbAssetId(value: string | undefined | null) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
 
 function extractImageAttachments(
   messages: ChatMessage[],
@@ -370,6 +377,9 @@ export function ChatDetailsModal({
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewMeta, setPreviewMeta] = useState<ImageGenerationMeta | undefined>(undefined);
   const [previewAttachment, setPreviewAttachment] = useState<ImageAttachment | null>(null);
+  const [resolvedImageBySource, setResolvedImageBySource] = useState<
+    Record<string, string>
+  >({});
   const [stateLocked, setStateLocked] = useState(true);
   const [runtimeDraft, setRuntimeDraft] = useState<EditableRuntimeState | null>(
     runtimeState ? toEditableRuntimeState(runtimeState) : null,
@@ -474,7 +484,68 @@ export function ChatDetailsModal({
   }, [chat?.id, runtimeState]);
 
   useEffect(() => {
-    if (!previewAttachment || !previewSrc) return;
+    let cancelled = false;
+    const loadAttachmentAssets = async () => {
+      const refsById = new Map<string, string[]>();
+      const nextResolved: Record<string, string> = {};
+      for (const attachment of attachments) {
+        const sourceUrl = attachment.src.trim();
+        if (!sourceUrl) continue;
+        const assetId = parseIdbAssetId(sourceUrl);
+        if (!assetId) {
+          nextResolved[sourceUrl] = sourceUrl;
+          continue;
+        }
+        const bucket = refsById.get(assetId) ?? [];
+        bucket.push(sourceUrl);
+        refsById.set(assetId, bucket);
+      }
+      if (refsById.size > 0) {
+        const unresolved = new Set(refsById.keys());
+        const maxAttempts = 8;
+        for (
+          let attempt = 0;
+          attempt < maxAttempts && unresolved.size > 0;
+          attempt += 1
+        ) {
+          const ids = Array.from(unresolved);
+          const assets = await dbApi.getImageAssets(ids);
+          const assetById = Object.fromEntries(
+            assets.map((asset) => [asset.id, asset.dataUrl]),
+          );
+          for (const [assetId, sourceUrls] of refsById.entries()) {
+            const resolvedDataUrl = assetById[assetId] ?? "";
+            if (!resolvedDataUrl) continue;
+            unresolved.delete(assetId);
+            for (const sourceUrl of sourceUrls) {
+              nextResolved[sourceUrl] = resolvedDataUrl;
+            }
+          }
+          if (unresolved.size > 0 && attempt < maxAttempts - 1) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 320);
+            });
+          }
+        }
+        for (const unresolvedId of unresolved) {
+          const sourceUrls = refsById.get(unresolvedId) ?? [];
+          for (const sourceUrl of sourceUrls) {
+            nextResolved[sourceUrl] = "";
+          }
+        }
+      }
+      if (!cancelled) {
+        setResolvedImageBySource(nextResolved);
+      }
+    };
+    void loadAttachmentAssets();
+    return () => {
+      cancelled = true;
+    };
+  }, [attachments]);
+
+  useEffect(() => {
+    if (!previewAttachment) return;
     const message = messages.find((candidate) => candidate.id === previewAttachment.messageId);
     if (!message) return;
     const imageUrls = message.imageUrls ?? [];
@@ -489,13 +560,19 @@ export function ChatDetailsModal({
       ? previewAttachment.src
       : "";
     const nextSource =
-      preferredByIndex || preferredBySource || imageUrls[0] || previewSrc;
+      preferredByIndex || preferredBySource || imageUrls[0] || previewSrc || "";
+    const resolvedPreview =
+      resolvedImageBySource[nextSource] ??
+      (parseIdbAssetId(nextSource) ? "" : nextSource);
 
-    if (!nextSource || nextSource === previewSrc) {
+    if (!nextSource) {
+      return;
+    }
+    if (resolvedPreview && resolvedPreview === previewSrc) {
       return;
     }
 
-    setPreviewSrc(nextSource);
+    setPreviewSrc(resolvedPreview || null);
     setPreviewMeta(imageMetaByUrl[nextSource]);
     setPreviewAttachment((prev) =>
       prev
@@ -506,7 +583,13 @@ export function ChatDetailsModal({
           }
         : prev,
     );
-  }, [messages, imageMetaByUrl, previewAttachment, previewSrc]);
+  }, [
+    messages,
+    imageMetaByUrl,
+    previewAttachment,
+    previewSrc,
+    resolvedImageBySource,
+  ]);
 
   function updateRuntimeMetric(
     key:
@@ -625,33 +708,44 @@ export function ChatDetailsModal({
               <p className="empty-state">В этом чате пока нет картинок.</p>
             ) : (
               <div className="attachment-grid">
-                {attachments.map((attachment) => (
-                  <article key={`${attachment.messageId}-${attachment.src}`} className="attachment-card">
-                    <button
-                      type="button"
-                      className="attachment-preview-btn"
-                      onClick={() => {
-                        setPreviewSrc(attachment.src);
-                        setPreviewMeta(attachment.meta);
-                        setPreviewAttachment(attachment);
-                      }}
-                    >
-                      <img src={attachment.src} alt={attachment.alt} loading="lazy" />
-                    </button>
-                    <div className="attachment-meta">
-                      <span>{attachment.role === "assistant" ? "Ассистент" : "Пользователь"}</span>
-                      <span>{formatDateTime(attachment.createdAt)}</span>
-                    </div>
-                    <a
-                      href={attachment.src}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="attachment-link"
-                    >
-                      Открыть <ExternalLink size={14} />
-                    </a>
-                  </article>
-                ))}
+                {attachments.map((attachment) => {
+                  const resolvedSrc =
+                    resolvedImageBySource[attachment.src] ??
+                    (parseIdbAssetId(attachment.src) ? "" : attachment.src);
+                  return (
+                    <article key={`${attachment.messageId}-${attachment.src}`} className="attachment-card">
+                      <button
+                        type="button"
+                        className="attachment-preview-btn"
+                        onClick={() => {
+                          setPreviewSrc(resolvedSrc || null);
+                          setPreviewMeta(attachment.meta);
+                          setPreviewAttachment(attachment);
+                        }}
+                      >
+                        {resolvedSrc ? (
+                          <img src={resolvedSrc} alt={attachment.alt} loading="lazy" />
+                        ) : (
+                          <div className="image-skeleton-card" />
+                        )}
+                      </button>
+                      <div className="attachment-meta">
+                        <span>{attachment.role === "assistant" ? "Ассистент" : "Пользователь"}</span>
+                        <span>{formatDateTime(attachment.createdAt)}</span>
+                      </div>
+                      {resolvedSrc ? (
+                        <a
+                          href={resolvedSrc}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="attachment-link"
+                        >
+                          Открыть <ExternalLink size={14} />
+                        </a>
+                      ) : null}
+                    </article>
+                  );
+                })}
               </div>
             )}
           </section>

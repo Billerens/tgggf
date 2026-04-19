@@ -419,7 +419,13 @@ class LocalApiBridgePlugin : Plugin() {
                 JSObject().apply {
                     put("topicGeneration", diagnostics.topicActiveScopes)
                     put("groupIteration", diagnostics.groupActiveScopes)
-                    put("total", diagnostics.topicActiveScopes + diagnostics.groupActiveScopes)
+                    put("oneToOneChat", diagnostics.oneToOneActiveScopes)
+                    put(
+                        "total",
+                        diagnostics.topicActiveScopes +
+                            diagnostics.groupActiveScopes +
+                            diagnostics.oneToOneActiveScopes,
+                    )
                 },
             )
         }

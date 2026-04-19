@@ -17,6 +17,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.tggf.app.MainActivity
 import com.tggf.app.R
+import org.json.JSONObject
 import kotlin.math.max
 
 class ForegroundSyncService : Service() {
@@ -33,9 +34,11 @@ class ForegroundSyncService : Service() {
         const val HEARTBEAT_INTERVAL_MS = 2_000L
         const val WORKER_TOPIC_GENERATION = "topic_generation"
         const val WORKER_GROUP_ITERATION = "group_iteration"
+        const val WORKER_ONE_TO_ONE_CHAT = "one_to_one_chat"
 
         private const val TOPIC_STALE_THRESHOLD_MS = 20_000L
         private const val GROUP_STALE_THRESHOLD_MS = 30_000L
+        private const val ONE_TO_ONE_STALE_THRESHOLD_MS = 30_000L
         private const val METRICS_CACHE_TTL_MS = 4_000L
         private val workerStatusByType = mutableMapOf<String, WorkerStatusSnapshot>()
         private val workerStatusLock = Any()
@@ -58,6 +61,7 @@ class ForegroundSyncService : Service() {
             val queueStaleLeasedCount: Int,
             val topicActiveScopes: Int,
             val groupActiveScopes: Int,
+            val oneToOneActiveScopes: Int,
             val staleWorkerCount: Int,
             val hasWorkerErrors: Boolean,
             val lastError: String,
@@ -121,6 +125,7 @@ class ForegroundSyncService : Service() {
             BackgroundRuntimeEngine.requestTick(appContext)
             TopicGenerationNativeExecutor.requestTick(appContext)
             GroupIterationNativeExecutor.requestTick(appContext)
+            OneToOneChatNativeExecutor.requestTick(appContext)
             MainActivity.pulseWebViewFromService("trigger_$reason")
         }
 
@@ -181,9 +186,53 @@ class ForegroundSyncService : Service() {
             val threshold = when (worker) {
                 WORKER_TOPIC_GENERATION -> TOPIC_STALE_THRESHOLD_MS
                 WORKER_GROUP_ITERATION -> GROUP_STALE_THRESHOLD_MS
+                WORKER_ONE_TO_ONE_CHAT -> ONE_TO_ONE_STALE_THRESHOLD_MS
                 else -> GROUP_STALE_THRESHOLD_MS
             }
             return nowMs - heartbeatAtMs > threshold
+        }
+
+        private fun parseOneToOneScopeId(job: BackgroundJobRecord): String {
+            val payloadJson = job.payloadJson.trim()
+            if (payloadJson.isNotEmpty()) {
+                try {
+                    val payload = JSONObject(payloadJson)
+                    val chatId = payload.optString("chatId", "").trim()
+                    if (chatId.isNotEmpty()) return chatId
+                } catch (_: Exception) {
+                    // Fallback to parsing from job id.
+                }
+            }
+            val prefix = "$WORKER_ONE_TO_ONE_CHAT:"
+            if (job.id.startsWith(prefix)) {
+                val raw = job.id.removePrefix(prefix).trim()
+                val separator = raw.indexOf(":")
+                if (separator > 0) {
+                    val chatId = raw.substring(0, separator).trim()
+                    if (chatId.isNotEmpty()) return chatId
+                }
+            }
+            return ""
+        }
+
+        private fun countActiveOneToOneScopes(jobs: BackgroundJobRepository): Int {
+            val scopes = mutableSetOf<String>()
+            val pending =
+                jobs.listJobs(
+                    status = BackgroundJobRepository.STATUS_PENDING,
+                    limit = 200,
+                )
+            val leased =
+                jobs.listJobs(
+                    status = BackgroundJobRepository.STATUS_LEASED,
+                    limit = 200,
+                )
+            for (job in pending + leased) {
+                if (job.type != WORKER_ONE_TO_ONE_CHAT) continue
+                val scope = parseOneToOneScopeId(job)
+                if (scope.isNotEmpty()) scopes.add(scope)
+            }
+            return scopes.size
         }
 
         @JvmStatic
@@ -233,6 +282,7 @@ class ForegroundSyncService : Service() {
                                 taskType = WORKER_GROUP_ITERATION,
                                 enabledOnly = true,
                             ),
+                        oneToOneActiveScopes = countActiveOneToOneScopes(jobs),
                         staleWorkerCount = staleWorkerCount,
                         hasWorkerErrors = hasWorkerErrors,
                         lastError = lastError,
@@ -245,6 +295,7 @@ class ForegroundSyncService : Service() {
                         queueStaleLeasedCount = 0,
                         topicActiveScopes = 0,
                         groupActiveScopes = 0,
+                        oneToOneActiveScopes = 0,
                         staleWorkerCount = staleWorkerCount,
                         hasWorkerErrors = hasWorkerErrors,
                         lastError = lastError,
@@ -276,12 +327,17 @@ class ForegroundSyncService : Service() {
         val groupEnabledCount: Int,
         val groupPendingCount: Int,
         val groupLeasedCount: Int,
+        val oneToOneDoneCount: Int,
+        val oneToOneFailedCount: Int,
+        val oneToOneEnabledCount: Int,
+        val oneToOnePendingCount: Int,
+        val oneToOneLeasedCount: Int,
     ) {
         val totalPendingCount: Int
-            get() = topicPendingCount + groupPendingCount
+            get() = topicPendingCount + groupPendingCount + oneToOnePendingCount
 
         val totalLeasedCount: Int
-            get() = topicLeasedCount + groupLeasedCount
+            get() = topicLeasedCount + groupLeasedCount + oneToOneLeasedCount
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -425,6 +481,7 @@ class ForegroundSyncService : Service() {
                 )
                 TopicGenerationNativeExecutor.requestTick(applicationContext)
                 GroupIterationNativeExecutor.requestTick(applicationContext)
+                OneToOneChatNativeExecutor.requestTick(applicationContext)
                 val now = System.currentTimeMillis()
                 if (shouldPulseWebView(now)) {
                     MainActivity.pulseWebViewFromService("heartbeat_$heartbeatSequence")
@@ -469,19 +526,21 @@ class ForegroundSyncService : Service() {
 
     private fun buildNotificationStatusSummary(nowMs: Long, metrics: NotificationMetrics): String {
         val snapshots = getWorkerStatusSnapshots()
-        if (snapshots.isEmpty()) {
-            if (
-                metrics.totalPendingCount == 0 &&
-                    metrics.totalLeasedCount == 0 &&
-                    metrics.topicDoneCount == 0 &&
-                    metrics.groupDoneCount == 0
-            ) {
-                return ""
+            if (snapshots.isEmpty()) {
+                if (
+                    metrics.totalPendingCount == 0 &&
+                        metrics.totalLeasedCount == 0 &&
+                        metrics.topicDoneCount == 0 &&
+                        metrics.groupDoneCount == 0 &&
+                        metrics.oneToOneDoneCount == 0
+                ) {
+                    return ""
+                }
+                return "GEN d${metrics.topicDoneCount}/e${metrics.topicFailedCount} | " +
+                    "GRP d${metrics.groupDoneCount}/e${metrics.groupFailedCount} | " +
+                    "1:1 d${metrics.oneToOneDoneCount}/e${metrics.oneToOneFailedCount} | " +
+                    "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
             }
-            return "GEN d${metrics.topicDoneCount}/e${metrics.topicFailedCount} | " +
-                "GRP d${metrics.groupDoneCount}/e${metrics.groupFailedCount} | " +
-                "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
-        }
         val topicLine = formatWorkerSummaryLine(
             label = "GEN",
             snapshot = snapshots.find { it.worker == WORKER_TOPIC_GENERATION },
@@ -489,21 +548,29 @@ class ForegroundSyncService : Service() {
             doneCount = metrics.topicDoneCount,
             failedCount = metrics.topicFailedCount,
         )
-        val groupLine = formatWorkerSummaryLine(
-            label = "GRP",
-            snapshot = snapshots.find { it.worker == WORKER_GROUP_ITERATION },
-            nowMs = nowMs,
-            doneCount = metrics.groupDoneCount,
-            failedCount = metrics.groupFailedCount,
-        )
-        val queueLine = "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
-        return listOf(topicLine, groupLine, queueLine).joinToString(" | ").trim()
-    }
+            val groupLine = formatWorkerSummaryLine(
+                label = "GRP",
+                snapshot = snapshots.find { it.worker == WORKER_GROUP_ITERATION },
+                nowMs = nowMs,
+                doneCount = metrics.groupDoneCount,
+                failedCount = metrics.groupFailedCount,
+            )
+            val oneToOneLine = formatWorkerSummaryLine(
+                label = "1:1",
+                snapshot = snapshots.find { it.worker == WORKER_ONE_TO_ONE_CHAT },
+                nowMs = nowMs,
+                doneCount = metrics.oneToOneDoneCount,
+                failedCount = metrics.oneToOneFailedCount,
+            )
+            val queueLine = "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
+            return listOf(topicLine, groupLine, oneToOneLine, queueLine).joinToString(" | ").trim()
+        }
 
     private fun buildNotificationStatusDetails(nowMs: Long, metrics: NotificationMetrics): String {
         val snapshots = getWorkerStatusSnapshots()
         val topicSnapshot = snapshots.find { it.worker == WORKER_TOPIC_GENERATION }
         val groupSnapshot = snapshots.find { it.worker == WORKER_GROUP_ITERATION }
+        val oneToOneSnapshot = snapshots.find { it.worker == WORKER_ONE_TO_ONE_CHAT }
         val topicLine =
             buildWorkerDetailsLine(
                 label = "Generator",
@@ -526,9 +593,20 @@ class ForegroundSyncService : Service() {
                 pendingCount = metrics.groupPendingCount,
                 leasedCount = metrics.groupLeasedCount,
             )
+        val oneToOneLine =
+            buildWorkerDetailsLine(
+                label = "1:1 Chat",
+                snapshot = oneToOneSnapshot,
+                nowMs = nowMs,
+                doneCount = metrics.oneToOneDoneCount,
+                failedCount = metrics.oneToOneFailedCount,
+                enabledCount = metrics.oneToOneEnabledCount,
+                pendingCount = metrics.oneToOnePendingCount,
+                leasedCount = metrics.oneToOneLeasedCount,
+            )
         val totalsLine =
             "Queue totals: pending=${metrics.totalPendingCount}, leased=${metrics.totalLeasedCount}"
-        return listOf(topicLine, groupLine, totalsLine).joinToString("\n")
+        return listOf(topicLine, groupLine, oneToOneLine, totalsLine).joinToString("\n")
     }
 
     private fun formatWorkerSummaryLine(
@@ -648,6 +726,27 @@ class ForegroundSyncService : Service() {
                             status = BackgroundJobRepository.STATUS_LEASED,
                             type = WORKER_GROUP_ITERATION,
                         ),
+                    oneToOneDoneCount =
+                        runtime.countEvents(
+                            taskType = WORKER_ONE_TO_ONE_CHAT,
+                            stage = "job_completed",
+                        ),
+                    oneToOneFailedCount =
+                        runtime.countEvents(
+                            taskType = WORKER_ONE_TO_ONE_CHAT,
+                            stage = "job_failed_terminal",
+                        ),
+                    oneToOneEnabledCount = countActiveOneToOneScopes(jobs),
+                    oneToOnePendingCount =
+                        jobs.countJobs(
+                            status = BackgroundJobRepository.STATUS_PENDING,
+                            type = WORKER_ONE_TO_ONE_CHAT,
+                        ),
+                    oneToOneLeasedCount =
+                        jobs.countJobs(
+                            status = BackgroundJobRepository.STATUS_LEASED,
+                            type = WORKER_ONE_TO_ONE_CHAT,
+                        ),
                 )
             } catch (_: Exception) {
                 NotificationMetrics(
@@ -661,6 +760,11 @@ class ForegroundSyncService : Service() {
                     groupEnabledCount = 0,
                     groupPendingCount = 0,
                     groupLeasedCount = 0,
+                    oneToOneDoneCount = 0,
+                    oneToOneFailedCount = 0,
+                    oneToOneEnabledCount = 0,
+                    oneToOnePendingCount = 0,
+                    oneToOneLeasedCount = 0,
                 )
             }
         } finally {

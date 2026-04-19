@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { DEFAULT_SETTINGS, dbApi } from "./db";
+import { getRuntimeContext } from "./platform/runtimeContext";
 import {
   generateComfyPromptFromImageDescription,
   generateComfyPromptsFromImageDescription,
@@ -47,6 +48,15 @@ import type {
   RelationshipStage,
   InfluenceProfile,
 } from "./types";
+import { ensureRecurringBackgroundJob } from "./features/mobile/backgroundJobs";
+import {
+  buildOneToOneChatJobId,
+  ONE_TO_ONE_CHAT_JOB_TYPE,
+  ONE_TO_ONE_CHAT_MAX_ATTEMPTS,
+  ONE_TO_ONE_CHAT_RETRY_DELAY_MS,
+} from "./features/mobile/backgroundJobKeys";
+import { triggerBackgroundRuntime } from "./features/mobile/backgroundDelta";
+import { syncOneToOneContextToNative } from "./features/mobile/oneToOneNativeRuntime";
 
 type PersonaInput = Omit<
   Persona,
@@ -82,6 +92,7 @@ interface AppState {
   initialize: () => Promise<void>;
   selectPersona: (personaId: string) => Promise<void>;
   selectChat: (chatId: string) => Promise<void>;
+  syncOneToOneStateFromDb: (preferredChatId?: string | null) => Promise<void>;
   savePersona: (input: PersonaInput) => Promise<void>;
   deletePersona: (personaId: string) => Promise<void>;
   createChat: () => Promise<void>;
@@ -669,6 +680,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  syncOneToOneStateFromDb: async (preferredChatId = null) => {
+    const state = get();
+    const activePersonaId = state.activePersonaId;
+    if (!activePersonaId) return;
+    try {
+      const chats = await dbApi.getChats(activePersonaId);
+      const activeChatId =
+        preferredChatId && chats.some((chat) => chat.id === preferredChatId)
+          ? preferredChatId
+          : state.activeChatId && chats.some((chat) => chat.id === state.activeChatId)
+            ? state.activeChatId
+            : chats[0]?.id ?? null;
+      const artifacts = await loadChatArtifacts(activeChatId);
+      set({
+        chats,
+        activeChatId,
+        messages: artifacts.messages,
+        activePersonaState: artifacts.state,
+        activeMemories: artifacts.memories,
+      });
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
   savePersona: async (input) => {
     set({ isLoading: true, error: null });
     try {
@@ -1128,6 +1164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   sendMessage: async (content) => {
     const state = get();
+    const isAndroidRuntime = getRuntimeContext().mode === "android";
     const activePersona = state.personas.find(
       (persona) => persona.id === state.activePersonaId,
     );
@@ -1145,6 +1182,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       chatId: activeChatId,
       role: "user",
       content: content.trim(),
+      nativeStatus: isAndroidRuntime ? "pending" : undefined,
       createdAt: nowIso(),
     };
 
@@ -1156,6 +1194,48 @@ export const useAppStore = create<AppState>((set, get) => ({
       await dbApi.saveMessage(userMessage);
 
       const activeChat = get().chats.find((chat) => chat.id === activeChatId);
+      if (isAndroidRuntime) {
+        const nextChat =
+          activeChat != null
+            ? {
+                ...activeChat,
+                title:
+                  activeChat.title === "Новый чат"
+                    ? titleFromText(content)
+                    : activeChat.title,
+                updatedAt: nowIso(),
+              }
+            : null;
+        if (nextChat) {
+          await dbApi.saveChat(nextChat);
+        }
+        await syncOneToOneContextToNative({
+          chatId: activeChatId,
+          personaId: activePersona.id,
+        });
+        await ensureRecurringBackgroundJob({
+          id: buildOneToOneChatJobId(activeChatId, userMessage.id),
+          type: ONE_TO_ONE_CHAT_JOB_TYPE,
+          payload: {
+            chatId: activeChatId,
+            userMessageId: userMessage.id,
+            personaId: activePersona.id,
+            enqueuedAtMs: Date.now(),
+            maxAttempts: ONE_TO_ONE_CHAT_MAX_ATTEMPTS,
+            retryDelayMs: ONE_TO_ONE_CHAT_RETRY_DELAY_MS,
+          },
+          runAtMs: Date.now(),
+          maxAttempts: ONE_TO_ONE_CHAT_MAX_ATTEMPTS,
+        });
+        await triggerBackgroundRuntime("one_to_one_enqueue");
+        const chats = await dbApi.getChats(activePersona.id);
+        set({
+          chats,
+          messages: nextMessages,
+        });
+        return;
+      }
+
       const loadedState =
         get().activePersonaState ?? (await dbApi.getPersonaState(activeChatId));
       const runtimeState = ensurePersonaState(

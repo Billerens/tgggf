@@ -81,6 +81,12 @@ interface ChatPaneProps {
   onOpenChatDetails: () => void;
 }
 
+function parseIdbAssetId(value: string | undefined | null) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized.startsWith("idb://")) return "";
+  return normalized.slice("idb://".length).trim();
+}
+
 function parsePersonaControlRaw(raw: string | undefined) {
   if (!raw) return undefined;
   try {
@@ -211,6 +217,9 @@ export function ChatPane({
     sourceUrl: string;
     sourceIndex: number;
   } | null>(null);
+  const [resolvedImageBySource, setResolvedImageBySource] = useState<
+    Record<string, string>
+  >({});
   const composerWrapperRef = useRef<HTMLDivElement | null>(null);
   const [activePersonaAvatarSrc, setActivePersonaAvatarSrc] = useState("");
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -270,7 +279,71 @@ export function ChatPane({
   ]);
 
   useEffect(() => {
-    if (!previewTarget || !previewSrc) return;
+    let cancelled = false;
+    const loadMessageImageAssets = async () => {
+      const refsById = new Map<string, string[]>();
+      const nextResolved: Record<string, string> = {};
+      for (const message of messages) {
+        const imageUrls = message.imageUrls ?? [];
+        for (const rawUrl of imageUrls) {
+          const sourceUrl = rawUrl.trim();
+          if (!sourceUrl) continue;
+          const assetId = parseIdbAssetId(sourceUrl);
+          if (!assetId) {
+            nextResolved[sourceUrl] = sourceUrl;
+            continue;
+          }
+          const bucket = refsById.get(assetId) ?? [];
+          bucket.push(sourceUrl);
+          refsById.set(assetId, bucket);
+        }
+      }
+      if (refsById.size > 0) {
+        const unresolved = new Set(refsById.keys());
+        const maxAttempts = 8;
+        for (
+          let attempt = 0;
+          attempt < maxAttempts && unresolved.size > 0;
+          attempt += 1
+        ) {
+          const ids = Array.from(unresolved);
+          const assets = await dbApi.getImageAssets(ids);
+          const assetById = Object.fromEntries(
+            assets.map((asset) => [asset.id, asset.dataUrl]),
+          );
+          for (const [assetId, sourceUrls] of refsById.entries()) {
+            const resolvedDataUrl = assetById[assetId] ?? "";
+            if (!resolvedDataUrl) continue;
+            unresolved.delete(assetId);
+            for (const sourceUrl of sourceUrls) {
+              nextResolved[sourceUrl] = resolvedDataUrl;
+            }
+          }
+          if (unresolved.size > 0 && attempt < maxAttempts - 1) {
+            await new Promise<void>((resolve) => {
+              window.setTimeout(resolve, 320);
+            });
+          }
+        }
+        for (const unresolvedId of unresolved) {
+          const sourceUrls = refsById.get(unresolvedId) ?? [];
+          for (const sourceUrl of sourceUrls) {
+            nextResolved[sourceUrl] = "";
+          }
+        }
+      }
+      if (!cancelled) {
+        setResolvedImageBySource(nextResolved);
+      }
+    };
+    void loadMessageImageAssets();
+    return () => {
+      cancelled = true;
+    };
+  }, [messages]);
+
+  useEffect(() => {
+    if (!previewTarget) return;
     const message = messages.find(
       (candidate) => candidate.id === previewTarget.messageId,
     );
@@ -283,13 +356,19 @@ export function ChatPane({
       ? previewTarget.sourceUrl
       : "";
     const nextSource =
-      preferredByIndex || preferredBySource || imageUrls[0] || previewSrc;
+      preferredByIndex || preferredBySource || imageUrls[0] || previewSrc || "";
+    const resolvedPreview =
+      resolvedImageBySource[nextSource] ??
+      (parseIdbAssetId(nextSource) ? "" : nextSource);
 
-    if (!nextSource || nextSource === previewSrc) {
+    if (!nextSource) {
+      return;
+    }
+    if (resolvedPreview && resolvedPreview === previewSrc) {
       return;
     }
 
-    setPreviewSrc(nextSource);
+    setPreviewSrc(resolvedPreview || null);
     setPreviewMeta(imageMetaByUrl[nextSource]);
     setPreviewTarget((prev) =>
       prev
@@ -299,7 +378,7 @@ export function ChatPane({
           }
         : prev,
     );
-  }, [messages, imageMetaByUrl, previewTarget, previewSrc]);
+  }, [messages, imageMetaByUrl, previewTarget, previewSrc, resolvedImageBySource]);
 
   const relationshipBadge = activePersonaState
     ? {
@@ -475,29 +554,38 @@ export function ChatPane({
                 className="bubble-images"
                 aria-label="Сгенерированные изображения"
               >
-                {imageUrlsToRender.map((url, index) => (
-                  <button
-                    key={`${msg.id}-img-${index}`}
-                    type="button"
-                    className="bubble-image-btn"
-                    onClick={() => {
-                      setPreviewSrc(url);
-                      const meta = imageMetaByUrl[url];
-                      setPreviewMeta(meta);
-                      setPreviewTarget({
-                        messageId: msg.id,
-                        sourceUrl: url,
-                        sourceIndex: index,
-                      });
-                    }}
-                  >
-                    <img
-                      src={url}
-                      alt={`generated-${index + 1}`}
-                      loading="lazy"
-                    />
-                  </button>
-                ))}
+                {imageUrlsToRender.map((url, index) => {
+                  const resolvedUrl =
+                    resolvedImageBySource[url] ??
+                    (parseIdbAssetId(url) ? "" : url);
+                  return (
+                    <button
+                      key={`${msg.id}-img-${index}`}
+                      type="button"
+                      className="bubble-image-btn"
+                      onClick={() => {
+                        setPreviewSrc(resolvedUrl || null);
+                        const meta = imageMetaByUrl[url];
+                        setPreviewMeta(meta);
+                        setPreviewTarget({
+                          messageId: msg.id,
+                          sourceUrl: url,
+                          sourceIndex: index,
+                        });
+                      }}
+                    >
+                      {resolvedUrl ? (
+                        <img
+                          src={resolvedUrl}
+                          alt={`generated-${index + 1}`}
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="image-skeleton-card" />
+                      )}
+                    </button>
+                  );
+                })}
               </section>
             ) : null}
             {msg.imageGenerationPending && imageSkeletonCount > 0 ? (
@@ -585,6 +673,7 @@ export function ChatPane({
       messages,
       showStatusChangeDetails,
       showSystemImageBlock,
+      resolvedImageBySource,
     ],
   );
 

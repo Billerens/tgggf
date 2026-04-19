@@ -224,6 +224,9 @@ export interface ChatMessage {
   chatId: string;
   role: ChatRole;
   content: string;
+  replyToUserMessageId?: string;
+  nativeStatus?: "pending" | "completed" | "failed";
+  nativeError?: string;
   comfyPrompt?: string;
   comfyPrompts?: string[];
   comfyImageDescription?: string;

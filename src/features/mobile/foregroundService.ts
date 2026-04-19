@@ -43,7 +43,10 @@ export interface ForegroundServiceRequestOptions {
   fetchImpl?: typeof fetch;
 }
 
-export type ForegroundWorkerType = "topic_generation" | "group_iteration";
+export type ForegroundWorkerType =
+  | "topic_generation"
+  | "group_iteration"
+  | "one_to_one_chat";
 
 export type ForegroundServiceHealth = "active" | "degraded" | "fallback";
 
@@ -57,6 +60,7 @@ export interface ForegroundQueueMetrics {
 export interface ForegroundActiveScopeMetrics {
   topicGeneration: number;
   groupIteration: number;
+  oneToOneChat: number;
   total: number;
 }
 
@@ -150,9 +154,10 @@ function parseStatusPayload(payload: unknown): ForegroundServiceStatus {
   const activeScopesSource = isRecord(source.activeScopes) ? source.activeScopes : {};
   const activeTopicGeneration = readFiniteNumber(activeScopesSource.topicGeneration, 0);
   const activeGroupIteration = readFiniteNumber(activeScopesSource.groupIteration, 0);
+  const activeOneToOneChat = readFiniteNumber(activeScopesSource.oneToOneChat, 0);
   const activeTotal = readFiniteNumber(
     activeScopesSource.total,
-    activeTopicGeneration + activeGroupIteration,
+    activeTopicGeneration + activeGroupIteration + activeOneToOneChat,
   );
   const staleWorkers = readFiniteNumber(source.staleWorkers, 0);
   const staleJobs = readFiniteNumber(source.staleJobs, queueStaleLeased);
@@ -198,6 +203,7 @@ function parseStatusPayload(payload: unknown): ForegroundServiceStatus {
     activeScopes: {
       topicGeneration: activeTopicGeneration,
       groupIteration: activeGroupIteration,
+      oneToOneChat: activeOneToOneChat,
       total: activeTotal,
     },
     workers,

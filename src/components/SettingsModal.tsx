@@ -59,6 +59,7 @@ interface SettingsModalProps {
   foregroundServiceStaleWorkers: number;
   foregroundServiceActiveTopicScopes: number;
   foregroundServiceActiveGroupScopes: number;
+  foregroundServiceActiveOneToOneScopes: number;
   foregroundServiceLastError: string | null;
   foregroundServiceError: string | null;
   availableModelsByProvider: Record<LlmProvider, string[]>;
@@ -705,6 +706,7 @@ export function SettingsModal({
   foregroundServiceStaleWorkers,
   foregroundServiceActiveTopicScopes,
   foregroundServiceActiveGroupScopes,
+  foregroundServiceActiveOneToOneScopes,
   foregroundServiceLastError,
   foregroundServiceError,
   availableModelsByProvider,
@@ -810,11 +812,12 @@ export function SettingsModal({
     }
     setNativeRuntimeEventsLoading(true);
     try {
-      const [groupRows, topicRows] = await Promise.all([
+      const [groupRows, topicRows, oneToOneRows] = await Promise.all([
         listBackgroundRuntimeEvents({ taskType: "group_iteration", limit: 400 }),
         listBackgroundRuntimeEvents({ taskType: "topic_generation", limit: 400 }),
+        listBackgroundRuntimeEvents({ taskType: "one_to_one_chat", limit: 400 }),
       ]);
-      const mergedRows = [...groupRows, ...topicRows].sort((left, right) => {
+      const mergedRows = [...groupRows, ...topicRows, ...oneToOneRows].sort((left, right) => {
         if (left.createdAtMs !== right.createdAtMs) {
           return right.createdAtMs - left.createdAtMs;
         }
@@ -1455,6 +1458,10 @@ export function SettingsModal({
                         <div>
                           <span>Active topic rooms</span>
                           <strong>{foregroundServiceActiveTopicScopes}</strong>
+                        </div>
+                        <div>
+                          <span>Active 1:1 chats</span>
+                          <strong>{foregroundServiceActiveOneToOneScopes}</strong>
                         </div>
                       </div>
                     </div>

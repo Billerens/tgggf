@@ -17,6 +17,7 @@ class SchedulerWorker(
                 BackgroundRuntimeEngine.requestTick(applicationContext)
                 TopicGenerationNativeExecutor.requestTick(applicationContext)
                 GroupIterationNativeExecutor.requestTick(applicationContext)
+                OneToOneChatNativeExecutor.requestTick(applicationContext)
 
                 val enabledCount =
                     runtime.countDesiredStates(taskType = null, enabledOnly = true)

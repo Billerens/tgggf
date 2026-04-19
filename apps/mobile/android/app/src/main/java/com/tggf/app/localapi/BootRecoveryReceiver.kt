@@ -20,6 +20,7 @@ class BootRecoveryReceiver : BroadcastReceiver() {
         BackgroundRuntimeEngine.requestTick(appContext)
         TopicGenerationNativeExecutor.requestTick(appContext)
         GroupIterationNativeExecutor.requestTick(appContext)
+        OneToOneChatNativeExecutor.requestTick(appContext)
     }
 }
 

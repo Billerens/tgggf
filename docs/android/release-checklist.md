@@ -1,7 +1,7 @@
-# Android Native Group Autonomy - Release Checklist
+# Android Native Runtime - Release Checklist
 
 ## Purpose
-Operational checklist for staged rollout of Android native group autonomy (`internal -> beta -> prod`) with explicit stop criteria and rollback gates.
+Operational checklist for staged rollout of Android native runtime (`group_iteration` + `topic_generation` + `one_to_one_chat`) with explicit stop criteria and rollback gates.
 
 ## Inputs
 - Latest debug/release candidate APK.
@@ -37,14 +37,15 @@ Operational checklist for staged rollout of Android native group autonomy (`inte
 4. Execute smoke flow from `docs/android/runbook.md`.
 5. Confirm no persistent stale workers and no persistent stale leased jobs.
 6. Confirm no recurring worker `lastError` for at least 15 minutes.
-7. Document evidence:
+7. Confirm `one_to_one_chat` events progress to `job_completed` or `job_failed_terminal` without hanging pending states.
+8. Document evidence:
    - timestamp
    - stage
    - queue depth
    - stale jobs
    - stale workers
    - last error (if any)
-8. Promote to next stage only after all checks pass.
+9. Promote to next stage only after all checks pass.
 
 ## SLO Targets
 - Availability SLO:
@@ -61,13 +62,14 @@ Stop rollout progression immediately if any condition is met:
 2. `stale jobs` increases across 3 consecutive refreshes.
 3. Same worker `lastError` repeats 3 times подряд.
 4. Message/event persistence mismatch detected after restart.
+5. `one_to_one_chat` jobs remain pending without progress across 3 refresh intervals.
 
 ## Rollback (No Data Loss)
 1. In Settings, run `Rollback в fallback` (or set `androidNativeGroupIterationV1=false`).
 2. Keep `androidNativeGroupStructuredStorageV1=true`.
 3. Keep `androidNativeGroupStructuredStorageDualWrite=true` during recovery window.
 4. Refresh foreground status and confirm `bridge fallback`.
-5. Verify chats/rooms/messages/events are still readable.
+5. Verify chats/rooms/messages/events are still readable, including latest 1:1 message state.
 6. Export backup (`JSON` or `ZIP`) before retrying rollout.
 
 ## Evidence Template

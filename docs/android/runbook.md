@@ -3,7 +3,7 @@
 ## Scope
 - Android runtime: Capacitor wrapper + native Android module bridge (`LocalApi`).
 - Build output: debug APK for local install.
-- Group autonomy path: native executors + WorkManager recovery + ForegroundService heartbeat/observability.
+- Native chat runtime path: `group_iteration` + `topic_generation` + `one_to_one_chat` executors with WorkManager recovery and ForegroundService heartbeat/observability.
 
 ## Prerequisites
 - Android Studio (latest stable)
@@ -35,14 +35,14 @@
 
 ## Runtime Health States
 - `native active`
-  - Native group iteration feature flag is enabled.
+  - Native executors are active (`group_iteration`, `topic_generation`, `one_to_one_chat`).
   - Foreground service is enabled/running.
   - No stale workers, no stale leased jobs, no active worker error.
 - `native degraded`
   - Foreground service is not running, or stale workers/stale leased jobs/errors detected.
   - Native execution can recover automatically, but requires diagnosis.
 - `bridge fallback`
-  - Native group iteration feature flag is disabled or runtime is not Android.
+  - Runtime is not Android, or Android native runtime is unavailable.
   - Background autonomy is reduced to legacy bridge behavior.
 
 ## Smoke Checklist (Debug APK)
@@ -54,16 +54,20 @@
    - worker heartbeats advance,
    - `queue depth` changes,
    - `active group rooms` reflects active room count.
-6. Force-stop app process and relaunch:
+6. Start a 1:1 chat and send one user message:
+   - `active 1:1 chats` increases while job is pending,
+   - runtime events include `job_claimed -> llm_started -> job_completed` (or terminal fail path),
+   - UI loading state is cleared by `state_patch` delta or `job_failed_terminal`.
+7. Force-stop app process and relaunch:
    - service recovers,
    - health returns to `native active` or explicitly reports `native degraded`.
-7. Optional reboot test:
+8. Optional reboot test:
    - after reboot, scheduler re-enqueues work and status becomes live without manual queue repair.
 
 ## Diagnostics Playbook
 1. Health = `bridge fallback`
-   - Check `androidNativeGroupIterationV1` in Settings rollout controls.
-   - Enable flag, save settings, refresh foreground status.
+   - Verify runtime is Android and `LocalApi` bridge is loaded.
+   - Restart app process and refresh foreground status.
 2. Health = `native degraded`
    - Check `stale workers`:
      - if `>0`, inspect worker `lastError` and runtime events.
@@ -92,7 +96,7 @@
 - Gate 1: Smoke checklist passes on at least one real device.
 - Gate 2: No sustained `native degraded` (> 15 minutes) in acceptance run.
 - Gate 3: No unrecoverable stale leased jobs after restart/reboot scenario.
-- Gate 4: Rollback path validated by toggling `androidNativeGroupIterationV1=false`.
+- Gate 4: Rollback path validated for group/topic workers (`androidNativeGroupIterationV1=false`) and verified no stuck `one_to_one_chat` queue.
 - Full staged rollout checklist with SLO/stop criteria:
   - `docs/android/release-checklist.md`
 
@@ -108,6 +112,7 @@ Rollback trigger examples:
   - `foreground_service.*`
   - `group_iteration.*`
   - `topic_generation.*`
+  - `one_to_one_chat.*`
 - If build fails:
   - verify SDK path in `apps/mobile/android/local.properties`
   - verify Java 17 is used
@@ -118,5 +123,5 @@ Rollback trigger examples:
 2. Repeat setup + sync + build steps.
 3. Re-install previous APK on test devices.
 4. Immediate functional rollback (without APK downgrade):
-   - set `androidNativeGroupIterationV1=false` in app settings.
-   - keep app running in fallback mode while root-cause analysis proceeds.
+   - set `androidNativeGroupIterationV1=false` for group/topic workers.
+   - if `one_to_one_chat` is degraded, stop rollout and revert to previous APK while root-cause analysis proceeds.
