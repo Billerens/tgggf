@@ -16,6 +16,20 @@ function clip(value: string, max = 260) {
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function formatMessageContextTime(value: string | undefined) {
+  const raw = (value || "").trim();
+  if (!raw) return "unknown";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  const seconds = String(parsed.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 function compactPayload(payload: Record<string, unknown>, max = 220) {
   try {
     return clip(JSON.stringify(payload), max);
@@ -317,6 +331,7 @@ interface GroupOrchestratorInputPayload {
     author: string;
     authorType: "persona" | "user" | "system" | "orchestrator";
     content: string;
+    createdAt?: string;
   }>;
   recentEvents: Array<{
     type: string;
@@ -334,7 +349,7 @@ export function buildGroupOrchestratorUserInput(
       ? payload.recentMessages
           .map(
             (item) =>
-              `${item.authorType.toUpperCase()} ${clip(item.author, 36)}: ${clip(item.content, 180)}`,
+              `${item.authorType.toUpperCase()} ${clip(item.author, 36)} [time=${formatMessageContextTime(item.createdAt)}]: ${clip(item.content, 180)}`,
           )
           .join("\n")
       : "none";
@@ -379,6 +394,7 @@ interface GroupPersonaInputPayload {
     author: string;
     authorType: "persona" | "user" | "system" | "orchestrator";
     content: string;
+    createdAt?: string;
   }>;
   personaState: GroupPersonaState | null;
   relationEdges: GroupRelationEdge[];
@@ -399,7 +415,7 @@ export function buildGroupPersonaUserInput(payload: GroupPersonaInputPayload) {
       ? payload.recentMessages
           .map(
             (item) =>
-              `${item.authorType.toUpperCase()} ${clip(item.author, 36)}: ${clip(item.content, 500)}`,
+              `${item.authorType.toUpperCase()} ${clip(item.author, 36)} [time=${formatMessageContextTime(item.createdAt)}]: ${clip(item.content, 500)}`,
           )
           .join("\n")
       : "none";

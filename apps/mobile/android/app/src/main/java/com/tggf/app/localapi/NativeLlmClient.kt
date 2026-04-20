@@ -78,6 +78,12 @@ data class NativeConversationSummaryState(
     val agreements: List<String>,
 )
 
+data class NativeSummaryTranscriptEntry(
+    val role: String,
+    val content: String,
+    val createdAt: String?,
+)
+
 private data class HttpResult(
     val code: Int,
     val body: String,
@@ -551,7 +557,7 @@ object NativeLlmClient {
         settings: JSONObject,
         persona: JSONObject,
         existing: NativeConversationSummaryState,
-        transcript: List<Pair<String, String>>,
+        transcript: List<NativeSummaryTranscriptEntry>,
         targetTokens: Int,
     ): NativeConversationSummaryState? {
         if (transcript.isEmpty()) return existing
@@ -606,8 +612,9 @@ object NativeLlmClient {
                 appendLine()
                 appendLine("Новые сообщения для инкрементального учета:")
                 transcript.forEach { entry ->
-                    val roleLabel = if (entry.first == "assistant") "Персона" else "Пользователь"
-                    appendLine("$roleLabel: ${entry.second.trim()}")
+                    val roleLabel = if (entry.role == "assistant") "Персона" else "Пользователь"
+                    val createdAt = entry.createdAt?.trim().orEmpty().ifBlank { "unknown" }
+                    appendLine("$roleLabel [time=$createdAt]: ${entry.content.trim()}")
                 }
             }.trim()
 
@@ -1174,7 +1181,8 @@ object NativeLlmClient {
             val content = buildPromptMessageContent(message, contentMaxLen)
             val authorName = clipText(message.optString("authorDisplayName", "").trim(), 36)
             val authorType = message.optString("authorType", "").uppercase()
-            lines.add("$authorType $authorName: $content")
+            val createdAt = message.optString("createdAt", "").trim().ifBlank { "unknown" }
+            lines.add("$authorType $authorName [time=$createdAt]: $content")
         }
         return lines.takeLast(max(1, limit))
     }
@@ -2319,14 +2327,15 @@ object NativeLlmClient {
         userInput: String,
     ): String {
         if (recentMessages.length() == 0) return userInput
-        val rows = mutableListOf<Pair<String, String>>()
+        val rows = mutableListOf<Triple<String, String, String>>()
         for (index in 0 until recentMessages.length()) {
             val item = recentMessages.optJSONObject(index) ?: continue
             val role = item.optString("role", "").trim().lowercase()
             val content = item.optString("content", "").trim()
             if (content.isBlank()) continue
             if (role != "user" && role != "assistant") continue
-            rows.add(Pair(role, content))
+            val createdAt = item.optString("createdAt", "").trim().ifBlank { "unknown" }
+            rows.add(Triple(role, content, createdAt))
         }
         if (rows.isEmpty()) return userInput
         val normalizedUserInput = normalizeForPromptComparison(userInput)
@@ -2339,8 +2348,8 @@ object NativeLlmClient {
         if (rows.isEmpty()) return userInput
         return listOf(
             "КОНТЕКСТ ПОСЛЕДНИХ РЕПЛИК:",
-            rows.joinToString("\n") { pair ->
-                "${if (pair.first == "user") "Пользователь" else "Персона"}: ${pair.second}"
+            rows.joinToString("\n") { row ->
+                "${if (row.first == "user") "Пользователь" else "Персона"} [time=${row.third}]: ${row.second}"
             },
             "",
             "ТЕКУЩЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:",

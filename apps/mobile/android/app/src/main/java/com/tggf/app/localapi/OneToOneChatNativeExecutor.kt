@@ -1036,11 +1036,12 @@ object OneToOneChatNativeExecutor {
             pending.map { message ->
                 val role = message.optString("role", "user").trim().lowercase()
                 val content = message.optString("content", "").trim()
-                Pair(
-                    if (role == "assistant") "assistant" else "user",
-                    content.take(SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE),
+                NativeSummaryTranscriptEntry(
+                    role = if (role == "assistant") "assistant" else "user",
+                    content = content.take(SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE),
+                    createdAt = message.optString("createdAt", "").trim().ifBlank { null },
                 )
-            }.filter { pair -> pair.second.isNotBlank() }
+            }.filter { entry -> entry.content.isNotBlank() }
         if (transcript.isEmpty()) return
         val targetTokens =
             chat.optInt("summaryTokenBudget", SUMMARY_DEFAULT_TOKEN_BUDGET)
@@ -1202,6 +1203,7 @@ object OneToOneChatNativeExecutor {
                     JSONObject().apply {
                         put("role", row.optString("role", "user").trim().lowercase())
                         put("content", row.optString("content", "").trim())
+                        put("createdAt", row.optString("createdAt", "").trim())
                     },
                 )
             }
@@ -1936,6 +1938,11 @@ object OneToOneChatNativeExecutor {
         return "$layer::$kind::$content"
     }
 
+    private fun formatMessageContextTime(value: String): String {
+        val raw = value.trim()
+        return if (raw.isBlank()) "unknown" else raw
+    }
+
     private fun buildMemoryCard(
         memories: List<JSONObject>,
         recentMessages: JSONArray,
@@ -1947,8 +1954,9 @@ object OneToOneChatNativeExecutor {
             val role = row.optString("role", "").trim().lowercase()
             val content = row.optString("content", "").trim()
             if (content.isBlank()) continue
+            val createdAt = formatMessageContextTime(row.optString("createdAt", ""))
             val label = if (role == "assistant") "Персона" else "Пользователь"
-            shortTerm.put("$label: ${clipText(content, 220)}")
+            shortTerm.put("$label [time=$createdAt]: ${clipText(content, 220)}")
         }
         val episodicRows = JSONArray()
         val longTermRows = JSONArray()

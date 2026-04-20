@@ -44,7 +44,11 @@ export interface ChatCompletionContext {
   influenceProfile?: InfluenceProfile;
   currentIntent?: string;
   memoryCard?: LayeredMemoryContextCard;
-  recentMessages?: Array<{ role: "user" | "assistant"; content: string }>;
+  recentMessages?: Array<{
+    role: "user" | "assistant";
+    content: string;
+    createdAt?: string;
+  }>;
   conversationSummary?: {
     summary?: string;
     facts?: string[];
@@ -168,6 +172,20 @@ function sanitizeAssistantText(content: string) {
   return content;
 }
 
+function formatMessageContextTime(value: string | undefined) {
+  const raw = (value || "").trim();
+  if (!raw) return "unknown";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  const seconds = String(parsed.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 function formatRecentMessages(
   recentMessages: ChatCompletionContext["recentMessages"] | undefined,
   userInput: string,
@@ -189,7 +207,7 @@ function formatRecentMessages(
     "КОНТЕКСТ ПОСЛЕДНИХ РЕПЛИК:",
     ...sanitizedRecentMessages.map(
       (message) =>
-        `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content}`,
+        `${message.role === "user" ? "Пользователь" : "Персона"} [time=${formatMessageContextTime(message.createdAt)}]: ${message.content}`,
     ),
     "",
     "ТЕКУЩЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:",
@@ -1742,7 +1760,11 @@ export interface ConversationSummaryState {
 
 interface ConversationSummaryUpdateRequest {
   existing: ConversationSummaryState;
-  transcript: Array<{ role: "user" | "assistant"; content: string }>;
+  transcript: Array<{
+    role: "user" | "assistant";
+    content: string;
+    createdAt?: string;
+  }>;
   targetTokens: number;
 }
 
@@ -1872,6 +1894,7 @@ export async function requestConversationSummaryUpdate(
     .map((message) => ({
       role: message.role,
       content: message.content.trim(),
+      createdAt: toTrimmedString(message.createdAt),
     }))
     .filter((message) => message.content.length > 0)
     .slice(0, SUMMARY_TRANSCRIPT_MAX_MESSAGES);
@@ -1912,7 +1935,7 @@ export async function requestConversationSummaryUpdate(
     "Новые сообщения для инкрементального учета:",
     ...transcript.map(
       (message) =>
-        `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content}`,
+        `${message.role === "user" ? "Пользователь" : "Персона"} [time=${formatMessageContextTime(message.createdAt)}]: ${message.content}`,
     ),
   ].join("\n");
 

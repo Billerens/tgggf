@@ -420,6 +420,7 @@ export async function requestLlmOrchestratorDecision(
       author: message.authorDisplayName,
       authorType: message.authorType,
       content: buildPromptMessageContent(message, 220),
+      createdAt: message.createdAt,
     }));
   const recentEvents = input.events
     .filter((event) => event.roomId === input.room.id)
@@ -540,6 +541,7 @@ export async function requestLlmPersonaMessage(params: {
         message,
         params.previousResponseId ? 220 : 280,
       ),
+      createdAt: message.createdAt,
     }));
 
   const systemPrompt = buildGroupPersonaSystemPrompt({

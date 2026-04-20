@@ -507,6 +507,7 @@ async function maybeRefreshConversationSummary(params: {
             .slice(0, SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE - 1)
             .trimEnd()}…`
         : message.content,
+    createdAt: message.createdAt,
   }));
 
   try {

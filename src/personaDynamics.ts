@@ -796,15 +796,43 @@ export function reconcilePersistentMemories(
   return { kept, removedIds };
 }
 
-function buildShortTermSection(messages: Array<{ role: "user" | "assistant"; content: string }>, limit: number) {
+function formatMessageContextTime(value: string | undefined) {
+  const raw = (value || "").trim();
+  if (!raw) return "unknown";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  const seconds = String(parsed.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function buildShortTermSection(
+  messages: Array<{
+    role: "user" | "assistant";
+    content: string;
+    createdAt?: string;
+  }>,
+  limit: number,
+) {
   return messages
     .slice(-limit)
-    .map((message) => `${message.role === "user" ? "Пользователь" : "Персона"}: ${message.content.slice(0, 220)}`);
+    .map(
+      (message) =>
+        `${message.role === "user" ? "Пользователь" : "Персона"} [time=${formatMessageContextTime(message.createdAt)}]: ${message.content.slice(0, 220)}`,
+    );
 }
 
 export function buildLayeredMemoryContextCard(
   memories: PersonaMemory[],
-  recentMessages: Array<{ role: "user" | "assistant"; content: string }>,
+  recentMessages: Array<{
+    role: "user" | "assistant";
+    content: string;
+    createdAt?: string;
+  }>,
   decayDays: number,
 ) {
   const normalized = memories.map((memory) => normalizeMemoryRecord(memory));
@@ -831,5 +859,6 @@ export function buildRecentMessages(messages: ChatMessage[], limit = 6) {
     .map((message) => ({
       role: message.role as "user" | "assistant",
       content: message.content,
+      createdAt: message.createdAt,
     }));
 }
