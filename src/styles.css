@@ -1134,6 +1134,51 @@ body {
   opacity: 0.7;
 }
 
+.chat-activity-indicator {
+  max-width: 80%;
+  margin-right: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  animation: slideUpFade 0.25s ease-out;
+}
+
+.chat-activity-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
+}
+
+.chat-activity-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-activity-avatar span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chat-activity-text {
+  white-space: pre-wrap;
+}
+
 /* Controls */
 button,
 input,
@@ -4060,6 +4105,61 @@ select:focus,
 }
 
 .group-room-chip .icon-btn.mini {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+}
+
+.openrouter-provider-filter-picker {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.openrouter-provider-filter-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 8px;
+}
+
+.openrouter-provider-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.openrouter-provider-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+}
+
+.openrouter-provider-chip-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.openrouter-provider-chip-meta strong {
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.openrouter-provider-chip .icon-btn.mini {
   width: 22px;
   height: 22px;
   min-width: 22px;

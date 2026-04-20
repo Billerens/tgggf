@@ -73,6 +73,7 @@ export type UserGender = "unspecified" | "male" | "female" | "nonbinary";
 export type PersonaSelfGender = "auto" | "female" | "male" | "neutral";
 export type AuthMode = "none" | "bearer" | "token" | "basic" | "custom";
 export type LlmProvider = "lmstudio" | "openrouter" | "huggingface";
+export type OpenRouterProviderFilterMode = "off" | "only" | "ignore";
 export type EnhanceDetailLevel = "soft" | "medium" | "strong";
 
 export interface EnhanceDetailLevelConfig {
@@ -477,6 +478,8 @@ export interface PersonaMemory {
 export interface AppSettings {
   lmBaseUrl: string;
   openRouterBaseUrl: string;
+  openRouterProviderFilterMode: OpenRouterProviderFilterMode;
+  openRouterProviderFilterList: string[];
   huggingFaceBaseUrl: string;
   comfyBaseUrl: string;
   googleDriveClientId: string;

@@ -203,8 +203,8 @@ function summarizeListItems(
   items: string[] | undefined,
   label: string,
   emptyLabel = "none",
-  maxItems = 8,
-  maxLen = 220,
+  maxItems = 16,
+  maxLen = 320,
 ) {
   if (!items || items.length === 0) return `${label}: ${emptyLabel}`;
   const cleaned = items
@@ -281,6 +281,35 @@ function formatLookPromptCacheInput(
     `detail.lips=${lookPromptCache.detailPrompts.lips}`,
     `detail.hands=${lookPromptCache.detailPrompts.hands}`,
   ].join("\n");
+}
+
+function padTwoDigits(value: number) {
+  return value.toString().padStart(2, "0");
+}
+
+function resolveDayPeriodByHour(hour: number) {
+  if (hour >= 5 && hour < 12) return "утро";
+  if (hour >= 12 && hour < 17) return "день";
+  if (hour >= 17 && hour < 23) return "вечер";
+  return "ночь";
+}
+
+function formatCurrentUserLocalTimeContext(now: Date = new Date()) {
+  const timeZone =
+    Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown_timezone";
+  const year = now.getFullYear();
+  const month = padTwoDigits(now.getMonth() + 1);
+  const day = padTwoDigits(now.getDate());
+  const hours = padTwoDigits(now.getHours());
+  const minutes = padTwoDigits(now.getMinutes());
+  const seconds = padTwoDigits(now.getSeconds());
+  const offsetMinutes = -now.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offsetHours = padTwoDigits(Math.floor(absOffset / 60));
+  const offsetRestMinutes = padTwoDigits(absOffset % 60);
+  const dayPeriod = resolveDayPeriodByHour(now.getHours());
+  return `Текущее локальное время пользователя: ${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC${sign}${offsetHours}:${offsetRestMinutes} (${timeZone}, ${dayPeriod}).`;
 }
 
 export function buildSystemPrompt(
@@ -454,8 +483,14 @@ export function buildSystemPrompt(
     personaSelfGenderRule(persona),
     `Имя пользователя: ${settings.userName}.`,
     `Пол пользователя: ${userGenderLabel(settings.userGender)}.`,
+    formatCurrentUserLocalTimeContext(),
     "Учитывай имя пользователя в обращении и персонализации ответа.",
     "Учитывай пол пользователя в обращении и согласовании форм.",
+    "По умолчанию считай, что локальное время персонажа совпадает с локальным временем пользователя.",
+    "Исключение: если в контексте явно задано, что персона в другом мире/стране/часовом поясе, разрешено использовать иное локальное время персонажа.",
+    "Используй время пользователя не только в приветствиях, но и в содержании ответа: чем персона занята сейчас, что уместно делать в этот момент, какие планы логичны далее по времени.",
+    "Если описываешь фото/селфи 'сейчас', сцена и условия должны быть согласованы с текущим временем суток пользователя (свет, обстановка, активность).",
+    "Не смешивай временные рамки: если используешь иной часовой пояс персонажа по исключению, проговори это явно и оставайся консистентной.",
     "Не показывай persona_control пользователю как часть обычного текста.",
   ].join("\n");
 }
@@ -657,6 +692,34 @@ function resolveProviderAuth(settings: AppSettings, provider: LlmProvider) {
   return settings.lmAuth;
 }
 
+function normalizeOpenRouterProviderFilterMode(
+  value: unknown,
+): AppSettings["openRouterProviderFilterMode"] {
+  return value === "only" || value === "ignore" ? value : "off";
+}
+
+function normalizeOpenRouterProviderSlug(value: unknown): string {
+  return toTrimmedString(value).toLowerCase().replace(/[^a-z0-9/_-]+/g, "");
+}
+
+function resolveOpenRouterProviderFilterList(settings: AppSettings): string[] {
+  if (!Array.isArray(settings.openRouterProviderFilterList)) return [];
+  const next = settings.openRouterProviderFilterList
+    .map((item) => normalizeOpenRouterProviderSlug(item))
+    .filter(Boolean);
+  return Array.from(new Set(next)).slice(0, 64);
+}
+
+function buildOpenRouterProviderRoutingPayload(settings: AppSettings) {
+  const mode = normalizeOpenRouterProviderFilterMode(
+    settings.openRouterProviderFilterMode,
+  );
+  const list = resolveOpenRouterProviderFilterList(settings);
+  if (mode === "off" || list.length === 0) return undefined;
+  if (mode === "only") return { only: list } as const;
+  return { ignore: list } as const;
+}
+
 function buildToolCapabilityCacheKey(
   provider: LlmProvider,
   baseUrl: string,
@@ -749,7 +812,7 @@ function buildOpenAiToolProbePayload(model: string) {
     temperature: 0,
     max_tokens: 64,
     stream: false,
-  } as const;
+  };
 }
 
 function buildLmStudioToolProbePayload(model: string) {
@@ -930,6 +993,7 @@ export async function probeModelToolCallingCapability(params: {
   auth: EndpointAuthConfig;
   model: string;
   apiKey?: string;
+  openRouterProviderRouting?: Record<string, unknown>;
   forceRefresh?: boolean;
   timeoutMs?: number;
 }): Promise<ToolCallingCapabilityProbeResult> {
@@ -1002,16 +1066,22 @@ export async function probeModelToolCallingCapability(params: {
   for (const endpoint of endpoints) {
     try {
       const isLmStudioChatEndpoint = endpoint.endsWith("/api/v1/chat");
+      const probePayload: Record<string, unknown> = isLmStudioChatEndpoint
+        ? buildLmStudioToolProbePayload(model)
+        : buildOpenAiToolProbePayload(model);
+      if (
+        !isLmStudioChatEndpoint &&
+        provider === "openrouter" &&
+        params.openRouterProviderRouting
+      ) {
+        probePayload.provider = params.openRouterProviderRouting;
+      }
       const response = await fetchWithTimeout(
         endpoint,
         {
           method: "POST",
           headers,
-          body: JSON.stringify(
-            isLmStudioChatEndpoint
-              ? buildLmStudioToolProbePayload(model)
-              : buildOpenAiToolProbePayload(model),
-          ),
+          body: JSON.stringify(probePayload),
         },
         params.timeoutMs ?? DEFAULT_TOOL_CALLING_PROBE_TIMEOUT_MS,
       );
@@ -1113,6 +1183,10 @@ export async function resolveToolExecutionModeForTask(
     auth: target.auth,
     model: target.model,
     apiKey: settings.apiKey,
+    openRouterProviderRouting:
+      target.provider === "openrouter"
+        ? buildOpenRouterProviderRoutingPayload(settings)
+        : undefined,
     forceRefresh: options?.forceRefresh,
     timeoutMs: options?.timeoutMs,
   });
@@ -1358,6 +1432,12 @@ async function requestProviderChatCompletion(
     temperature: request.temperature,
     stream: false,
   };
+  if (provider === "openrouter") {
+    const routing = buildOpenRouterProviderRoutingPayload(settings);
+    if (routing) {
+      payload.provider = routing;
+    }
+  }
   if (tools.length > 0) {
     payload.tools = tools;
     payload.tool_choice = request.toolChoice ?? "required";
@@ -1666,6 +1746,20 @@ interface ConversationSummaryUpdateRequest {
   targetTokens: number;
 }
 
+const SUMMARY_TARGET_TOKENS_MIN = 600;
+const SUMMARY_TARGET_TOKENS_MAX = 16000;
+const SUMMARY_RESPONSE_MAX_OUTPUT_TOKENS = 16000;
+const SUMMARY_TRANSCRIPT_MAX_MESSAGES = 160;
+const SUMMARY_MAX_CHARS_CAP = 96_000;
+const SUMMARY_FACTS_MAX_ITEMS = 24;
+const SUMMARY_FACTS_MAX_LEN = 320;
+const SUMMARY_GOALS_MAX_ITEMS = 18;
+const SUMMARY_GOALS_MAX_LEN = 320;
+const SUMMARY_OPEN_THREADS_MAX_ITEMS = 24;
+const SUMMARY_OPEN_THREADS_MAX_LEN = 420;
+const SUMMARY_AGREEMENTS_MAX_ITEMS = 20;
+const SUMMARY_AGREEMENTS_MAX_LEN = 420;
+
 function parseJsonObjectFromText<T extends object>(value: string): T | null {
   const text = value.trim();
   if (!text) return null;
@@ -1700,6 +1794,16 @@ function normalizeSummaryList(
     .slice(0, maxItems);
 }
 
+function normalizeSummaryListOrFallback(
+  value: unknown,
+  fallback: string[],
+  maxItems: number,
+  maxLen: number,
+): string[] {
+  if (!Array.isArray(value)) return fallback;
+  return normalizeSummaryList(value, maxItems, maxLen);
+}
+
 function normalizeSummaryState(
   parsed: Record<string, unknown>,
   fallback: ConversationSummaryState,
@@ -1707,7 +1811,7 @@ function normalizeSummaryState(
 ): ConversationSummaryState {
   const estimatedMaxSummaryChars = Math.max(
     800,
-    Math.min(12000, Math.round(targetTokens * 5.5)),
+    Math.min(SUMMARY_MAX_CHARS_CAP, Math.round(targetTokens * 5.5)),
   );
   const summaryRaw = toTrimmedString(parsed.summary);
   const summary = summaryRaw
@@ -1717,10 +1821,30 @@ function normalizeSummaryState(
     : fallback.summary;
   return {
     summary,
-    facts: normalizeSummaryList(parsed.facts, 12, 180),
-    goals: normalizeSummaryList(parsed.goals, 10, 180),
-    openThreads: normalizeSummaryList(parsed.openThreads, 12, 220),
-    agreements: normalizeSummaryList(parsed.agreements, 10, 220),
+    facts: normalizeSummaryListOrFallback(
+      parsed.facts,
+      fallback.facts,
+      SUMMARY_FACTS_MAX_ITEMS,
+      SUMMARY_FACTS_MAX_LEN,
+    ),
+    goals: normalizeSummaryListOrFallback(
+      parsed.goals,
+      fallback.goals,
+      SUMMARY_GOALS_MAX_ITEMS,
+      SUMMARY_GOALS_MAX_LEN,
+    ),
+    openThreads: normalizeSummaryListOrFallback(
+      parsed.openThreads,
+      fallback.openThreads,
+      SUMMARY_OPEN_THREADS_MAX_ITEMS,
+      SUMMARY_OPEN_THREADS_MAX_LEN,
+    ),
+    agreements: normalizeSummaryListOrFallback(
+      parsed.agreements,
+      fallback.agreements,
+      SUMMARY_AGREEMENTS_MAX_ITEMS,
+      SUMMARY_AGREEMENTS_MAX_LEN,
+    ),
   };
 }
 
@@ -1736,10 +1860,13 @@ export async function requestConversationSummaryUpdate(
       model: settings.model,
     },
   );
-  const safeTargetTokens = Math.max(600, Math.min(3000, request.targetTokens));
+  const safeTargetTokens = Math.max(
+    SUMMARY_TARGET_TOKENS_MIN,
+    Math.min(SUMMARY_TARGET_TOKENS_MAX, request.targetTokens),
+  );
   const responseMaxOutputTokens = Math.max(
-    700,
-    Math.min(5000, Math.round(safeTargetTokens * 1.2)),
+    900,
+    Math.min(SUMMARY_RESPONSE_MAX_OUTPUT_TOKENS, Math.round(safeTargetTokens * 1.2)),
   );
   const transcript = request.transcript
     .map((message) => ({
@@ -1747,7 +1874,7 @@ export async function requestConversationSummaryUpdate(
       content: message.content.trim(),
     }))
     .filter((message) => message.content.length > 0)
-    .slice(0, 80);
+    .slice(0, SUMMARY_TRANSCRIPT_MAX_MESSAGES);
   if (transcript.length === 0) {
     return request.existing;
   }
@@ -1756,12 +1883,22 @@ export async function requestConversationSummaryUpdate(
     "Верни ТОЛЬКО JSON-объект без markdown и пояснений.",
     'Формат: {"summary":"...","facts":["..."],"goals":["..."],"openThreads":["..."],"agreements":["..."]}',
     "Пиши на русском языке, фактически и нейтрально.",
+    "Работай ИНКРЕМЕНТАЛЬНО: аккуратно обновляй текущее состояние, а не переписывай с нуля.",
+    "Сначала учти existing summary и только затем добавляй/правь по новым сообщениям.",
     "summary — связная выжимка прошлого контекста, без художественных добавлений.",
+    "В summary обязательно сохраняй динамику отношений персона <-> пользователь: доверие, тон, границы, устойчивые паттерны общения.",
+    "Если важная часть истории отношений уже была в existing и не опровергнута, НЕ удаляй ее.",
     "facts — устойчивые факты о пользователе/контексте (без одноразовых команд).",
+    "facts должны быть атомарными и проверяемыми; при конфликте заменяй старый факт новым явным фактом.",
     "goals — цели и намерения пользователя, если они явно есть.",
+    "goals переноси из existing, пока цель не выполнена/не отменена явно.",
     "openThreads — незавершенные темы/вопросы/задачи.",
+    "openThreads должны сохранять незакрытые линии из existing; удаляй пункт только если он явно закрыт.",
     "agreements — явные договоренности и решения.",
+    "agreements сохраняют устойчивые договоренности (стиль общения, правила, обещания, ограничения); не теряй их без явной отмены.",
+    "Если openThreads закрыт через решение, перенеси итог в agreements.",
     "Не дублируй один и тот же пункт разными формулировками.",
+    "Не выдумывай факты и не добавляй то, чего нет в existing или новых сообщениях.",
     "Если данных для списка нет — верни пустой массив.",
     `Ограничь общий объем summary примерно до ${safeTargetTokens} токенов или меньше.`,
   ].join("\n");

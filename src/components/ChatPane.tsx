@@ -409,6 +409,20 @@ export function ChatPane({
   const previewEnhancePromptDefaults = previewTarget
     ? resolveSharedEnhancePromptDefaults(activePersona, previewResolvedMeta)
     : undefined;
+  const latestMessage = messages[messages.length - 1] ?? null;
+  const hasPendingAssistantMedia = messages.some(
+    (message) => message.role === "assistant" && message.imageGenerationPending,
+  );
+  const mediaInProgress = hasPendingAssistantMedia || imageActionBusy;
+  const textInProgress =
+    !mediaInProgress && isLoading && latestMessage?.role === "user";
+  const activityLabel = activePersona
+    ? mediaInProgress
+      ? `${activePersona.name} загружает медиа...`
+      : textInProgress
+        ? `${activePersona.name} печатает...`
+        : ""
+    : "";
   const renderedMessages = useMemo(
     () =>
       messages.map((msg) => {
@@ -795,6 +809,23 @@ export function ChatPane({
         onScroll={onMessagesScroll}
       >
         {renderedMessages}
+        {activityLabel ? (
+          <article className="chat-activity-indicator" aria-live="polite">
+            <span className="chat-activity-avatar" aria-hidden="true">
+              {activePersonaAvatarSrc ? (
+                <img src={activePersonaAvatarSrc} alt="" loading="lazy" />
+              ) : (
+                <span>
+                  {(activePersona?.name || "?")
+                    .trim()
+                    .charAt(0)
+                    .toUpperCase()}
+                </span>
+              )}
+            </span>
+            <span className="chat-activity-text">{activityLabel}</span>
+          </article>
+        ) : null}
         {messages.length === 0 ? (
           <p className="empty-state">
             Начните диалог: отправьте первое сообщение.

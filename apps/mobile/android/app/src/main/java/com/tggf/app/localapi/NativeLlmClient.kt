@@ -10,6 +10,8 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -136,6 +138,18 @@ object NativeLlmClient {
     private const val CONNECT_TIMEOUT_MS = 12_000
     private const val READ_TIMEOUT_MS = 60_000
     private const val MAX_RETRIES = 3
+    private const val SUMMARY_TARGET_TOKENS_MIN = 600
+    private const val SUMMARY_TARGET_TOKENS_MAX = 16000
+    private const val SUMMARY_RESPONSE_MAX_OUTPUT_TOKENS = 16000
+    private const val SUMMARY_MAX_CHARS_CAP = 96_000
+    private const val SUMMARY_FACTS_MAX_ITEMS = 24
+    private const val SUMMARY_FACTS_MAX_LEN = 320
+    private const val SUMMARY_GOALS_MAX_ITEMS = 18
+    private const val SUMMARY_GOALS_MAX_LEN = 320
+    private const val SUMMARY_OPEN_THREADS_MAX_ITEMS = 24
+    private const val SUMMARY_OPEN_THREADS_MAX_LEN = 420
+    private const val SUMMARY_AGREEMENTS_MAX_ITEMS = 20
+    private const val SUMMARY_AGREEMENTS_MAX_LEN = 420
 
     private data class OrchestratorParticipantProfile(
         val personaId: String,
@@ -217,6 +231,8 @@ object NativeLlmClient {
 
         val response =
             requestChatCompletionsWithRetry(
+                provider = provider,
+                openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
                 baseUrl = baseUrl,
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
@@ -367,6 +383,8 @@ object NativeLlmClient {
 
         val response =
             requestChatCompletionsWithRetry(
+                provider = provider,
+                openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
                 baseUrl = baseUrl,
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
@@ -447,6 +465,8 @@ object NativeLlmClient {
 
         val response =
             requestChatCompletionsWithRetry(
+                provider = provider,
+                openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
                 baseUrl = baseUrl,
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
@@ -540,20 +560,31 @@ object NativeLlmClient {
         val model = settings.optString("model", "").trim()
         if (model.isBlank()) return null
 
-        val safeTargetTokens = targetTokens.coerceIn(600, 3000)
-        val responseMaxTokens = ((safeTargetTokens * 1.2).roundToInt()).coerceIn(700, 5000)
+        val safeTargetTokens = targetTokens.coerceIn(SUMMARY_TARGET_TOKENS_MIN, SUMMARY_TARGET_TOKENS_MAX)
+        val responseMaxTokens =
+            ((safeTargetTokens * 1.2).roundToInt()).coerceIn(900, SUMMARY_RESPONSE_MAX_OUTPUT_TOKENS)
         val systemPrompt =
             listOf(
                 "Ты компонент суммаризации 1:1 чата между пользователем и персоной.",
                 "Верни ТОЛЬКО JSON-объект без markdown и пояснений.",
                 "Формат: {\"summary\":\"...\",\"facts\":[\"...\"],\"goals\":[\"...\"],\"openThreads\":[\"...\"],\"agreements\":[\"...\"]}",
                 "Пиши на русском языке, фактически и нейтрально.",
+                "Работай ИНКРЕМЕНТАЛЬНО: аккуратно обновляй текущее состояние, а не переписывай с нуля.",
+                "Сначала учти existing summary и только затем добавляй/правь по новым сообщениям.",
                 "summary — связная выжимка прошлого контекста, без художественных добавлений.",
+                "В summary обязательно сохраняй динамику отношений персона <-> пользователь: доверие, тон, границы, устойчивые паттерны общения.",
+                "Если важная часть истории отношений уже была в existing и не опровергнута, НЕ удаляй ее.",
                 "facts — устойчивые факты о пользователе/контексте (без одноразовых команд).",
+                "facts должны быть атомарными и проверяемыми; при конфликте заменяй старый факт новым явным фактом.",
                 "goals — цели и намерения пользователя, если они явно есть.",
+                "goals переноси из existing, пока цель не выполнена/не отменена явно.",
                 "openThreads — незавершенные темы/вопросы/задачи.",
+                "openThreads должны сохранять незакрытые линии из existing; удаляй пункт только если он явно закрыт.",
                 "agreements — явные договоренности и решения.",
+                "agreements сохраняют устойчивые договоренности (стиль общения, правила, обещания, ограничения); не теряй их без явной отмены.",
+                "Если openThreads закрыт через решение, перенеси итог в agreements.",
                 "Не дублируй один и тот же пункт разными формулировками.",
+                "Не выдумывай факты и не добавляй то, чего нет в existing или новых сообщениях.",
                 "Если данных для списка нет — верни пустой массив.",
                 "Ограничь общий объем summary примерно до $safeTargetTokens токенов или меньше.",
             ).joinToString("\n")
@@ -583,6 +614,8 @@ object NativeLlmClient {
         return try {
             val response =
                 requestChatCompletionsWithRetry(
+                    provider = provider,
+                    openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
                     baseUrl = baseUrl,
                     model = model,
                     auth = resolveProviderAuth(settings, provider),
@@ -595,7 +628,7 @@ object NativeLlmClient {
                 )
             val parsed = parseJsonObjectLoose(response.content)
             if (parsed.length() == 0) return existing
-            val maxSummaryChars = (safeTargetTokens * 5.5).roundToInt().coerceIn(800, 12_000)
+            val maxSummaryChars = (safeTargetTokens * 5.5).roundToInt().coerceIn(800, SUMMARY_MAX_CHARS_CAP)
             val summaryRaw =
                 readFirstNonBlankEntry(parsed, "summary")?.value?.trim().orEmpty()
             val summary =
@@ -606,10 +639,38 @@ object NativeLlmClient {
                 }
             NativeConversationSummaryState(
                 summary = summary,
-                facts = normalizeSummaryListFromAny(parsed.opt("facts"), maxItems = 12, maxLen = 180),
-                goals = normalizeSummaryListFromAny(parsed.opt("goals"), maxItems = 10, maxLen = 180),
-                openThreads = normalizeSummaryListFromAny(parsed.opt("openThreads"), maxItems = 12, maxLen = 220),
-                agreements = normalizeSummaryListFromAny(parsed.opt("agreements"), maxItems = 10, maxLen = 220),
+                facts =
+                    normalizeSummaryListWithFallback(
+                        root = parsed,
+                        key = "facts",
+                        fallback = existing.facts,
+                        maxItems = SUMMARY_FACTS_MAX_ITEMS,
+                        maxLen = SUMMARY_FACTS_MAX_LEN,
+                    ),
+                goals =
+                    normalizeSummaryListWithFallback(
+                        root = parsed,
+                        key = "goals",
+                        fallback = existing.goals,
+                        maxItems = SUMMARY_GOALS_MAX_ITEMS,
+                        maxLen = SUMMARY_GOALS_MAX_LEN,
+                    ),
+                openThreads =
+                    normalizeSummaryListWithFallback(
+                        root = parsed,
+                        key = "openThreads",
+                        fallback = existing.openThreads,
+                        maxItems = SUMMARY_OPEN_THREADS_MAX_ITEMS,
+                        maxLen = SUMMARY_OPEN_THREADS_MAX_LEN,
+                    ),
+                agreements =
+                    normalizeSummaryListWithFallback(
+                        root = parsed,
+                        key = "agreements",
+                        fallback = existing.agreements,
+                        maxItems = SUMMARY_AGREEMENTS_MAX_ITEMS,
+                        maxLen = SUMMARY_AGREEMENTS_MAX_LEN,
+                    ),
             )
         } catch (_: Exception) {
             existing
@@ -703,6 +764,8 @@ object NativeLlmClient {
                 }
             val response =
                 requestChatCompletionsWithRetry(
+                    provider = provider,
+                    openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
                     baseUrl = baseUrl,
                     model = model,
                     auth = auth,
@@ -797,6 +860,8 @@ object NativeLlmClient {
 
         val response =
             requestChatCompletionsWithRetry(
+                provider = provider,
+                openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
                 baseUrl = baseUrl,
                 model = model,
                 auth = auth,
@@ -1965,6 +2030,22 @@ object NativeLlmClient {
         }
     }
 
+    private fun resolveDayPeriodByHour(hour: Int): String {
+        return when {
+            hour in 5..11 -> "утро"
+            hour in 12..16 -> "день"
+            hour in 17..22 -> "вечер"
+            else -> "ночь"
+        }
+    }
+
+    private fun formatCurrentUserLocalTimeContext(now: ZonedDateTime = ZonedDateTime.now()): String {
+        val zoneId = now.zone.id.trim().ifEmpty { "unknown_timezone" }
+        val dayPeriod = resolveDayPeriodByHour(now.hour)
+        val formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'XXX"))
+        return "Текущее локальное время пользователя: $formatted ($zoneId, $dayPeriod)."
+    }
+
     private fun buildOneToOneSystemPrompt(
         settings: JSONObject,
         persona: JSONObject,
@@ -2133,8 +2214,14 @@ object NativeLlmClient {
             personaSelfGenderRule(persona),
             "Имя пользователя: ${settings.optString("userName", "").trim()}.",
             "Пол пользователя: ${userGenderLabel(settings.optString("userGender", "").trim())}.",
+            formatCurrentUserLocalTimeContext(),
             "Учитывай имя пользователя в обращении и персонализации ответа.",
             "Учитывай пол пользователя в обращении и согласовании форм.",
+            "По умолчанию считай, что локальное время персонажа совпадает с локальным временем пользователя.",
+            "Исключение: если в контексте явно задано, что персона в другом мире/стране/часовом поясе, разрешено использовать иное локальное время персонажа.",
+            "Используй время пользователя не только в приветствиях, но и в содержании ответа: чем персона занята сейчас, что уместно делать в этот момент, какие планы логичны далее по времени.",
+            "Если описываешь фото/селфи 'сейчас', сцена и условия должны быть согласованы с текущим временем суток пользователя (свет, обстановка, активность).",
+            "Не смешивай временные рамки: если используешь иной часовой пояс персонажа по исключению, проговори это явно и оставайся консистентной.",
             "Не показывай persona_control пользователю как часть обычного текста.",
             "Формат ответа: верни строго JSON без markdown.",
             "Ключ основной реплики: visible_text (или visibleText).",
@@ -2188,8 +2275,8 @@ object NativeLlmClient {
         items: List<String>,
         label: String,
         emptyLabel: String = "none",
-        maxItems: Int = 8,
-        maxLen: Int = 220,
+        maxItems: Int = 16,
+        maxLen: Int = 320,
     ): String {
         if (items.isEmpty()) return "$label: $emptyLabel"
         val cleaned =
@@ -2337,6 +2424,17 @@ object NativeLlmClient {
                 }
             }
             .take(maxItems)
+    }
+
+    private fun normalizeSummaryListWithFallback(
+        root: JSONObject,
+        key: String,
+        fallback: List<String>,
+        maxItems: Int,
+        maxLen: Int,
+    ): List<String> {
+        if (!root.has(key)) return fallback
+        return normalizeSummaryListFromAny(root.opt(key), maxItems = maxItems, maxLen = maxLen)
     }
 
     private fun parseIsoToMillisOrNull(raw: String): Long? {
@@ -3097,6 +3195,8 @@ object NativeLlmClient {
         if (model.isBlank()) return null
         val response =
             requestChatCompletionsWithRetry(
+                provider = provider,
+                openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
                 baseUrl = baseUrl,
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
@@ -3210,6 +3310,8 @@ object NativeLlmClient {
     }
 
     private fun requestChatCompletionsWithRetry(
+        provider: String,
+        openRouterProviderRouting: JSONObject?,
         baseUrl: String,
         model: String,
         auth: JSONObject?,
@@ -3249,6 +3351,9 @@ object NativeLlmClient {
                         )
                         put("temperature", temperature)
                         put("max_tokens", maxTokens)
+                        if (provider.trim().lowercase() == "openrouter" && openRouterProviderRouting != null) {
+                            put("provider", JSONObject(openRouterProviderRouting.toString()))
+                        }
                         if (forceJsonObject) {
                             put(
                                 "response_format",
@@ -3617,6 +3722,41 @@ object NativeLlmClient {
             }
         }
         return result
+    }
+
+    private fun normalizeOpenRouterProviderFilterMode(raw: String): String {
+        return when (raw.trim().lowercase()) {
+            "only" -> "only"
+            "ignore" -> "ignore"
+            else -> "off"
+        }
+    }
+
+    private fun normalizeOpenRouterProviderSlug(raw: String): String {
+        return raw
+            .trim()
+            .lowercase()
+            .replace(Regex("[^a-z0-9/_-]+"), "")
+    }
+
+    private fun buildOpenRouterProviderRouting(settings: JSONObject): JSONObject? {
+        val mode = normalizeOpenRouterProviderFilterMode(settings.optString("openRouterProviderFilterMode", "off"))
+        if (mode == "off") return null
+        val rawList = settings.optJSONArray("openRouterProviderFilterList")
+        if (rawList == null || rawList.length() == 0) return null
+        val seen = linkedSetOf<String>()
+        for (index in 0 until rawList.length()) {
+            val value = normalizeOpenRouterProviderSlug(rawList.optString(index, ""))
+            if (value.isNotBlank()) {
+                seen.add(value)
+            }
+        }
+        if (seen.isEmpty()) return null
+        val filtered = JSONArray()
+        seen.take(64).forEach { filtered.put(it) }
+        return JSONObject().apply {
+            put(mode, filtered)
+        }
     }
 
     private fun formatAppearanceProfileInput(appearance: JSONObject?): String {

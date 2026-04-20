@@ -150,11 +150,20 @@ const id = () => crypto.randomUUID();
 const STORE_RUNTIME_STARTED_AT_MS = Date.now();
 const ABANDONED_GENERATION_GRACE_MS = 10_000;
 const RECENT_CONTEXT_MESSAGE_LIMIT = 6;
-const SUMMARY_DEFAULT_TOKEN_BUDGET = 3000;
+const SUMMARY_DEFAULT_TOKEN_BUDGET = 16000;
 const SUMMARY_MIN_TOKEN_BUDGET = 600;
-const SUMMARY_MAX_TOKEN_BUDGET = 3000;
+const SUMMARY_MAX_TOKEN_BUDGET = 16000;
 const SUMMARY_MIN_NEW_MESSAGES = 4;
 const SUMMARY_MIN_NEW_CHARS = 1200;
+const SUMMARY_FACTS_MAX_ITEMS = 24;
+const SUMMARY_FACTS_MAX_LEN = 320;
+const SUMMARY_GOALS_MAX_ITEMS = 18;
+const SUMMARY_GOALS_MAX_LEN = 320;
+const SUMMARY_OPEN_THREADS_MAX_ITEMS = 24;
+const SUMMARY_OPEN_THREADS_MAX_LEN = 420;
+const SUMMARY_AGREEMENTS_MAX_ITEMS = 20;
+const SUMMARY_AGREEMENTS_MAX_LEN = 420;
+const SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 4000;
 const randomSeed = () => {
   const values = new Uint32Array(2);
   crypto.getRandomValues(values);
@@ -364,12 +373,10 @@ function clampSummaryTokenBudget(value: number | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return SUMMARY_DEFAULT_TOKEN_BUDGET;
   }
-  const normalized = Math.max(
+  return Math.max(
     SUMMARY_MIN_TOKEN_BUDGET,
     Math.min(SUMMARY_MAX_TOKEN_BUDGET, Math.round(value)),
   );
-  // Migrate legacy low budgets (e.g. 1000) to the current default.
-  return Math.max(SUMMARY_DEFAULT_TOKEN_BUDGET, normalized);
 }
 
 function trimSummaryItems(
@@ -392,10 +399,26 @@ function trimSummaryItems(
 function buildConversationSummaryContext(chat: ChatSession | undefined) {
   if (!chat) return undefined;
   const summary = (chat.conversationSummary || "").trim();
-  const facts = trimSummaryItems(chat.summaryFacts, 12, 180);
-  const goals = trimSummaryItems(chat.summaryGoals, 10, 180);
-  const openThreads = trimSummaryItems(chat.summaryOpenThreads, 12, 220);
-  const agreements = trimSummaryItems(chat.summaryAgreements, 10, 220);
+  const facts = trimSummaryItems(
+    chat.summaryFacts,
+    SUMMARY_FACTS_MAX_ITEMS,
+    SUMMARY_FACTS_MAX_LEN,
+  );
+  const goals = trimSummaryItems(
+    chat.summaryGoals,
+    SUMMARY_GOALS_MAX_ITEMS,
+    SUMMARY_GOALS_MAX_LEN,
+  );
+  const openThreads = trimSummaryItems(
+    chat.summaryOpenThreads,
+    SUMMARY_OPEN_THREADS_MAX_ITEMS,
+    SUMMARY_OPEN_THREADS_MAX_LEN,
+  );
+  const agreements = trimSummaryItems(
+    chat.summaryAgreements,
+    SUMMARY_AGREEMENTS_MAX_ITEMS,
+    SUMMARY_AGREEMENTS_MAX_LEN,
+  );
   if (
     !summary &&
     facts.length === 0 &&
@@ -454,17 +477,35 @@ async function maybeRefreshConversationSummary(params: {
 
   const existing = {
     summary: (params.chat.conversationSummary || "").trim(),
-    facts: trimSummaryItems(params.chat.summaryFacts, 12, 180),
-    goals: trimSummaryItems(params.chat.summaryGoals, 10, 180),
-    openThreads: trimSummaryItems(params.chat.summaryOpenThreads, 12, 220),
-    agreements: trimSummaryItems(params.chat.summaryAgreements, 10, 220),
+    facts: trimSummaryItems(
+      params.chat.summaryFacts,
+      SUMMARY_FACTS_MAX_ITEMS,
+      SUMMARY_FACTS_MAX_LEN,
+    ),
+    goals: trimSummaryItems(
+      params.chat.summaryGoals,
+      SUMMARY_GOALS_MAX_ITEMS,
+      SUMMARY_GOALS_MAX_LEN,
+    ),
+    openThreads: trimSummaryItems(
+      params.chat.summaryOpenThreads,
+      SUMMARY_OPEN_THREADS_MAX_ITEMS,
+      SUMMARY_OPEN_THREADS_MAX_LEN,
+    ),
+    agreements: trimSummaryItems(
+      params.chat.summaryAgreements,
+      SUMMARY_AGREEMENTS_MAX_ITEMS,
+      SUMMARY_AGREEMENTS_MAX_LEN,
+    ),
   };
   const targetTokens = clampSummaryTokenBudget(params.chat.summaryTokenBudget);
   const transcript = pending.map((message) => ({
     role: message.role as "user" | "assistant",
     content:
-      message.content.length > 2000
-        ? `${message.content.slice(0, 1999).trimEnd()}…`
+      message.content.length > SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE
+        ? `${message.content
+            .slice(0, SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE - 1)
+            .trimEnd()}…`
         : message.content,
   }));
 

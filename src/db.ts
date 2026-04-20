@@ -24,6 +24,7 @@ import type {
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
+  OpenRouterProviderFilterMode,
   UserGender,
 } from "./types";
 
@@ -149,6 +150,11 @@ const DEFAULT_HUGGINGFACE_BASE_URL = "https://router.huggingface.co/v1";
 
 const AUTH_MODES: AuthMode[] = ["none", "bearer", "token", "basic", "custom"];
 const LLM_PROVIDERS: LlmProvider[] = ["lmstudio", "openrouter", "huggingface"];
+const OPENROUTER_PROVIDER_FILTER_MODES: OpenRouterProviderFilterMode[] = [
+  "off",
+  "only",
+  "ignore",
+];
 const ENHANCE_DETAIL_LEVELS: EnhanceDetailLevel[] = [
   "soft",
   "medium",
@@ -548,6 +554,16 @@ function normalizeAuthConfig(
   return merged;
 }
 
+function normalizeOpenRouterProviderFilterList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const next = value
+    .map((item) => toTrimmedString(item).toLowerCase())
+    .filter(Boolean)
+    .map((item) => item.replace(/[^a-z0-9/_-]+/g, ""))
+    .filter(Boolean);
+  return Array.from(new Set(next)).slice(0, 64);
+}
+
 function resolveDefaultBaseUrl() {
   const fromEnv = toTrimmedString(import.meta.env.VITE_LM_BASE_URL);
   if (fromEnv) return fromEnv;
@@ -620,6 +636,14 @@ function normalizeSettings(
   merged.openRouterBaseUrl =
     toTrimmedString(merged.openRouterBaseUrl) ||
     DEFAULT_SETTINGS.openRouterBaseUrl;
+  merged.openRouterProviderFilterMode = OPENROUTER_PROVIDER_FILTER_MODES.includes(
+    merged.openRouterProviderFilterMode,
+  )
+    ? merged.openRouterProviderFilterMode
+    : DEFAULT_SETTINGS.openRouterProviderFilterMode;
+  merged.openRouterProviderFilterList = normalizeOpenRouterProviderFilterList(
+    merged.openRouterProviderFilterList,
+  );
   merged.huggingFaceBaseUrl =
     toTrimmedString(merged.huggingFaceBaseUrl) ||
     DEFAULT_SETTINGS.huggingFaceBaseUrl;
@@ -893,6 +917,8 @@ function normalizeGeneratorSession(
 const DEFAULT_SETTINGS: AppSettings = {
   lmBaseUrl: resolveDefaultBaseUrl(),
   openRouterBaseUrl: DEFAULT_OPENROUTER_BASE_URL,
+  openRouterProviderFilterMode: "off",
+  openRouterProviderFilterList: [],
   huggingFaceBaseUrl: DEFAULT_HUGGINGFACE_BASE_URL,
   comfyBaseUrl: DEFAULT_COMFY_BASE_URL,
   googleDriveClientId: "",

@@ -13,6 +13,7 @@ import type {
   AuthMode,
   EndpointAuthConfig,
   LlmProvider,
+  OpenRouterProviderFilterMode,
 } from "../types";
 import type {
   ModelRoutingTask,
@@ -182,6 +183,35 @@ const LLM_PROVIDER_OPTIONS: Array<{ value: LlmProvider; label: string }> = [
   { value: "lmstudio", label: "LMStudio" },
   { value: "openrouter", label: "OpenRouter" },
   { value: "huggingface", label: "HuggingFace Router" },
+];
+const OPENROUTER_PROVIDER_FILTER_MODE_OPTIONS: Array<{
+  value: OpenRouterProviderFilterMode;
+  label: string;
+}> = [
+  { value: "off", label: "Без фильтра" },
+  { value: "ignore", label: "Исключить выбранные" },
+  { value: "only", label: "Только выбранные" },
+];
+const OPENROUTER_PROVIDER_SLUG_OPTIONS: Array<{
+  value: string;
+  label: string;
+}> = [
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "google-ai-studio", label: "Google AI Studio" },
+  { value: "google-vertex", label: "Google Vertex" },
+  { value: "azure", label: "Azure" },
+  { value: "cohere", label: "Cohere" },
+  { value: "meta", label: "Meta" },
+  { value: "mistral", label: "Mistral" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "deepinfra", label: "DeepInfra" },
+  { value: "together", label: "Together" },
+  { value: "groq", label: "Groq" },
+  { value: "fireworks", label: "Fireworks" },
+  { value: "novita", label: "Novita" },
+  { value: "x-ai", label: "xAI" },
+  { value: "perplexity", label: "Perplexity" },
 ];
 const DETAILING_LEVEL_OPTIONS: Array<{
   value: AppSettings["enhanceDetailLevelAll"];
@@ -374,6 +404,13 @@ function truncateString(value: string, maxChars: number) {
   if (value.length <= maxChars) return value;
   const omitted = value.length - maxChars;
   return `${value.slice(0, maxChars)}\n... [truncated ${omitted} chars]`;
+}
+
+function normalizeOpenRouterProviderSlug(raw: string) {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9/_-]+/g, "");
 }
 
 function sanitizeLogValue(value: unknown, depth = 0): unknown {
@@ -751,6 +788,8 @@ export function SettingsModal({
   const detectCompactLogLayout = () =>
     typeof window !== "undefined" ? window.innerWidth <= 960 : false;
   const [activeTab, setActiveTab] = useState<SettingsTab>("system");
+  const [openRouterProviderPickerValue, setOpenRouterProviderPickerValue] = useState("");
+  const [openRouterProviderCustomValue, setOpenRouterProviderCustomValue] = useState("");
   const [exportSelection, setExportSelection] = useState<BackupExportSelection>({
     includeSettings: true,
     includePersonas: true,
@@ -1036,6 +1075,8 @@ export function SettingsModal({
       setActiveLogDetailTab("status");
       setNativeRuntimeEventsError(null);
       setCopyLogsFeedback("");
+      setOpenRouterProviderPickerValue("");
+      setOpenRouterProviderCustomValue("");
       setLogMobilePane(detectCompactLogLayout() ? "list" : "detail");
     }
   }, [open, exportableChats]);
@@ -1081,6 +1122,66 @@ export function SettingsModal({
         Boolean(exportSelection[key]),
       ),
     [exportSelection],
+  );
+  const openRouterProviderFilterList = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (settingsDraft.openRouterProviderFilterList ?? [])
+            .map((value) => normalizeOpenRouterProviderSlug(value))
+            .filter(Boolean),
+        ),
+      ).slice(0, 64),
+    [settingsDraft.openRouterProviderFilterList],
+  );
+  const openRouterProviderPickerOptions = useMemo(() => {
+    const selected = new Set(openRouterProviderFilterList);
+    return OPENROUTER_PROVIDER_SLUG_OPTIONS.filter(
+      (option) => !selected.has(option.value),
+    ).map((option) => ({
+      ...option,
+      description: option.value,
+    }));
+  }, [openRouterProviderFilterList]);
+
+  const addOpenRouterProviderSlug = useCallback(
+    (rawValue: string) => {
+      const normalized = normalizeOpenRouterProviderSlug(rawValue);
+      if (!normalized) return;
+      setSettingsDraft((prev) => {
+        const existing = Array.isArray(prev.openRouterProviderFilterList)
+          ? prev.openRouterProviderFilterList
+          : [];
+        const nextList = Array.from(
+          new Set(
+            [...existing, normalized]
+              .map((value) => normalizeOpenRouterProviderSlug(value))
+              .filter(Boolean),
+          ),
+        ).slice(0, 64);
+        return {
+          ...prev,
+          openRouterProviderFilterList: nextList,
+        };
+      });
+      setOpenRouterProviderPickerValue("");
+      setOpenRouterProviderCustomValue("");
+    },
+    [setSettingsDraft],
+  );
+
+  const removeOpenRouterProviderSlug = useCallback(
+    (slug: string) => {
+      const normalized = normalizeOpenRouterProviderSlug(slug);
+      if (!normalized) return;
+      setSettingsDraft((prev) => ({
+        ...prev,
+        openRouterProviderFilterList: (prev.openRouterProviderFilterList ?? [])
+          .map((value) => normalizeOpenRouterProviderSlug(value))
+          .filter((value) => value && value !== normalized),
+      }));
+    },
+    [setSettingsDraft],
   );
 
   const getProviderModelOptions = (
@@ -1519,6 +1620,102 @@ export function SettingsModal({
                 >
                   Для каждой роли можно назначить свой провайдер и модель.
                 </small>
+              </div>
+              <div className="persona-section">
+                <h5>OpenRouter: фильтр провайдеров</h5>
+                <label>
+                  Режим фильтра
+                  <Dropdown
+                    value={settingsDraft.openRouterProviderFilterMode}
+                    options={OPENROUTER_PROVIDER_FILTER_MODE_OPTIONS}
+                    onChange={(nextMode) =>
+                      setSettingsDraft((prev) => ({
+                        ...prev,
+                        openRouterProviderFilterMode:
+                          nextMode as OpenRouterProviderFilterMode,
+                      }))
+                    }
+                  />
+                </label>
+                <small style={{ color: "var(--text-secondary)" }}>
+                  Используются slugs OpenRouter (например: `google-vertex`,
+                  `deepinfra/turbo`). Базовый slug отключает все его варианты и регионы.
+                </small>
+                {settingsDraft.openRouterProviderFilterMode !== "off" ? (
+                  <>
+                    <div className="openrouter-provider-filter-picker">
+                      <label>
+                        Добавить из популярных
+                        <Dropdown
+                          value={openRouterProviderPickerValue}
+                          options={
+                            openRouterProviderPickerOptions.length > 0
+                              ? openRouterProviderPickerOptions
+                              : [{ value: "", label: "Все популярные уже добавлены" }]
+                          }
+                          onChange={(nextSlug) => {
+                            setOpenRouterProviderPickerValue(nextSlug);
+                            if (nextSlug) addOpenRouterProviderSlug(nextSlug);
+                          }}
+                          placeholder="Выберите провайдера"
+                          disabled={openRouterProviderPickerOptions.length === 0}
+                          portal
+                        />
+                      </label>
+                    </div>
+                    <div className="openrouter-provider-filter-custom">
+                      <label>
+                        Добавить custom slug
+                        <input
+                          value={openRouterProviderCustomValue}
+                          onChange={(event) =>
+                            setOpenRouterProviderCustomValue(event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter") return;
+                            event.preventDefault();
+                            addOpenRouterProviderSlug(openRouterProviderCustomValue);
+                          }}
+                          placeholder="например: google-vertex/us-east5"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          addOpenRouterProviderSlug(openRouterProviderCustomValue)
+                        }
+                        disabled={!openRouterProviderCustomValue.trim()}
+                      >
+                        Добавить
+                      </button>
+                    </div>
+                    <div
+                      className="openrouter-provider-chip-list"
+                      aria-label="Провайдеры фильтра OpenRouter"
+                    >
+                      {openRouterProviderFilterList.map((slug) => (
+                        <span key={slug} className="openrouter-provider-chip">
+                          <span className="openrouter-provider-chip-meta">
+                            <strong>{slug}</strong>
+                          </span>
+                          <button
+                            type="button"
+                            className="icon-btn mini"
+                            onClick={() => removeOpenRouterProviderSlug(slug)}
+                            title="Удалить провайдера"
+                          >
+                            <X size={12} />
+                          </button>
+                        </span>
+                      ))}
+                      {openRouterProviderFilterList.length === 0 ? (
+                        <small style={{ color: "var(--text-secondary)" }}>
+                          Добавьте хотя бы один slug провайдера.
+                        </small>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
               </div>
               {renderRoleMatrixRow({
                 title: "1:1 чат",

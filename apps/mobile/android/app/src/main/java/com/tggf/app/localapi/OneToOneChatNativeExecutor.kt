@@ -18,9 +18,12 @@ object OneToOneChatNativeExecutor {
     private const val ONE_TO_ONE_CHAT_DEFAULT_MAX_ATTEMPTS = 3
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
     private const val RECENT_CONTEXT_MESSAGE_LIMIT = 6
-    private const val SUMMARY_DEFAULT_TOKEN_BUDGET = 3000
+    private const val SUMMARY_DEFAULT_TOKEN_BUDGET = 16000
+    private const val SUMMARY_MIN_TOKEN_BUDGET = 600
+    private const val SUMMARY_MAX_TOKEN_BUDGET = 16000
     private const val SUMMARY_MIN_NEW_MESSAGES = 4
     private const val SUMMARY_MIN_NEW_CHARS = 1200
+    private const val SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 4000
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -1033,13 +1036,15 @@ object OneToOneChatNativeExecutor {
             pending.map { message ->
                 val role = message.optString("role", "user").trim().lowercase()
                 val content = message.optString("content", "").trim()
-                Pair(if (role == "assistant") "assistant" else "user", content.take(2000))
+                Pair(
+                    if (role == "assistant") "assistant" else "user",
+                    content.take(SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE),
+                )
             }.filter { pair -> pair.second.isNotBlank() }
         if (transcript.isEmpty()) return
         val targetTokens =
             chat.optInt("summaryTokenBudget", SUMMARY_DEFAULT_TOKEN_BUDGET)
-                .coerceIn(600, 3000)
-                .coerceAtLeast(SUMMARY_DEFAULT_TOKEN_BUDGET)
+                .coerceIn(SUMMARY_MIN_TOKEN_BUDGET, SUMMARY_MAX_TOKEN_BUDGET)
         val next =
             NativeLlmClient.requestOneToOneSummaryUpdate(
                 settings = settings,
