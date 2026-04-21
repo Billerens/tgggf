@@ -1846,6 +1846,36 @@ class LocalApiBridgePlugin : Plugin() {
             return
         }
 
+        if (method == "PUT" && path == "/api/background-runtime/diary/preview") {
+            val body = call.getObject("body")
+            val chatId = body?.optString("chatId", "")?.trim().orEmpty()
+            if (chatId.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "chatId is required")
+                    },
+                )
+                return
+            }
+            val entry =
+                OneToOneChatNativeExecutor.generateDiaryPreviewEntry(
+                    repository = repository,
+                    chatId = chatId,
+                )
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("entry", entry)
+                },
+            )
+            return
+        }
+
         if (method == "PUT" && path == "/api/background-runtime/context") {
             val body = call.getObject("body")
             if (body == null) {

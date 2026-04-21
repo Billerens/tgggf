@@ -1,4 +1,4 @@
-import type { DiaryTag } from "./types";
+import type { DiaryTag, DiaryTagPrefix } from "./types";
 
 export const DIARY_IDLE_MS = 10 * 60 * 1000;
 export const DIARY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
@@ -7,7 +7,7 @@ export const DIARY_MIN_MESSAGE_COUNT = 4;
 export const DIARY_MIN_CHAR_COUNT = 240;
 const DIARY_MAX_TAGS = 64;
 
-const ALLOWED_TAG_PREFIXES = new Set([
+export const DIARY_TAG_PREFIXES: readonly DiaryTagPrefix[] = [
   "date",
   "topic",
   "event",
@@ -16,7 +16,46 @@ const ALLOWED_TAG_PREFIXES = new Set([
   "emotion",
   "decision",
   "followup",
+];
+const ALLOWED_TAG_PREFIXES = new Set<string>(DIARY_TAG_PREFIXES);
+const DIARY_DETAIL_REQUIRED_PREFIXES = new Set([
+  "topic",
+  "event",
+  "emotion",
+  "decision",
+  "followup",
 ]);
+const DIARY_GENERIC_TAG_SUFFIXES = new Set([
+  "отношения",
+  "разговор",
+  "общение",
+  "чувства",
+  "эмоции",
+  "мысли",
+  "доверие",
+  "близость",
+  "нежность",
+  "уязвимость",
+  "флирт",
+  "любовь",
+  "жизнь",
+  "событие",
+  "вопрос",
+  "решение",
+  "тема",
+  "будущее",
+  "conversation",
+  "relationship",
+  "emotion",
+  "feelings",
+  "trust",
+  "thoughts",
+  "topic",
+  "event",
+  "decision",
+  "followup",
+]);
+const DIARY_MAX_RETRIEVAL_TAGS = 24;
 
 export interface DiaryGenerationGateInput {
   enabled: boolean;
@@ -92,6 +131,45 @@ export function normalizeDiaryTags(input: unknown, maxItems = DIARY_MAX_TAGS): D
     if (result.length >= maxItems) break;
   }
   return result;
+}
+
+function normalizeTagSuffixForSpecificity(suffix: string) {
+  return suffix
+    .toLowerCase()
+    .replace(/[.,!?;:()[\]{}"'`]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function refineDiaryTagsForRetrieval(
+  tags: DiaryTag[],
+  maxItems = DIARY_MAX_RETRIEVAL_TAGS,
+): DiaryTag[] {
+  const kept: DiaryTag[] = [];
+  const seen = new Set<string>();
+  for (const tag of tags) {
+    const separator = tag.indexOf(":");
+    if (separator <= 0 || separator >= tag.length - 1) continue;
+    const prefix = tag.slice(0, separator).toLowerCase();
+    const suffix = tag.slice(separator + 1).trim();
+    const normalizedSuffix = normalizeTagSuffixForSpecificity(suffix);
+    if (!normalizedSuffix) continue;
+    if (prefix !== "date" && DIARY_GENERIC_TAG_SUFFIXES.has(normalizedSuffix)) continue;
+    if (prefix !== "date" && normalizedSuffix.length < 4) continue;
+
+    if (DIARY_DETAIL_REQUIRED_PREFIXES.has(prefix)) {
+      const tokenCount = normalizedSuffix.split(" ").filter(Boolean).length;
+      const hasDigits = /\d/.test(normalizedSuffix);
+      if (tokenCount < 2 && !hasDigits) continue;
+    }
+
+    const normalizedTag = `${prefix}:${suffix}` as DiaryTag;
+    if (seen.has(normalizedTag)) continue;
+    seen.add(normalizedTag);
+    kept.push(normalizedTag);
+    if (kept.length >= maxItems) break;
+  }
+  return kept;
 }
 
 export function toDiarySnippet(markdown: string, maxChars = 220) {

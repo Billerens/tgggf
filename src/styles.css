@@ -1890,6 +1890,8 @@ button.danger:hover:not(:disabled) {
   flex-direction: column;
   gap: 10px;
   min-height: 220px;
+  min-width: 0;
+  overflow: hidden;
 }
 .diary-entry-head {
   display: flex;
@@ -1913,6 +1915,10 @@ button.danger:hover:not(:disabled) {
   color: var(--text-primary);
   padding: 4px 9px;
   font-size: 11px;
+  line-height: 1.3;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .diary-tag-editor {
   display: flex;
@@ -1930,21 +1936,32 @@ button.danger:hover:not(:disabled) {
   padding: 12px;
   display: grid;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  max-height: 54vh;
+  overflow: auto;
 }
 .diary-markdown-renderer h2,
 .diary-markdown-renderer h3,
 .diary-markdown-renderer h4 {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 .diary-markdown-renderer p {
   margin: 0;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .diary-markdown-renderer ul {
   margin: 0;
   padding-left: 18px;
   display: grid;
   gap: 4px;
+}
+.diary-markdown-renderer li {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 @media (max-width: 900px) {
   .diary-layout {

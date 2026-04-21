@@ -693,6 +693,7 @@ object NativeLlmClient {
     fun requestOneToOneDiaryEntry(
         settings: JSONObject,
         persona: JSONObject,
+        chatTitle: String,
         existing: NativeConversationSummaryState,
         transcript: List<NativeSummaryTranscriptEntry>,
     ): NativeOneToOneDiaryDraft? {
@@ -702,15 +703,25 @@ object NativeLlmClient {
         val model = settings.optString("model", "").trim()
         if (model.isBlank()) return null
 
+        // Keep in sync with src/lmstudio.ts::requestOneToOneDiaryEntry.
         val systemPrompt =
             listOf(
                 "Ты модуль дневника персоны для 1:1 чата.",
-                "Верни только JSON без markdown-блоков вокруг JSON.",
-                "Формат: {\"shouldWrite\":true|false,\"markdown\":\"...\",\"tags\":[\"prefix:value\", ...]}",
-                "Если писать нечего, верни shouldWrite=false и пустой markdown.",
-                "Если писать стоит — markdown от первого лица, структурированный по темам (заголовки/списки).",
-                "Пиши по-русски, конкретно и фактически по событиям.",
-                "Теги только конкретные: date, topic, event, person, place, emotion, decision, followup.",
+                "Твоя задача: решить, стоит ли сейчас писать запись в дневник.",
+                "Если писать нечего (нет новых заметных эмоций/впечатлений/событий), верни shouldWrite=false.",
+                "Если писать стоит, верни shouldWrite=true и markdown в формате .md от первого лица.",
+                "Стиль: живая личная заметка, разговорный и эмоциональный язык, без официоза и канцелярита.",
+                "Пиши 2-5 коротких абзацев.",
+                "Не используй заголовки и маркированные списки, если это не абсолютно необходимо.",
+                "Не повторяй слово в слово предыдущие формулировки summary.",
+                "Пиши на русском языке.",
+                "Теги должны быть максимально конкретными и узкими, в формате prefix:value.",
+                "Верни 8-14 тегов (можно больше, но только если они действительно конкретные).",
+                "Избегай широких и абстрактных тегов вроде topic:отношения, emotion:чувства, decision:доверие.",
+                "Хорошие теги отражают детали: имена, точные темы, микро-события, явные follow-up шаги.",
+                "Допустимые prefix: ${DiaryTagSpec.PREFIXES_TEXT}.",
+                "Возвращай только JSON.",
+                "Формат: {\"shouldWrite\":true|false,\"markdown\":\"...\",\"tags\":[\"topic:...\",\"emotion:...\"]}",
                 "Не выдумывай факты, которых нет в контексте.",
             ).joinToString("\n")
 
@@ -726,13 +737,15 @@ object NativeLlmClient {
         val userPrompt =
             buildString {
                 appendLine("Персона: ${persona.optString("name", "Персона").trim().ifEmpty { "Персона" }}")
-                appendLine("Контекст summary:")
+                appendLine("Чат: ${chatTitle.trim().ifEmpty { "Без названия" }}")
+                appendLine()
+                appendLine("Текущее summary чата:")
                 appendLine(existingJson)
                 appendLine()
-                appendLine("Новые сообщения:")
+                appendLine("Новые сообщения (последние релевантные):")
                 transcript.forEach { entry ->
                     val roleLabel = if (entry.role == "assistant") "Персона" else "Пользователь"
-                    val createdAt = entry.createdAt?.trim().orEmpty().ifBlank { "unknown" }
+                    val createdAt = formatMessageContextTime(entry.createdAt)
                     appendLine("$roleLabel [time=$createdAt]: ${entry.content.trim()}")
                 }
             }.trim()
@@ -2552,6 +2565,25 @@ object NativeLlmClient {
             Instant.parse(raw).toEpochMilli()
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun formatMessageContextTime(value: String?): String {
+        val raw = value?.trim().orEmpty()
+        if (raw.isBlank()) return "unknown"
+        val parsedMs = parseIsoToMillisOrNull(raw) ?: return raw
+        return try {
+            val instant = Instant.ofEpochMilli(parsedMs)
+            val zoned = instant.atZone(java.time.ZoneId.systemDefault())
+            val year = zoned.year
+            val month = zoned.monthValue.toString().padStart(2, '0')
+            val day = zoned.dayOfMonth.toString().padStart(2, '0')
+            val hours = zoned.hour.toString().padStart(2, '0')
+            val minutes = zoned.minute.toString().padStart(2, '0')
+            val seconds = zoned.second.toString().padStart(2, '0')
+            "$year-$month-$day $hours:$minutes:$seconds"
+        } catch (_: Exception) {
+            raw
         }
     }
 

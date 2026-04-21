@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { evaluateDiaryGenerationGate, normalizeDiaryTags } from "./diary";
+import {
+  evaluateDiaryGenerationGate,
+  normalizeDiaryTags,
+  refineDiaryTagsForRetrieval,
+} from "./diary";
 
 describe("diary gate", () => {
   it("blocks when feature disabled", () => {
@@ -61,6 +65,30 @@ describe("normalizeDiaryTags", () => {
       "topic:conflict about vacation",
       "emotion:frustrated",
       "date:2026-04-20",
+    ]);
+  });
+});
+
+describe("refineDiaryTagsForRetrieval", () => {
+  it("drops generic abstract tags and keeps concrete ones", () => {
+    const tags = refineDiaryTagsForRetrieval(
+      normalizeDiaryTags([
+        "date:2026-04-21",
+        "topic:отношения",
+        "emotion:уязвимость",
+        "topic:обсуждение красного платья",
+        "decision:показать фото в красном платье",
+        "person:Илья",
+        "followup:вернуться к теме встречи в пятницу",
+      ]),
+    );
+
+    expect(tags).toEqual([
+      "date:2026-04-21",
+      "topic:обсуждение красного платья",
+      "decision:показать фото в красном платье",
+      "person:Илья",
+      "followup:вернуться к теме встречи в пятницу",
     ]);
   });
 });

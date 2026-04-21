@@ -65,7 +65,10 @@ import {
   ONE_TO_ONE_CHAT_RETRY_DELAY_MS,
 } from "./features/mobile/backgroundJobKeys";
 import { triggerBackgroundRuntime } from "./features/mobile/backgroundDelta";
-import { syncOneToOneContextToNative } from "./features/mobile/oneToOneNativeRuntime";
+import {
+  requestNativeDiaryPreview,
+  syncOneToOneContextToNative,
+} from "./features/mobile/oneToOneNativeRuntime";
 
 type PersonaInput = Omit<
   Persona,
@@ -1090,6 +1093,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.personas.find((candidate) => candidate.id === chat.personaId) ??
         (await dbApi.getPersonas()).find((candidate) => candidate.id === chat.personaId);
       if (!persona) return null;
+
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: chat.personaId,
+        });
+        return requestNativeDiaryPreview(chatId);
+      }
 
       const rawMessages =
         state.activeChatId === chatId ? state.messages : await dbApi.getMessages(chatId);

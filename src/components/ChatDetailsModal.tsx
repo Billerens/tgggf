@@ -17,6 +17,7 @@ import type {
   LookEnhanceTarget,
 } from "../ui/types";
 import { dbApi } from "../db";
+import { DIARY_TAG_PREFIXES } from "../diary";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { splitAssistantContent } from "../messageContent";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -261,16 +262,7 @@ function formatStateDelta(
   return parts.length > 0 ? parts.join(" | ") : "—";
 }
 
-const DIARY_ALLOWED_PREFIXES = new Set([
-  "date",
-  "topic",
-  "event",
-  "person",
-  "place",
-  "emotion",
-  "decision",
-  "followup",
-]);
+const DIARY_ALLOWED_PREFIXES = new Set<string>(DIARY_TAG_PREFIXES);
 
 function normalizeDiaryTagInput(value: string): DiaryTag | "" {
   const normalized = value.trim();

@@ -52,6 +52,39 @@ function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null
   return plugin;
 }
 
+export async function requestNativeDiaryPreview(
+  chatId: string,
+): Promise<DiaryEntry | null> {
+  const normalizedChatId = chatId.trim();
+  if (!normalizedChatId) return null;
+  const scope = globalThis as unknown as CapacitorLikeScope;
+  const plugin = resolveLocalApiPlugin(scope);
+  if (!plugin) return null;
+
+  const response = await plugin.request({
+    method: "PUT",
+    path: "/api/background-runtime/diary/preview",
+    body: {
+      chatId: normalizedChatId,
+    },
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`native_diary_preview_http_${response.status}`);
+  }
+  if (!isRecord(response.body)) return null;
+  const entry = response.body.entry;
+  if (!isRecord(entry)) return null;
+  if (
+    typeof entry.id !== "string" ||
+    typeof entry.chatId !== "string" ||
+    typeof entry.personaId !== "string" ||
+    typeof entry.markdown !== "string"
+  ) {
+    return null;
+  }
+  return entry as unknown as DiaryEntry;
+}
+
 function parseIdbImageAssetId(value: string | undefined | null) {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized.startsWith("idb://")) return "";
