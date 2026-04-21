@@ -852,6 +852,69 @@ export function ChatDetailsModal({
     }
   }
 
+  function renderDiaryEntryContent(
+    entry: DiaryEntry,
+    options: {
+      createdLabel: string;
+      removableTags: boolean;
+      showTagEditor: boolean;
+    },
+  ) {
+    return (
+      <>
+        <div className="diary-entry-head">
+          <p>
+            <strong>{options.createdLabel}:</strong>{" "}
+            {formatDateTime(entry.createdAt)}
+          </p>
+          <p>
+            <strong>Источник:</strong> {entry.sourceRange.messageCount} сообщ.
+          </p>
+        </div>
+        <div className="diary-entry-tags">
+          {entry.tags.map((tag) =>
+            options.removableTags ? (
+              <button
+                key={tag}
+                type="button"
+                className="diary-tag-chip"
+                onClick={() => handleRemoveDiaryTag(tag)}
+                title="Удалить тег"
+              >
+                {formatDiaryTagForDisplay(tag)} ×
+              </button>
+            ) : (
+              <span key={tag} className="diary-tag-chip">
+                {formatDiaryTagForDisplay(tag)}
+              </span>
+            ),
+          )}
+        </div>
+        {options.showTagEditor ? (
+          <div className="diary-tag-editor">
+            <input
+              type="text"
+              value={diaryTagDraft}
+              placeholder="topic:разговор о поездке"
+              onChange={(event) => setDiaryTagDraft(event.target.value)}
+            />
+            <button
+              type="button"
+              className="secondary"
+              onClick={handleAddDiaryTag}
+              disabled={!normalizeDiaryTagInput(diaryTagDraft)}
+            >
+              Добавить тег
+            </button>
+          </div>
+        ) : null}
+        <div className="diary-markdown-renderer">
+          {renderDiaryMarkdown(entry.markdown)}
+        </div>
+      </>
+    );
+  }
+
   if (!open) return null;
 
   return (
@@ -1591,25 +1654,11 @@ export function ChatDetailsModal({
 
             {testDiaryEntry ? (
               <article className="diary-entry-view">
-                <div className="diary-entry-head">
-                  <p>
-                    <strong>Тестовый результат:</strong>{" "}
-                    {formatDateTime(testDiaryEntry.createdAt)}
-                  </p>
-                  <p>
-                    <strong>Источник:</strong> {testDiaryEntry.sourceRange.messageCount} сообщ.
-                  </p>
-                </div>
-                <div className="diary-entry-tags">
-                  {testDiaryEntry.tags.map((tag) => (
-                    <span key={`test-${tag}`} className="diary-tag-chip">
-                      {formatDiaryTagForDisplay(tag)}
-                    </span>
-                  ))}
-                </div>
-                <div className="diary-markdown-renderer">
-                  {renderDiaryMarkdown(testDiaryEntry.markdown)}
-                </div>
+                {renderDiaryEntryContent(testDiaryEntry, {
+                  createdLabel: "Тестовый результат",
+                  removableTags: false,
+                  showTagEditor: false,
+                })}
               </article>
             ) : null}
 
@@ -1644,50 +1693,11 @@ export function ChatDetailsModal({
 
                 <article className="diary-entry-view">
                   {selectedDiaryEntry ? (
-                    <>
-                      <div className="diary-entry-head">
-                        <p>
-                          <strong>Создано:</strong>{" "}
-                          {formatDateTime(selectedDiaryEntry.createdAt)}
-                        </p>
-                        <p>
-                          <strong>Источник:</strong>{" "}
-                          {selectedDiaryEntry.sourceRange.messageCount} сообщ.
-                        </p>
-                      </div>
-                      <div className="diary-entry-tags">
-                        {selectedDiaryEntry.tags.map((tag) => (
-                          <button
-                            key={tag}
-                            type="button"
-                            className="diary-tag-chip"
-                            onClick={() => handleRemoveDiaryTag(tag)}
-                            title="Удалить тег"
-                          >
-                            {formatDiaryTagForDisplay(tag)} ×
-                          </button>
-                        ))}
-                      </div>
-                      <div className="diary-tag-editor">
-                        <input
-                          type="text"
-                          value={diaryTagDraft}
-                          placeholder="topic:разговор о поездке"
-                          onChange={(event) => setDiaryTagDraft(event.target.value)}
-                        />
-                        <button
-                          type="button"
-                          className="secondary"
-                          onClick={handleAddDiaryTag}
-                          disabled={!normalizeDiaryTagInput(diaryTagDraft)}
-                        >
-                          Добавить тег
-                        </button>
-                      </div>
-                      <div className="diary-markdown-renderer">
-                        {renderDiaryMarkdown(selectedDiaryEntry.markdown)}
-                      </div>
-                    </>
+                    renderDiaryEntryContent(selectedDiaryEntry, {
+                      createdLabel: "Создано",
+                      removableTags: true,
+                      showTagEditor: true,
+                    })
                   ) : (
                     <p className="empty-state">Выберите запись слева.</p>
                   )}
