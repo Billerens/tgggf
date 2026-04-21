@@ -1892,10 +1892,9 @@ button.danger:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 220px;
   min-width: 0;
   max-width: 100%;
-  overflow: visible;
+  overflow: auto;
 }
 .diary-entry-head {
   display: flex;

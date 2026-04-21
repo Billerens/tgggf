@@ -17,7 +17,7 @@ describe("waitForHealth", () => {
     const fetchImpl: typeof fetch = async () =>
       ({
         ok: true,
-      } as Response);
+      }) as Response;
 
     await expect(
       waitForHealth("http://127.0.0.1:8787/api/health", {
@@ -62,8 +62,8 @@ describe("shouldRestart", () => {
 
 describe("shouldForceElectronRunAsNode", () => {
   it("returns false for non-electron node binaries", () => {
-    expect(shouldForceElectronRunAsNode("C:/Program Files/nodejs/node.exe")).toBe(
-      false,
-    );
+    expect(
+      shouldForceElectronRunAsNode("C:/Program Files/nodejs/node.exe"),
+    ).toBe(false);
   });
 });

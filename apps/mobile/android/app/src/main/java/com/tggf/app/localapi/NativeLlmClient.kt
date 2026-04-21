@@ -3844,7 +3844,7 @@ object NativeLlmClient {
                 .replace(Regex("""[ \t]+\n"""), "\n")
                 .replace(Regex("""\n{3,}"""), "\n\n")
                 .trim()
-        return clipText(text, 950)
+        return text;
     }
 
     private fun parseStringArrayFlexible(raw: Any?): List<String> {
