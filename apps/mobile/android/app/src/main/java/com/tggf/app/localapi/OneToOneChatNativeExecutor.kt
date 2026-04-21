@@ -29,48 +29,7 @@ object OneToOneChatNativeExecutor {
     private const val DIARY_RECENT_MESSAGE_LIMIT = 30
     private const val DIARY_MIN_NEW_MESSAGES = 4
     private const val DIARY_MIN_NEW_CHARS = 240
-    private const val DIARY_MAX_TAGS = 64
-    private const val DIARY_MAX_RETRIEVAL_TAGS = 24
-
-    private val DIARY_DETAIL_REQUIRED_PREFIXES =
-        setOf(
-            "topic",
-            "event",
-            "emotion",
-            "decision",
-            "followup",
-        )
-    private val DIARY_GENERIC_TAG_SUFFIXES =
-        setOf(
-            "отношения",
-            "разговор",
-            "общение",
-            "чувства",
-            "эмоции",
-            "мысли",
-            "доверие",
-            "близость",
-            "нежность",
-            "уязвимость",
-            "флирт",
-            "любовь",
-            "жизнь",
-            "событие",
-            "вопрос",
-            "решение",
-            "тема",
-            "будущее",
-            "conversation",
-            "relationship",
-            "emotion",
-            "feelings",
-            "trust",
-            "thoughts",
-            "topic",
-            "event",
-            "decision",
-            "followup",
-        )
+    private const val DIARY_MAX_TAGS = 256
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -1321,39 +1280,14 @@ object OneToOneChatNativeExecutor {
         for (raw in rawTags) {
             val candidate = raw.trim()
             if (candidate.isBlank()) continue
-            val separatorIndex = candidate.indexOf(":")
-            if (separatorIndex <= 0 || separatorIndex >= candidate.length - 1) continue
-            val prefix = candidate.substring(0, separatorIndex).trim().lowercase()
-            if (!DiaryTagSpec.PREFIXES_SET.contains(prefix)) continue
-            val value = candidate.substring(separatorIndex + 1).trim().replace(Regex("\\s+"), " ")
-            if (value.isBlank()) continue
-            val normalizedValueForCheck =
-                value
-                    .lowercase()
-                    .replace(Regex("[.,!?;:()\\[\\]{}\"'`]+"), " ")
-                    .replace(Regex("\\s+"), " ")
-                    .trim()
-            if (prefix != "date" && DIARY_GENERIC_TAG_SUFFIXES.contains(normalizedValueForCheck)) continue
-            if (prefix != "date" && normalizedValueForCheck.length < 4) continue
-            if (DIARY_DETAIL_REQUIRED_PREFIXES.contains(prefix)) {
-                val tokenCount = normalizedValueForCheck.split(" ").filter { token -> token.isNotBlank() }.size
-                val hasDigits = normalizedValueForCheck.any { char -> char.isDigit() }
-                if (tokenCount < 2 && !hasDigits) continue
-            }
-            val boundedValue = if (value.length > 80) "${value.take(79).trimEnd()}…" else value
-            val tag = "$prefix:$boundedValue"
+            val compact = candidate.replace(Regex("\\s+"), " ")
+            val tag = if (compact.length > 120) "${compact.take(119).trimEnd()}…" else compact
             if (seen.contains(tag)) continue
             seen.add(tag)
             normalized.add(tag)
             if (normalized.size >= DIARY_MAX_TAGS) break
         }
-
-        val refined = mutableListOf<String>()
-        for (tag in normalized) {
-            refined.add(tag)
-            if (refined.size >= DIARY_MAX_RETRIEVAL_TAGS) break
-        }
-        return refined
+        return normalized
     }
 
     private fun ensureDiaryConfig(chat: JSONObject): JSONObject {

@@ -15,7 +15,6 @@ import {
   DIARY_TAG_PREFIXES,
   DIARY_RECENT_MESSAGE_LIMIT,
   normalizeDiaryTags,
-  refineDiaryTagsForRetrieval,
 } from "./diary";
 import type {
   LayeredMemoryContextCard,
@@ -1908,7 +1907,7 @@ export async function requestConversationSummaryUpdate(
   if (transcript.length === 0) {
     return request.existing;
   }
-  // Keep in sync with NativeLlmClient.requestOneToOneDiaryEntry (Android).
+  // Keep in sync with NativeLlmClient.requestOneToOneSummaryUpdate (Android).
   const systemPrompt = [
     "Ты компонент суммаризации 1:1 чата между пользователем и персоной.",
     "Верни ТОЛЬКО JSON-объект без markdown и пояснений.",
@@ -2027,18 +2026,21 @@ export async function requestOneToOneDiaryEntry(
     "Твоя задача: решить, стоит ли сейчас писать запись в дневник.",
     "Если писать нечего (нет новых заметных эмоций/впечатлений/событий), верни shouldWrite=false.",
     "Если писать стоит, верни shouldWrite=true и markdown в формате .md от первого лица.",
-    "Стиль: живая личная заметка, разговорный и эмоциональный язык, без официоза и канцелярита.",
-    "Пиши 2-5 коротких абзацев.",
-    "Не используй заголовки и маркированные списки, если это не абсолютно необходимо.",
+    "Стиль: личный дневник живого человека.",
+    "Тон естественный: тепло, уязвимо, иногда с самоиронией; без официоза и без сухого отчета.",
+    "Можно аккуратно добавлять внутренние секреты, личные детали и образные формулировки, если это органично персоне и контексту.",
+    "Обычно пиши 2-4 абзаца; иногда допустим 1 короткий список (до 3 пунктов), если это звучит естественно.",
+    "Заголовки и списки не запрещены, но используй их редко.",
     "Не повторяй слово в слово предыдущие формулировки summary.",
     "Пиши на русском языке.",
     "Теги должны быть максимально конкретными и узкими, в формате prefix:value.",
-    "Верни 8-14 тегов (можно больше, но только если они действительно конкретные).",
+    "Верни 10-18 тегов (можно больше только при реальной конкретике, без воды).",
     "Избегай широких и абстрактных тегов вроде topic:отношения, emotion:чувства, decision:доверие.",
-    "Хорошие теги отражают детали: имена, точные темы, микро-события, явные follow-up шаги.",
+    "Теги должны помогать точечно находить запись, а не описывать жизнь в целом.",
     `Допустимые prefix: ${diaryTagPrefixesText}.`,
     "Возвращай только JSON.",
     'Формат: {"shouldWrite":true|false,"markdown":"...","tags":["topic:...","emotion:..."]}',
+    "Не выдумывай факты, которых нет в контексте.",
   ].join("\n");
 
   const input = [
@@ -2084,7 +2086,7 @@ export async function requestOneToOneDiaryEntry(
       toTrimmedString(parsed.markdown) ||
       toTrimmedString(parsed.entry) ||
       toTrimmedString(parsed.text);
-    const tags = refineDiaryTagsForRetrieval(normalizeDiaryTags(parsed.tags));
+    const tags = normalizeDiaryTags(parsed.tags);
     const shouldWrite =
       typeof shouldWriteRaw === "boolean"
         ? shouldWriteRaw

@@ -52,7 +52,7 @@ describe("diary gate", () => {
 });
 
 describe("normalizeDiaryTags", () => {
-  it("keeps only concrete prefixed tags", () => {
+  it("keeps model tags as-is (except empty and duplicates)", () => {
     const tags = normalizeDiaryTags([
       "topic:conflict about vacation",
       "emotion:frustrated",
@@ -64,13 +64,14 @@ describe("normalizeDiaryTags", () => {
     expect(tags).toEqual([
       "topic:conflict about vacation",
       "emotion:frustrated",
+      "abstract:maybe",
       "date:2026-04-20",
     ]);
   });
 });
 
 describe("refineDiaryTagsForRetrieval", () => {
-  it("drops generic abstract tags and keeps concrete ones", () => {
+  it("does not post-filter generated tags", () => {
     const tags = refineDiaryTagsForRetrieval(
       normalizeDiaryTags([
         "date:2026-04-21",
@@ -85,6 +86,8 @@ describe("refineDiaryTagsForRetrieval", () => {
 
     expect(tags).toEqual([
       "date:2026-04-21",
+      "topic:отношения",
+      "emotion:уязвимость",
       "topic:обсуждение красного платья",
       "decision:показать фото в красном платье",
       "person:Илья",

@@ -773,18 +773,6 @@ function normalizeSettings(
   return merged;
 }
 
-const DIARY_TAG_PREFIXES = [
-  "date",
-  "topic",
-  "event",
-  "person",
-  "place",
-  "emotion",
-  "decision",
-  "followup",
-] as const;
-const DIARY_TAG_PREFIX_SET = new Set<string>(DIARY_TAG_PREFIXES);
-
 function normalizeChatDiaryConfig(config: unknown): ChatDiaryConfig {
   const source =
     config && typeof config === "object"
@@ -809,15 +797,10 @@ function normalizeDiaryTags(input: unknown, maxItems = 64): DiaryTag[] {
   for (const raw of input) {
     const normalized = typeof raw === "string" ? raw.trim() : "";
     if (!normalized) continue;
-    const separatorIndex = normalized.indexOf(":");
-    if (separatorIndex <= 0 || separatorIndex >= normalized.length - 1) continue;
-    const prefix = normalized.slice(0, separatorIndex).trim().toLowerCase();
-    if (!DIARY_TAG_PREFIX_SET.has(prefix)) continue;
-    const value = normalized.slice(separatorIndex + 1).trim().replace(/\s+/g, " ");
-    if (!value) continue;
-    const boundedValue =
-      value.length > 80 ? `${value.slice(0, 79).trimEnd()}…` : value;
-    const tag = `${prefix}:${boundedValue}` as DiaryTag;
+    const compact = normalized.replace(/\s+/g, " ");
+    const boundedTag =
+      compact.length > 120 ? `${compact.slice(0, 119).trimEnd()}…` : compact;
+    const tag = boundedTag as DiaryTag;
     if (seen.has(tag)) continue;
     seen.add(tag);
     result.push(tag);

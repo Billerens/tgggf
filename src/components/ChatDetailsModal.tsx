@@ -275,6 +275,15 @@ function normalizeDiaryTagInput(value: string): DiaryTag | "" {
   return `${prefix}:${suffix}` as DiaryTag;
 }
 
+function formatDiaryTagForDisplay(tag: string) {
+  const separatorIndex = tag.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex >= tag.length - 1) return tag;
+  const prefix = tag.slice(0, separatorIndex).trim();
+  const suffixRaw = tag.slice(separatorIndex + 1).trim();
+  const suffix = suffixRaw.replace(/^[/\\|]+/, "").replace(/_/g, " ");
+  return `${prefix}:${suffix}`;
+}
+
 function renderDiaryMarkdown(markdown: string) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: Array<{ type: "heading" | "list" | "paragraph"; level?: number; lines: string[] }> = [];
@@ -1594,7 +1603,7 @@ export function ChatDetailsModal({
                 <div className="diary-entry-tags">
                   {testDiaryEntry.tags.map((tag) => (
                     <span key={`test-${tag}`} className="diary-tag-chip">
-                      {tag}
+                      {formatDiaryTagForDisplay(tag)}
                     </span>
                   ))}
                 </div>
@@ -1623,7 +1632,12 @@ export function ChatDetailsModal({
                       onClick={() => setSelectedDiaryEntryId(entry.id)}
                     >
                       <strong>{formatDateTime(entry.createdAt)}</strong>
-                      <span>{entry.tags.slice(0, 3).join(" • ") || "Без тегов"}</span>
+                      <span>
+                        {entry.tags
+                          .slice(0, 3)
+                          .map((tag) => formatDiaryTagForDisplay(tag))
+                          .join(" • ") || "Без тегов"}
+                      </span>
                     </button>
                   ))}
                 </aside>
@@ -1650,7 +1664,7 @@ export function ChatDetailsModal({
                             onClick={() => handleRemoveDiaryTag(tag)}
                             title="Удалить тег"
                           >
-                            {tag} ×
+                            {formatDiaryTagForDisplay(tag)} ×
                           </button>
                         ))}
                       </div>
