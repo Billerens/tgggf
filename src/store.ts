@@ -6,6 +6,7 @@ import {
   generateComfyPromptsFromImageDescription,
   requestChatCompletion,
   requestConversationSummaryUpdate,
+  requestOneToOneDiaryEntry,
 } from "./lmstudio";
 import {
   compactAppearanceLocksFromAppearance,
@@ -40,6 +41,7 @@ import type {
   AppSettings,
   ChatMessage,
   ChatSession,
+  DiaryEntry,
   ImageGenerationMeta,
   Persona,
   PersonaAdvancedProfile,
@@ -48,6 +50,13 @@ import type {
   RelationshipStage,
   InfluenceProfile,
 } from "./types";
+import {
+  DIARY_MIN_CHAR_COUNT,
+  DIARY_MIN_MESSAGE_COUNT,
+  DIARY_RECENT_MESSAGE_LIMIT,
+  evaluateDiaryGenerationGate,
+  normalizeDiaryTags,
+} from "./diary";
 import { ensureRecurringBackgroundJob } from "./features/mobile/backgroundJobs";
 import {
   buildOneToOneChatJobId,
@@ -83,6 +92,7 @@ interface AppState {
   messages: ChatMessage[];
   activePersonaState: PersonaRuntimeState | null;
   activeMemories: PersonaMemory[];
+  activeDiaryEntries: DiaryEntry[];
   activePersonaId: string | null;
   activeChatId: string | null;
   settings: AppSettings;
@@ -99,6 +109,14 @@ interface AppState {
   deleteChat: (chatId: string) => Promise<void>;
   renameChat: (chatId: string, title: string) => Promise<void>;
   setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
+  setChatDiaryEnabled: (chatId: string, enabled: boolean) => Promise<void>;
+  updateDiaryEntryTags: (
+    chatId: string,
+    diaryEntryId: string,
+    tags: string[],
+  ) => Promise<void>;
+  testGenerateDiaryEntry: (chatId: string) => Promise<DiaryEntry | null>;
+  runDiarySchedulerTick: () => Promise<void>;
   setActiveInfluenceProfile: (
     profile: Partial<InfluenceProfile> | null,
   ) => Promise<void>;
@@ -150,6 +168,7 @@ const id = () => crypto.randomUUID();
 const STORE_RUNTIME_STARTED_AT_MS = Date.now();
 const ABANDONED_GENERATION_GRACE_MS = 10_000;
 const RECENT_CONTEXT_MESSAGE_LIMIT = 6;
+const DIARY_WEB_MIN_CHECK_MESSAGES = 1;
 const SUMMARY_DEFAULT_TOKEN_BUDGET = 16000;
 const SUMMARY_MIN_TOKEN_BUDGET = 600;
 const SUMMARY_MAX_TOKEN_BUDGET = 16000;
@@ -164,6 +183,7 @@ const SUMMARY_OPEN_THREADS_MAX_LEN = 420;
 const SUMMARY_AGREEMENTS_MAX_ITEMS = 20;
 const SUMMARY_AGREEMENTS_MAX_LEN = 420;
 const SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 4000;
+let diarySchedulerTickInFlight = false;
 const randomSeed = () => {
   const values = new Uint32Array(2);
   crypto.getRandomValues(values);
@@ -545,12 +565,14 @@ async function loadChatArtifacts(chatId: string | null) {
       messages: [] as ChatMessage[],
       state: null as PersonaRuntimeState | null,
       memories: [] as PersonaMemory[],
+      diaryEntries: [] as DiaryEntry[],
     };
   }
-  const [messages, state, memories] = await Promise.all([
+  const [messages, state, memories, diaryEntries] = await Promise.all([
     dbApi.getMessages(chatId),
     dbApi.getPersonaState(chatId),
     dbApi.getMemories(chatId),
+    dbApi.getDiaryEntries(chatId),
   ]);
   const recoveredMessages =
     await recoverAbandonedChatImageGenerations(messages);
@@ -558,6 +580,7 @@ async function loadChatArtifacts(chatId: string | null) {
     messages: recoveredMessages,
     state: state ?? null,
     memories,
+    diaryEntries,
   };
 }
 
@@ -606,6 +629,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   activePersonaState: null,
   activeMemories: [],
+  activeDiaryEntries: [],
   activePersonaId: null,
   activeChatId: null,
   settings: DEFAULT_SETTINGS,
@@ -673,6 +697,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        activeDiaryEntries: artifacts.diaryEntries,
         initialized: true,
         isLoading: false,
       });
@@ -699,6 +724,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
       });
     } catch (error) {
@@ -715,6 +741,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
       });
     } catch (error) {
@@ -741,6 +768,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        activeDiaryEntries: artifacts.diaryEntries,
       });
     } catch (error) {
       set({ error: (error as Error).message });
@@ -824,6 +852,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
       });
     } catch (error) {
@@ -842,6 +871,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         id: id(),
         personaId: activePersonaId,
         title: "Новый чат",
+        diaryConfig: {
+          enabled: false,
+        },
         chatStyleStrength: undefined,
         createdAt: ts,
         updatedAt: ts,
@@ -865,6 +897,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: [],
         activePersonaState: initialState,
         activeMemories: [],
+        activeDiaryEntries: [],
         isLoading: false,
       });
     } catch (error) {
@@ -884,6 +917,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           messages: [],
           activePersonaState: null,
           activeMemories: [],
+          activeDiaryEntries: [],
           isLoading: false,
         });
         return;
@@ -898,6 +932,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
         activeMemories: artifacts.memories,
+        activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
       });
     } catch (error) {
@@ -968,6 +1003,323 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     } catch (error) {
       set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  setChatDiaryEnabled: async (chatId, enabled) => {
+    set({ isLoading: true, error: null });
+    try {
+      const currentChat = get().chats.find((chat) => chat.id === chatId);
+      if (!currentChat) {
+        set({ isLoading: false });
+        return;
+      }
+      const nextDiaryConfig = {
+        ...(currentChat.diaryConfig ?? { enabled: false }),
+        enabled,
+      };
+      const updatedChat: ChatSession = {
+        ...currentChat,
+        diaryConfig: nextDiaryConfig,
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveChat(updatedChat);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: updatedChat.personaId,
+        });
+        await triggerBackgroundRuntime("one_to_one_diary_toggle");
+      }
+      const chats = await dbApi.getChats(updatedChat.personaId);
+      let activeDiaryEntries = get().activeDiaryEntries;
+      if (get().activeChatId === chatId) {
+        activeDiaryEntries = await dbApi.getDiaryEntries(chatId);
+      }
+      set({
+        chats,
+        activeDiaryEntries,
+        activeChatId: chatId,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  updateDiaryEntryTags: async (chatId, diaryEntryId, tags) => {
+    const normalizedTags = normalizeDiaryTags(tags);
+    try {
+      const activeChatId = get().activeChatId;
+      const sourceEntries =
+        activeChatId === chatId
+          ? get().activeDiaryEntries
+          : await dbApi.getDiaryEntries(chatId);
+      const target = sourceEntries.find((entry) => entry.id === diaryEntryId);
+      if (!target) return;
+      const updatedEntry: DiaryEntry = {
+        ...target,
+        tags: normalizedTags,
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveDiaryEntry(updatedEntry);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: updatedEntry.personaId,
+        });
+        await triggerBackgroundRuntime("one_to_one_diary_tags");
+      }
+      if (activeChatId === chatId) {
+        const activeDiaryEntries = sourceEntries
+          .map((entry) => (entry.id === diaryEntryId ? updatedEntry : entry))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        set({ activeDiaryEntries });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  testGenerateDiaryEntry: async (chatId) => {
+    try {
+      const state = get();
+      const chat = state.chats.find((candidate) => candidate.id === chatId);
+      if (!chat) return null;
+      const persona =
+        state.personas.find((candidate) => candidate.id === chat.personaId) ??
+        (await dbApi.getPersonas()).find((candidate) => candidate.id === chat.personaId);
+      if (!persona) return null;
+
+      const rawMessages =
+        state.activeChatId === chatId ? state.messages : await dbApi.getMessages(chatId);
+      const timeline = rawMessages
+        .filter((message) => {
+          if (message.role !== "user" && message.role !== "assistant") return false;
+          return message.content.trim().length > 0;
+        })
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+
+      const sourceWatermarkMs = chat.diaryConfig?.lastSourceMessageAtMs ?? 0;
+      const newMessages = timeline.filter((message) => {
+        const createdAtMs = Date.parse(message.createdAt);
+        return Number.isFinite(createdAtMs) && createdAtMs > sourceWatermarkMs;
+      });
+      const sourceMessages = (newMessages.length > 0 ? newMessages : timeline).slice(
+        -DIARY_RECENT_MESSAGE_LIMIT,
+      );
+      if (sourceMessages.length === 0) return null;
+
+      const newCharCount = sourceMessages.reduce(
+        (total, message) => total + message.content.trim().length,
+        0,
+      );
+      if (
+        sourceMessages.length < DIARY_MIN_MESSAGE_COUNT &&
+        newCharCount < DIARY_MIN_CHAR_COUNT
+      ) {
+        return null;
+      }
+
+      const diaryDraft = await requestOneToOneDiaryEntry(state.settings, persona, {
+        chat,
+        transcript: sourceMessages.map((message) => ({
+          role: message.role === "assistant" ? "assistant" : "user",
+          content: message.content.trim(),
+          createdAt: message.createdAt,
+        })),
+      });
+      if (!diaryDraft.shouldWrite || !diaryDraft.markdown.trim()) {
+        return null;
+      }
+
+      const nowMs = Date.now();
+      const timestamp = nowIso();
+      const dateTag = `date:${new Date(nowMs).toISOString().slice(0, 10)}`;
+      const tags = normalizeDiaryTags([dateTag, ...diaryDraft.tags]);
+      const firstSource = sourceMessages[0];
+      const lastSource = sourceMessages[sourceMessages.length - 1];
+      return {
+        id: id(),
+        chatId: chat.id,
+        personaId: chat.personaId,
+        markdown: diaryDraft.markdown.trim(),
+        tags,
+        sourceRange: {
+          fromMessageId: firstSource?.id,
+          toMessageId: lastSource?.id,
+          fromCreatedAt: firstSource?.createdAt,
+          toCreatedAt: lastSource?.createdAt,
+          messageCount: sourceMessages.length,
+        },
+        autoGenerated: true,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+    } catch (error) {
+      set({ error: (error as Error).message });
+      return null;
+    }
+  },
+
+  runDiarySchedulerTick: async () => {
+    if (diarySchedulerTickInFlight) return;
+    if (getRuntimeContext().mode === "android") return;
+    diarySchedulerTickInFlight = true;
+    try {
+      const state = get();
+      const settings = state.settings;
+      const nowMs = Date.now();
+      const [personas, allChats, allMessages] = await Promise.all([
+        dbApi.getPersonas(),
+        dbApi.getAllChats(),
+        dbApi.getAllMessages(),
+      ]);
+      const personaById = new Map(personas.map((persona) => [persona.id, persona]));
+      const timelineByChatId = new Map<string, ChatMessage[]>();
+      for (const message of allMessages) {
+        if (message.role !== "user" && message.role !== "assistant") continue;
+        const content = message.content.trim();
+        if (!content) continue;
+        const bucket = timelineByChatId.get(message.chatId) ?? [];
+        bucket.push(message);
+        timelineByChatId.set(message.chatId, bucket);
+      }
+      for (const timeline of timelineByChatId.values()) {
+        timeline.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      }
+
+      const touchedChatIds = new Set<string>();
+      const changedActiveDiaryEntries: DiaryEntry[] = [];
+      const activeChatId = state.activeChatId;
+      const activePersonaId = state.activePersonaId;
+
+      for (const chat of allChats) {
+        const diaryConfig = chat.diaryConfig ?? { enabled: false };
+        if (!diaryConfig.enabled) continue;
+        const timeline = timelineByChatId.get(chat.id) ?? [];
+        const lastMessage = timeline[timeline.length - 1];
+        const lastActivityAtMs = lastMessage ? Date.parse(lastMessage.createdAt) : undefined;
+        const sourceWatermarkMs = diaryConfig.lastSourceMessageAtMs ?? 0;
+        const newMessages = timeline.filter((message) => {
+          const createdAtMs = Date.parse(message.createdAt);
+          return Number.isFinite(createdAtMs) && createdAtMs > sourceWatermarkMs;
+        });
+        const sourceMessages = newMessages.slice(-DIARY_RECENT_MESSAGE_LIMIT);
+        const newCharCount = sourceMessages.reduce(
+          (total, message) => total + message.content.trim().length,
+          0,
+        );
+        const gate = evaluateDiaryGenerationGate({
+          enabled: diaryConfig.enabled,
+          nowMs,
+          lastActivityAtMs,
+          lastGeneratedAtMs: diaryConfig.lastGeneratedAtMs,
+          lastCheckedAtMs: diaryConfig.lastCheckedAtMs,
+          hasNewSource: sourceMessages.length >= DIARY_WEB_MIN_CHECK_MESSAGES,
+          newMessageCount: sourceMessages.length,
+          newCharCount,
+        });
+        if (!gate.eligible) {
+          if (
+            gate.reason === "no_new_source" ||
+            gate.reason === "insufficient_content"
+          ) {
+            const nextChat: ChatSession = {
+              ...chat,
+              diaryConfig: {
+                ...diaryConfig,
+                lastCheckedAtMs: nowMs,
+              },
+            };
+            await dbApi.saveChat(nextChat);
+            touchedChatIds.add(chat.id);
+          }
+          continue;
+        }
+
+        const persona = personaById.get(chat.personaId);
+        if (!persona || sourceMessages.length === 0) continue;
+
+        const diaryDraft = await requestOneToOneDiaryEntry(settings, persona, {
+          chat,
+          transcript: sourceMessages.map((message) => ({
+            role: message.role === "assistant" ? "assistant" : "user",
+            content: message.content.trim(),
+            createdAt: message.createdAt,
+          })),
+        });
+        if (!diaryDraft.shouldWrite || !diaryDraft.markdown.trim()) {
+          const nextChat: ChatSession = {
+            ...chat,
+            diaryConfig: {
+              ...diaryConfig,
+              lastCheckedAtMs: nowMs,
+            },
+          };
+          await dbApi.saveChat(nextChat);
+          touchedChatIds.add(chat.id);
+          continue;
+        }
+
+        const dateTag = `date:${new Date(nowMs).toISOString().slice(0, 10)}`;
+        const tags = normalizeDiaryTags([dateTag, ...diaryDraft.tags]);
+        const firstSource = sourceMessages[0];
+        const lastSource = sourceMessages[sourceMessages.length - 1];
+        const entry: DiaryEntry = {
+          id: id(),
+          chatId: chat.id,
+          personaId: chat.personaId,
+          markdown: diaryDraft.markdown.trim(),
+          tags,
+          sourceRange: {
+            fromMessageId: firstSource?.id,
+            toMessageId: lastSource?.id,
+            fromCreatedAt: firstSource?.createdAt,
+            toCreatedAt: lastSource?.createdAt,
+            messageCount: sourceMessages.length,
+          },
+          autoGenerated: true,
+          createdAt: nowIso(),
+          updatedAt: nowIso(),
+        };
+        await dbApi.saveDiaryEntry(entry);
+
+        const lastSourceAtMs = Date.parse(lastSource.createdAt);
+        const nextChat: ChatSession = {
+          ...chat,
+          diaryConfig: {
+            ...diaryConfig,
+            enabled: true,
+            lastCheckedAtMs: nowMs,
+            lastGeneratedAtMs: nowMs,
+            lastSourceMessageAtMs: Number.isFinite(lastSourceAtMs)
+              ? Math.max(0, Math.floor(lastSourceAtMs))
+              : sourceWatermarkMs,
+          },
+          updatedAt: nowIso(),
+        };
+        await dbApi.saveChat(nextChat);
+        touchedChatIds.add(chat.id);
+
+        if (activeChatId === chat.id) {
+          changedActiveDiaryEntries.push(entry);
+        }
+      }
+
+      if (touchedChatIds.size > 0 && activePersonaId) {
+        const chats = await dbApi.getChats(activePersonaId);
+        if (changedActiveDiaryEntries.length > 0 && activeChatId) {
+          const activeDiaryEntries = await dbApi.getDiaryEntries(activeChatId);
+          set({ chats, activeDiaryEntries });
+        } else {
+          set({ chats });
+        }
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    } finally {
+      diarySchedulerTickInFlight = false;
     }
   },
 

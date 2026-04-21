@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   ChatSession,
+  DiaryEntry,
   ImageAsset,
   Persona,
   PersonaMemory,
@@ -100,13 +101,14 @@ export async function syncOneToOneContextToNative(input: {
   const plugin = resolveLocalApiPlugin(scope);
   if (!plugin) return;
 
-  const [settings, personas, chats, chatMessages, chatState, chatMemories] = await Promise.all([
+  const [settings, personas, chats, chatMessages, chatState, chatMemories, chatDiaryEntries] = await Promise.all([
     dbApi.getSettings(),
     dbApi.getPersonas(),
     dbApi.getAllChats(),
     dbApi.getMessages(input.chatId),
     dbApi.getPersonaState(input.chatId),
     dbApi.getMemories(input.chatId),
+    dbApi.getDiaryEntries(input.chatId),
   ]);
   const targetPersona =
     personas.find((persona) => persona.id === input.personaId) ??
@@ -132,6 +134,7 @@ export async function syncOneToOneContextToNative(input: {
         messages: chatMessages,
         personaStates: chatState ? [chatState] : [],
         memories: chatMemories,
+        diaryEntries: chatDiaryEntries,
         imageAssets,
       },
     },
@@ -181,6 +184,19 @@ export async function applyOneToOneStatePatch(
     touched = true;
   }
 
+  const diaryEntries = normalizeStoreRows(stores, "diaryEntries").filter(
+    (row): row is Record<string, unknown> & { id: string } =>
+      hasEntityId(row) &&
+      typeof row.chatId === "string" &&
+      row.chatId.trim().length > 0 &&
+      typeof row.personaId === "string" &&
+      row.personaId.trim().length > 0,
+  );
+  if (diaryEntries.length > 0) {
+    await dbApi.saveDiaryEntries(diaryEntries as unknown as DiaryEntry[]);
+    touched = true;
+  }
+
   const imageAssets = normalizeStoreRows(stores, "imageAssets").filter(
     (row): row is Record<string, unknown> & { id: string } =>
       hasEntityId(row) &&
@@ -203,6 +219,17 @@ export async function applyOneToOneStatePatch(
       .filter(Boolean);
     if (deletedMemoryIds.length > 0) {
       await dbApi.deleteMemories(deletedMemoryIds);
+      touched = true;
+    }
+  }
+
+  const deletedDiaryEntryIdsRaw = stores.deletedDiaryEntryIds;
+  if (Array.isArray(deletedDiaryEntryIdsRaw)) {
+    const deletedDiaryEntryIds = deletedDiaryEntryIdsRaw
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean);
+    if (deletedDiaryEntryIds.length > 0) {
+      await dbApi.deleteDiaryEntries(deletedDiaryEntryIds);
       touched = true;
     }
   }

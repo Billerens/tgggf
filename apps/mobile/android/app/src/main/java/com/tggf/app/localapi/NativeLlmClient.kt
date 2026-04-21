@@ -78,6 +78,12 @@ data class NativeConversationSummaryState(
     val agreements: List<String>,
 )
 
+data class NativeOneToOneDiaryDraft(
+    val shouldWrite: Boolean,
+    val markdown: String,
+    val tags: List<String>,
+)
+
 data class NativeSummaryTranscriptEntry(
     val role: String,
     val content: String,
@@ -681,6 +687,101 @@ object NativeLlmClient {
             )
         } catch (_: Exception) {
             existing
+        }
+    }
+
+    fun requestOneToOneDiaryEntry(
+        settings: JSONObject,
+        persona: JSONObject,
+        existing: NativeConversationSummaryState,
+        transcript: List<NativeSummaryTranscriptEntry>,
+    ): NativeOneToOneDiaryDraft? {
+        if (transcript.isEmpty()) return null
+        val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model = settings.optString("model", "").trim()
+        if (model.isBlank()) return null
+
+        val systemPrompt =
+            listOf(
+                "Ты модуль дневника персоны для 1:1 чата.",
+                "Верни только JSON без markdown-блоков вокруг JSON.",
+                "Формат: {\"shouldWrite\":true|false,\"markdown\":\"...\",\"tags\":[\"prefix:value\", ...]}",
+                "Если писать нечего, верни shouldWrite=false и пустой markdown.",
+                "Если писать стоит — markdown от первого лица, структурированный по темам (заголовки/списки).",
+                "Пиши по-русски, конкретно и фактически по событиям.",
+                "Теги только конкретные: date, topic, event, person, place, emotion, decision, followup.",
+                "Не выдумывай факты, которых нет в контексте.",
+            ).joinToString("\n")
+
+        val existingJson =
+            JSONObject().apply {
+                put("summary", existing.summary)
+                put("facts", JSONArray(existing.facts))
+                put("goals", JSONArray(existing.goals))
+                put("openThreads", JSONArray(existing.openThreads))
+                put("agreements", JSONArray(existing.agreements))
+            }.toString()
+
+        val userPrompt =
+            buildString {
+                appendLine("Персона: ${persona.optString("name", "Персона").trim().ifEmpty { "Персона" }}")
+                appendLine("Контекст summary:")
+                appendLine(existingJson)
+                appendLine()
+                appendLine("Новые сообщения:")
+                transcript.forEach { entry ->
+                    val roleLabel = if (entry.role == "assistant") "Персона" else "Пользователь"
+                    val createdAt = entry.createdAt?.trim().orEmpty().ifBlank { "unknown" }
+                    appendLine("$roleLabel [time=$createdAt]: ${entry.content.trim()}")
+                }
+            }.trim()
+
+        return try {
+            val response =
+                requestChatCompletionsWithRetry(
+                    provider = provider,
+                    openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
+                    baseUrl = baseUrl,
+                    model = model,
+                    auth = resolveProviderAuth(settings, provider),
+                    temperature = clampTemperature(settings.optDouble("temperature", 0.55), minValue = 0.2, maxValue = 0.75),
+                    maxTokens = clampMaxTokens(settings.optInt("maxTokens", 1400), minValue = 420, maxValue = 1800),
+                    systemPrompt = systemPrompt,
+                    userPrompt = userPrompt,
+                    forceJsonObject = true,
+                    toolDefinition = null,
+                )
+            val parsed = parseJsonObjectLoose(response.content)
+            if (parsed.length() == 0) return null
+            val markdown =
+                readFirstNonBlankEntry(parsed, "markdown", "entry", "text")?.value?.trim().orEmpty()
+            val shouldWrite =
+                when {
+                    parsed.has("shouldWrite") -> parsed.optBoolean("shouldWrite", markdown.isNotBlank())
+                    parsed.has("should_write") -> parsed.optBoolean("should_write", markdown.isNotBlank())
+                    else -> markdown.isNotBlank()
+                }
+            val tags =
+                parseStringArrayFlexible(parsed.opt("tags"))
+                    .map { value -> value.trim() }
+                    .filter { value -> value.isNotBlank() }
+                    .distinct()
+            if (!shouldWrite || markdown.isBlank()) {
+                NativeOneToOneDiaryDraft(
+                    shouldWrite = false,
+                    markdown = "",
+                    tags = emptyList(),
+                )
+            } else {
+                NativeOneToOneDiaryDraft(
+                    shouldWrite = true,
+                    markdown = markdown,
+                    tags = tags,
+                )
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 

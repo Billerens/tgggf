@@ -5,6 +5,8 @@ import type {
   AppSettings,
   ChatMessage,
   ChatSession,
+  DiaryEntry,
+  DiaryTag,
   ImageGenerationMeta,
   Persona,
   PersonaMemory,
@@ -27,6 +29,7 @@ interface ChatDetailsModalProps {
   messages: ChatMessage[];
   imageMetaByUrl: Record<string, ImageGenerationMeta>;
   memories: PersonaMemory[];
+  diaryEntries: DiaryEntry[];
   runtimeState: PersonaRuntimeState | null;
   settings: AppSettings;
   imageActionBusy: boolean;
@@ -44,6 +47,9 @@ interface ChatDetailsModalProps {
     promptOverride?: string,
   ) => void;
   onUpdateChatStyleStrength: (chatId: string, value: number | null) => void;
+  onToggleDiaryEnabled: (chatId: string, enabled: boolean) => void;
+  onUpdateDiaryTags: (chatId: string, diaryEntryId: string, tags: string[]) => void;
+  onTestDiaryGeneration: (chatId: string) => Promise<DiaryEntry | null>;
   onUpdateRuntimeState: (
     chatId: string,
     patch: Partial<
@@ -82,7 +88,7 @@ interface ChatDetailsModalProps {
   onClose: () => void;
 }
 
-type DetailsTab = "attachments" | "status";
+type DetailsTab = "attachments" | "status" | "diaries";
 
 interface ImageAttachment {
   src: string;
@@ -255,6 +261,95 @@ function formatStateDelta(
   return parts.length > 0 ? parts.join(" | ") : "—";
 }
 
+const DIARY_ALLOWED_PREFIXES = new Set([
+  "date",
+  "topic",
+  "event",
+  "person",
+  "place",
+  "emotion",
+  "decision",
+  "followup",
+]);
+
+function normalizeDiaryTagInput(value: string): DiaryTag | "" {
+  const normalized = value.trim();
+  const separatorIndex = normalized.indexOf(":");
+  if (separatorIndex <= 0 || separatorIndex >= normalized.length - 1) return "";
+  const prefix = normalized.slice(0, separatorIndex).trim().toLowerCase();
+  if (!DIARY_ALLOWED_PREFIXES.has(prefix)) return "";
+  const suffix = normalized.slice(separatorIndex + 1).trim().replace(/\s+/g, " ");
+  if (!suffix) return "";
+  return `${prefix}:${suffix}` as DiaryTag;
+}
+
+function renderDiaryMarkdown(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: Array<{ type: "heading" | "list" | "paragraph"; level?: number; lines: string[] }> = [];
+  let paragraphLines: string[] = [];
+  let listLines: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) return;
+    blocks.push({ type: "paragraph", lines: [...paragraphLines] });
+    paragraphLines = [];
+  };
+
+  const flushList = () => {
+    if (listLines.length === 0) return;
+    blocks.push({ type: "list", lines: [...listLines] });
+    listLines = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    const listMatch = line.match(/^\s*[-*]\s+(.*)$/);
+    if (headingMatch) {
+      flushParagraph();
+      flushList();
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length,
+        lines: [headingMatch[2].trim()],
+      });
+      continue;
+    }
+    if (listMatch) {
+      flushParagraph();
+      listLines.push(listMatch[1].trim());
+      continue;
+    }
+    if (!line.trim()) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    flushList();
+    paragraphLines.push(line.trim());
+  }
+  flushParagraph();
+  flushList();
+
+  return blocks.map((block, index) => {
+    if (block.type === "heading") {
+      const HeadingTag =
+        block.level === 1 ? "h2" : block.level === 2 ? "h3" : "h4";
+      return <HeadingTag key={`diary-block-${index}`}>{block.lines[0]}</HeadingTag>;
+    }
+    if (block.type === "list") {
+      return (
+        <ul key={`diary-block-${index}`}>
+          {block.lines.map((line, lineIndex) => (
+            <li key={`diary-li-${index}-${lineIndex}`}>{line}</li>
+          ))}
+        </ul>
+      );
+    }
+    return <p key={`diary-block-${index}`}>{block.lines.join(" ")}</p>;
+  });
+}
+
 type EditableRuntimeState = Pick<
   PersonaRuntimeState,
   | "mood"
@@ -361,12 +456,16 @@ export function ChatDetailsModal({
   messages,
   imageMetaByUrl,
   memories,
+  diaryEntries,
   runtimeState,
   settings,
   imageActionBusy,
   onEnhanceImage,
   onRegenerateImage,
   onUpdateChatStyleStrength,
+  onToggleDiaryEnabled,
+  onUpdateDiaryTags,
+  onTestDiaryGeneration,
   onUpdateRuntimeState,
   onAddMemory,
   onUpdateMemory,
@@ -402,10 +501,25 @@ export function ChatDetailsModal({
       ? chat.chatStyleStrength
       : settings.chatStyleStrength,
   );
+  const [selectedDiaryEntryId, setSelectedDiaryEntryId] = useState<string | null>(
+    null,
+  );
+  const [diaryTagDraft, setDiaryTagDraft] = useState("");
+  const [testDiaryBusy, setTestDiaryBusy] = useState(false);
+  const [testDiaryMessage, setTestDiaryMessage] = useState<string | null>(null);
+  const [testDiaryEntry, setTestDiaryEntry] = useState<DiaryEntry | null>(null);
   const attachments = useMemo(
     () => extractImageAttachments(messages, imageMetaByUrl),
     [messages, imageMetaByUrl],
   );
+  const selectedDiaryEntry = useMemo(() => {
+    if (diaryEntries.length === 0) return null;
+    const selected = selectedDiaryEntryId
+      ? diaryEntries.find((entry) => entry.id === selectedDiaryEntryId)
+      : undefined;
+    return selected ?? diaryEntries[0] ?? null;
+  }, [diaryEntries, selectedDiaryEntryId]);
+  const diaryEnabled = Boolean(chat?.diaryConfig?.enabled);
   const memoryByLayer = useMemo(() => groupMemories(memories), [memories]);
   const lastUserMessage = useMemo(() => findLastMessageByRole(messages, "user"), [messages]);
   const lastAssistantMessage = useMemo(() => findLastMessageByRole(messages, "assistant"), [messages]);
@@ -482,6 +596,26 @@ export function ChatDetailsModal({
     setEditingMemoryId(null);
     setMemoryEditDraft(null);
   }, [chat?.id, runtimeState]);
+
+  useEffect(() => {
+    if (diaryEntries.length === 0) {
+      setSelectedDiaryEntryId(null);
+      return;
+    }
+    if (
+      selectedDiaryEntryId &&
+      diaryEntries.some((entry) => entry.id === selectedDiaryEntryId)
+    ) {
+      return;
+    }
+    setSelectedDiaryEntryId(diaryEntries[0]?.id ?? null);
+  }, [chat?.id, diaryEntries, selectedDiaryEntryId]);
+
+  useEffect(() => {
+    setTestDiaryBusy(false);
+    setTestDiaryMessage(null);
+    setTestDiaryEntry(null);
+  }, [chat?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -670,6 +804,53 @@ export function ChatDetailsModal({
     }
   }
 
+  function handleAddDiaryTag() {
+    if (!chat?.id || !selectedDiaryEntry) return;
+    const normalizedTag = normalizeDiaryTagInput(diaryTagDraft);
+    if (!normalizedTag) return;
+    if (selectedDiaryEntry.tags.includes(normalizedTag)) {
+      setDiaryTagDraft("");
+      return;
+    }
+    onUpdateDiaryTags(chat.id, selectedDiaryEntry.id, [
+      ...selectedDiaryEntry.tags,
+      normalizedTag,
+    ]);
+    setDiaryTagDraft("");
+  }
+
+  function handleRemoveDiaryTag(tag: string) {
+    if (!chat?.id || !selectedDiaryEntry) return;
+    onUpdateDiaryTags(
+      chat.id,
+      selectedDiaryEntry.id,
+      selectedDiaryEntry.tags.filter((currentTag) => currentTag !== tag),
+    );
+  }
+
+  async function handleTestDiaryGeneration() {
+    if (!chat?.id || testDiaryBusy) return;
+    setTestDiaryBusy(true);
+    setTestDiaryMessage(null);
+    try {
+      const generatedEntry = await onTestDiaryGeneration(chat.id);
+      if (!generatedEntry) {
+        setTestDiaryEntry(null);
+        setTestDiaryMessage(
+          "Тест не создал запись: мало контента или модель решила пропустить дневник.",
+        );
+        return;
+      }
+      setTestDiaryEntry(generatedEntry);
+      setTestDiaryMessage("Тестовая запись сгенерирована. В базу она не сохранена.");
+    } catch (error) {
+      setTestDiaryEntry(null);
+      setTestDiaryMessage((error as Error).message || "Не удалось выполнить тест генерации.");
+    } finally {
+      setTestDiaryBusy(false);
+    }
+  }
+
   if (!open) return null;
 
   return (
@@ -699,6 +880,13 @@ export function ChatDetailsModal({
             onClick={() => setTab("status")}
           >
             Статус
+          </button>
+          <button
+            type="button"
+            className={tab === "diaries" ? "active" : ""}
+            onClick={() => setTab("diaries")}
+          >
+            Дневники
           </button>
         </div>
 
@@ -749,7 +937,7 @@ export function ChatDetailsModal({
               </div>
             )}
           </section>
-        ) : (
+        ) : tab === "status" ? (
           <section className="chat-details-body status-tab">
             <div className="status-lock-toggle">
               <label className="checkbox-row">
@@ -1354,6 +1542,152 @@ export function ChatDetailsModal({
                 </div>
               </details>
             </div>
+          </section>
+        ) : (
+          <section className="chat-details-body diaries-tab">
+            <div className="diary-toggle-card">
+              <label className="checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={diaryEnabled}
+                  onChange={(event) => {
+                    if (!chat?.id) return;
+                    onToggleDiaryEnabled(chat.id, event.target.checked);
+                  }}
+                />
+                Вести дневник в этом чате
+              </label>
+              <p className="status-lock-hint">
+                Автоматические записи создаются только при неактивности чата и
+                наличии содержательных новых сообщений.
+              </p>
+            </div>
+            <div className="diary-toggle-card">
+              <div className="diary-test-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    void handleTestDiaryGeneration();
+                  }}
+                  disabled={!chat?.id || testDiaryBusy}
+                >
+                  {testDiaryBusy ? "Генерация..." : "Тест генерации"}
+                </button>
+                <span className="status-lock-hint">
+                  Запускает полный флоу генерации без сохранения в базу.
+                </span>
+              </div>
+              {testDiaryMessage ? <p className="status-lock-hint">{testDiaryMessage}</p> : null}
+            </div>
+
+            {!diaryEnabled ? (
+              <p className="status-lock-hint">
+                Автогенерация сейчас выключена, но существующие записи дневника
+                остаются доступными.
+              </p>
+            ) : null}
+
+            {testDiaryEntry ? (
+              <article className="diary-entry-view">
+                <div className="diary-entry-head">
+                  <p>
+                    <strong>Тестовый результат:</strong>{" "}
+                    {formatDateTime(testDiaryEntry.createdAt)}
+                  </p>
+                  <p>
+                    <strong>Источник:</strong> {testDiaryEntry.sourceRange.messageCount} сообщ.
+                  </p>
+                </div>
+                <div className="diary-entry-tags">
+                  {testDiaryEntry.tags.map((tag) => (
+                    <span key={`test-${tag}`} className="diary-tag-chip">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+                <div className="diary-markdown-renderer">
+                  {renderDiaryMarkdown(testDiaryEntry.markdown)}
+                </div>
+              </article>
+            ) : null}
+
+            {diaryEntries.length === 0 ? (
+              <p className="empty-state">
+                {diaryEnabled
+                  ? "Записей пока нет. Персона добавит первую запись, когда появится подходящий момент."
+                  : "Записей пока нет. Включите автогенерацию, чтобы персона могла вести дневник."}
+              </p>
+            ) : (
+              <div className="diary-layout">
+                <aside className="diary-list">
+                  {diaryEntries.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className={`diary-list-item ${
+                        selectedDiaryEntry?.id === entry.id ? "active" : ""
+                      }`}
+                      onClick={() => setSelectedDiaryEntryId(entry.id)}
+                    >
+                      <strong>{formatDateTime(entry.createdAt)}</strong>
+                      <span>{entry.tags.slice(0, 3).join(" • ") || "Без тегов"}</span>
+                    </button>
+                  ))}
+                </aside>
+
+                <article className="diary-entry-view">
+                  {selectedDiaryEntry ? (
+                    <>
+                      <div className="diary-entry-head">
+                        <p>
+                          <strong>Создано:</strong>{" "}
+                          {formatDateTime(selectedDiaryEntry.createdAt)}
+                        </p>
+                        <p>
+                          <strong>Источник:</strong>{" "}
+                          {selectedDiaryEntry.sourceRange.messageCount} сообщ.
+                        </p>
+                      </div>
+                      <div className="diary-entry-tags">
+                        {selectedDiaryEntry.tags.map((tag) => (
+                          <button
+                            key={tag}
+                            type="button"
+                            className="diary-tag-chip"
+                            onClick={() => handleRemoveDiaryTag(tag)}
+                            title="Удалить тег"
+                          >
+                            {tag} ×
+                          </button>
+                        ))}
+                      </div>
+                      <div className="diary-tag-editor">
+                        <input
+                          type="text"
+                          value={diaryTagDraft}
+                          placeholder="topic:разговор о поездке"
+                          onChange={(event) => setDiaryTagDraft(event.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={handleAddDiaryTag}
+                          disabled={!normalizeDiaryTagInput(diaryTagDraft)}
+                        >
+                          Добавить тег
+                        </button>
+                      </div>
+                      <div className="diary-markdown-renderer">
+                        {renderDiaryMarkdown(selectedDiaryEntry.markdown)}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="empty-state">Выберите запись слева.</p>
+                  )}
+                </article>
+              </div>
+            )}
           </section>
         )}
       </div>

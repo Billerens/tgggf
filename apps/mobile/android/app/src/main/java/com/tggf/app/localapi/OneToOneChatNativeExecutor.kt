@@ -24,6 +24,11 @@ object OneToOneChatNativeExecutor {
     private const val SUMMARY_MIN_NEW_MESSAGES = 4
     private const val SUMMARY_MIN_NEW_CHARS = 1200
     private const val SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 4000
+    private const val DIARY_IDLE_MS = 10 * 60 * 1000L
+    private const val DIARY_CHECK_INTERVAL_MS = 15 * 60 * 1000L
+    private const val DIARY_RECENT_MESSAGE_LIMIT = 30
+    private const val DIARY_MIN_NEW_MESSAGES = 4
+    private const val DIARY_MIN_NEW_CHARS = 240
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -129,6 +134,7 @@ object OneToOneChatNativeExecutor {
                 )
 
             if (claimed.isEmpty()) {
+                maybeGenerateDiaryEntries(context, repository, runtime)
                 emitAwaitingState(context, jobs)
                 return
             }
@@ -1000,6 +1006,228 @@ object OneToOneChatNativeExecutor {
         val advanced = persona.optJSONObject("advanced") ?: return 30
         val memory = advanced.optJSONObject("memory") ?: return 30
         return memory.optInt("decayDays", 30).coerceAtLeast(1)
+    }
+
+    private fun maybeGenerateDiaryEntries(
+        context: Context,
+        repository: LocalRepository,
+        runtime: BackgroundRuntimeRepository,
+    ) {
+        val settings = parseJsonObject(repository.readSettingsJson())
+        val personas = readStoreArray(repository, "personas")
+        val chats = readStoreArray(repository, "chats")
+        val messages = readStoreArray(repository, "messages")
+        val diaryEntries = readStoreArray(repository, "diaryEntries")
+        if (chats.length() == 0) return
+
+        val nowMs = System.currentTimeMillis()
+        var chatsChanged = false
+        var diariesChanged = false
+
+        for (chatIndex in 0 until chats.length()) {
+            val chat = chats.optJSONObject(chatIndex) ?: continue
+            val chatId = chat.optString("id", "").trim()
+            if (chatId.isBlank()) continue
+            val diaryConfig = ensureDiaryConfig(chat)
+            if (!diaryConfig.optBoolean("enabled", false)) continue
+
+            val timeline = buildChatMessageTimeline(messages, chatId)
+            val lastMessage = timeline.lastOrNull()
+            val lastActivityMs = lastMessage?.let { message -> parseIsoMs(message.optString("createdAt", "").trim()) }
+            if (lastActivityMs == null) continue
+            if (nowMs - lastActivityMs < DIARY_IDLE_MS) continue
+
+            val lastGeneratedAtMs = diaryConfig.optLong("lastGeneratedAtMs", 0L)
+            val lastCheckedAtMs = diaryConfig.optLong("lastCheckedAtMs", 0L)
+            val lastEvaluationMs = max(lastGeneratedAtMs, lastCheckedAtMs)
+            if (lastEvaluationMs > 0 && nowMs - lastEvaluationMs < DIARY_CHECK_INTERVAL_MS) {
+                continue
+            }
+
+            val lastSourceMessageAtMs = diaryConfig.optLong("lastSourceMessageAtMs", 0L)
+            val newMessages =
+                timeline.filter { message ->
+                    val createdAtMs = parseIsoMs(message.optString("createdAt", "").trim()) ?: return@filter false
+                    createdAtMs > lastSourceMessageAtMs
+                }
+            val sourceMessages = if (newMessages.size <= DIARY_RECENT_MESSAGE_LIMIT) newMessages else newMessages.takeLast(DIARY_RECENT_MESSAGE_LIMIT)
+            val newChars = sourceMessages.sumOf { message -> message.optString("content", "").trim().length }
+            if (sourceMessages.isEmpty()) {
+                diaryConfig.put("lastCheckedAtMs", nowMs)
+                chatsChanged = true
+                continue
+            }
+            if (sourceMessages.size < DIARY_MIN_NEW_MESSAGES && newChars < DIARY_MIN_NEW_CHARS) {
+                diaryConfig.put("lastCheckedAtMs", nowMs)
+                chatsChanged = true
+                continue
+            }
+
+            val personaId = chat.optString("personaId", "").trim()
+            val persona = findObjectById(personas, personaId) ?: continue
+            val existingSummary =
+                NativeConversationSummaryState(
+                    summary = chat.optString("conversationSummary", "").trim(),
+                    facts = parseStringList(chat.optJSONArray("summaryFacts")),
+                    goals = parseStringList(chat.optJSONArray("summaryGoals")),
+                    openThreads = parseStringList(chat.optJSONArray("summaryOpenThreads")),
+                    agreements = parseStringList(chat.optJSONArray("summaryAgreements")),
+                )
+            val transcript =
+                sourceMessages.map { message ->
+                    val role = message.optString("role", "user").trim().lowercase()
+                    NativeSummaryTranscriptEntry(
+                        role = if (role == "assistant") "assistant" else "user",
+                        content = message.optString("content", "").trim(),
+                        createdAt = message.optString("createdAt", "").trim().ifBlank { null },
+                    )
+                }
+
+            val draft =
+                NativeLlmClient.requestOneToOneDiaryEntry(
+                    settings = settings,
+                    persona = persona,
+                    existing = existingSummary,
+                    transcript = transcript,
+                )
+            if (draft == null || !draft.shouldWrite || draft.markdown.trim().isBlank()) {
+                diaryConfig.put("lastCheckedAtMs", nowMs)
+                chatsChanged = true
+                continue
+            }
+
+            val sourceFirst = sourceMessages.firstOrNull()
+            val sourceLast = sourceMessages.lastOrNull()
+            val sourceLastAtMs = sourceLast?.let { message -> parseIsoMs(message.optString("createdAt", "").trim()) } ?: lastSourceMessageAtMs
+            val dateTag = "date:${nowIsoUtc().take(10)}"
+            val tags = normalizeDiaryTags(listOf(dateTag) + draft.tags)
+            val entryId = UUID.randomUUID().toString()
+            val createdAt = nowIsoUtc()
+            val diaryEntry =
+                JSONObject().apply {
+                    put("id", entryId)
+                    put("chatId", chatId)
+                    put("personaId", personaId)
+                    put("markdown", draft.markdown.trim())
+                    put("tags", JSONArray(tags))
+                    put("sourceRange", JSONObject().apply {
+                        sourceFirst?.optString("id", "")?.trim()?.takeIf { it.isNotBlank() }?.let { put("fromMessageId", it) }
+                        sourceLast?.optString("id", "")?.trim()?.takeIf { it.isNotBlank() }?.let { put("toMessageId", it) }
+                        sourceFirst?.optString("createdAt", "")?.trim()?.takeIf { it.isNotBlank() }?.let { put("fromCreatedAt", it) }
+                        sourceLast?.optString("createdAt", "")?.trim()?.takeIf { it.isNotBlank() }?.let { put("toCreatedAt", it) }
+                        put("messageCount", sourceMessages.size)
+                    })
+                    put("autoGenerated", true)
+                    put("createdAt", createdAt)
+                    put("updatedAt", createdAt)
+                }
+            diaryEntries.put(diaryEntry)
+
+            diaryConfig.put("enabled", true)
+            diaryConfig.put("lastCheckedAtMs", nowMs)
+            diaryConfig.put("lastGeneratedAtMs", nowMs)
+            diaryConfig.put("lastSourceMessageAtMs", sourceLastAtMs)
+            chat.put("diaryConfig", diaryConfig)
+            chat.put("updatedAt", createdAt)
+            chats.put(chatIndex, chat)
+            chatsChanged = true
+            diariesChanged = true
+
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = chatId,
+                jobId = null,
+                stage = "diary_written",
+                level = "info",
+                message = "Diary entry generated",
+                details =
+                    JSONObject().apply {
+                        put("entryId", entryId)
+                        put("messageCount", sourceMessages.size)
+                        put("tagCount", tags.size)
+                    },
+            )
+
+            appendStatePatch(
+                runtime = runtime,
+                scopeId = chatId,
+                jobId = null,
+                stores =
+                    JSONObject().apply {
+                        put("chats", JSONArray().put(JSONObject(chat.toString())))
+                        put("diaryEntries", JSONArray().put(JSONObject(diaryEntry.toString())))
+                    },
+            )
+        }
+
+        if (chatsChanged) {
+            repository.writeStoreJson("chats", chats.toString())
+        }
+        if (diariesChanged) {
+            repository.writeStoreJson("diaryEntries", diaryEntries.toString())
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+                state = "running",
+                scopeId = "",
+                detail = "diary_generated",
+                progress = true,
+                claimed = false,
+                lastError = "",
+            )
+        }
+    }
+
+    private fun normalizeDiaryTags(rawTags: List<String>): List<String> {
+        val allowedPrefixes =
+            setOf(
+                "date",
+                "topic",
+                "event",
+                "person",
+                "place",
+                "emotion",
+                "decision",
+                "followup",
+            )
+        val normalized = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
+        for (raw in rawTags) {
+            val candidate = raw.trim()
+            if (candidate.isBlank()) continue
+            val separatorIndex = candidate.indexOf(":")
+            if (separatorIndex <= 0 || separatorIndex >= candidate.length - 1) continue
+            val prefix = candidate.substring(0, separatorIndex).trim().lowercase()
+            if (!allowedPrefixes.contains(prefix)) continue
+            val value = candidate.substring(separatorIndex + 1).trim().replace(Regex("\\s+"), " ")
+            if (value.isBlank()) continue
+            val boundedValue = if (value.length > 80) "${value.take(79).trimEnd()}…" else value
+            val tag = "$prefix:$boundedValue"
+            if (seen.contains(tag)) continue
+            seen.add(tag)
+            normalized.add(tag)
+            if (normalized.size >= 64) break
+        }
+        return normalized
+    }
+
+    private fun ensureDiaryConfig(chat: JSONObject): JSONObject {
+        val existing = chat.optJSONObject("diaryConfig") ?: JSONObject()
+        val next = JSONObject(existing.toString())
+        if (!next.has("enabled")) {
+            next.put("enabled", false)
+        } else {
+            next.put("enabled", next.optBoolean("enabled", false))
+        }
+        return next
+    }
+
+    private fun parseIsoMs(value: String): Long? {
+        return try {
+            Instant.parse(value.trim()).toEpochMilli()
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun maybeRefreshConversationSummary(

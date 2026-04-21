@@ -13,6 +13,7 @@ class LocalRepository(
     private val settingsJsonKey = "settings_json"
     private val personasJsonKey = "personas_json"
     private val chatsJsonKey = "chats_json"
+    private val diaryEntriesJsonKey = "diary_entries_json"
     private val messagesJsonKey = "messages_json"
     private val personaStatesJsonKey = "persona_states_json"
     private val memoriesJsonKey = "memories_json"
@@ -44,6 +45,7 @@ class LocalRepository(
         "settings" to settingsJsonKey,
         "personas" to personasJsonKey,
         "chats" to chatsJsonKey,
+        "diaryEntries" to diaryEntriesJsonKey,
         "messages" to messagesJsonKey,
         "personaStates" to personaStatesJsonKey,
         "memories" to memoriesJsonKey,

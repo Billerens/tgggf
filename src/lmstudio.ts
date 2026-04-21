@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  ChatSession,
   EndpointAuthConfig,
   LlmProvider,
   NativeChatResponse,
@@ -10,6 +11,7 @@ import type {
   PersonaLookPromptCache,
   PersonaRuntimeState,
 } from "./types";
+import { DIARY_RECENT_MESSAGE_LIMIT, normalizeDiaryTags } from "./diary";
 import type {
   LayeredMemoryContextCard,
   PersonaControlPayload,
@@ -1971,6 +1973,121 @@ export async function requestConversationSummaryUpdate(
     throw new Error("Не удалось распарсить JSON суммаризации.");
   }
   return normalizeSummaryState(parsed, request.existing, safeTargetTokens);
+}
+
+export interface OneToOneDiaryDraft {
+  shouldWrite: boolean;
+  markdown: string;
+  tags: string[];
+}
+
+interface OneToOneDiaryRequest {
+  chat: ChatSession;
+  transcript: Array<{
+    role: "user" | "assistant";
+    content: string;
+    createdAt?: string;
+  }>;
+}
+
+export async function requestOneToOneDiaryEntry(
+  settings: AppSettings,
+  persona: Persona,
+  request: OneToOneDiaryRequest,
+): Promise<OneToOneDiaryDraft> {
+  const transcript = request.transcript
+    .map((message) => ({
+      role: message.role,
+      content: message.content.trim(),
+      createdAt: toTrimmedString(message.createdAt),
+    }))
+    .filter((message) => message.content.length > 0)
+    .slice(-DIARY_RECENT_MESSAGE_LIMIT);
+  if (transcript.length === 0) {
+    return { shouldWrite: false, markdown: "", tags: [] };
+  }
+
+  const summary = {
+    summary: toTrimmedString(request.chat.conversationSummary),
+    facts: request.chat.summaryFacts ?? [],
+    goals: request.chat.summaryGoals ?? [],
+    openThreads: request.chat.summaryOpenThreads ?? [],
+    agreements: request.chat.summaryAgreements ?? [],
+  };
+
+  const systemPrompt = [
+    "Ты модуль дневника персоны для 1:1 чата.",
+    "Твоя задача: решить, стоит ли сейчас писать запись в дневник.",
+    "Если писать нечего (нет новых заметных эмоций/впечатлений/событий), верни shouldWrite=false.",
+    "Если писать стоит, верни shouldWrite=true и markdown в формате .md от первого лица.",
+    "Markdown должен быть свободным, но структурированным по темам через заголовки и/или списки.",
+    "Не повторяй слово в слово предыдущие формулировки summary.",
+    "Пиши на русском языке, естественно, без канцелярита.",
+    "Теги должны быть конкретными, в формате prefix:value.",
+    "Допустимые prefix: date, topic, event, person, place, emotion, decision, followup.",
+    "Возвращай только JSON.",
+    'Формат: {"shouldWrite":true|false,"markdown":"...","tags":["topic:...","emotion:..."]}',
+  ].join("\n");
+
+  const input = [
+    `Персона: ${persona.name.trim() || "Персона"}`,
+    `Чат: ${request.chat.title.trim() || "Без названия"}`,
+    "",
+    "Текущее summary чата:",
+    JSON.stringify(summary),
+    "",
+    "Новые сообщения (последние релевантные):",
+    ...transcript.map(
+      (message) =>
+        `${message.role === "user" ? "Пользователь" : "Персона"} [time=${formatMessageContextTime(message.createdAt)}]: ${message.content}`,
+    ),
+  ].join("\n");
+
+  try {
+    const response = await requestGenericChatCompletion(
+      settings,
+      "one_to_one_chat",
+      {
+        model: settings.model,
+        input,
+        systemPrompt,
+        maxOutputTokens: 1400,
+        temperature: Math.max(0.2, Math.min(0.7, settings.temperature)),
+        store: false,
+      },
+    );
+    const parsed = parseJsonObjectFromText<Record<string, unknown>>(
+      response.content,
+    );
+    if (!parsed) {
+      return { shouldWrite: false, markdown: "", tags: [] };
+    }
+    const shouldWriteRaw =
+      typeof parsed.shouldWrite === "boolean"
+        ? parsed.shouldWrite
+        : typeof parsed.should_write === "boolean"
+          ? parsed.should_write
+          : undefined;
+    const markdown =
+      toTrimmedString(parsed.markdown) ||
+      toTrimmedString(parsed.entry) ||
+      toTrimmedString(parsed.text);
+    const tags = normalizeDiaryTags(parsed.tags);
+    const shouldWrite =
+      typeof shouldWriteRaw === "boolean"
+        ? shouldWriteRaw
+        : Boolean(markdown);
+    if (!shouldWrite || !markdown) {
+      return { shouldWrite: false, markdown: "", tags: [] };
+    }
+    return {
+      shouldWrite: true,
+      markdown,
+      tags,
+    };
+  } catch {
+    return { shouldWrite: false, markdown: "", tags: [] };
+  }
 }
 
 export interface GeneratedPersonaDraft {

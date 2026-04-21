@@ -4,6 +4,7 @@ import type {
   AppSettings,
   ChatMessage,
   ChatSession,
+  DiaryEntry,
   GeneratorSession,
   GroupEvent,
   GroupMemoryPrivate,
@@ -45,6 +46,7 @@ interface BackupDataBundle {
   settings?: AppSettings;
   personas: Persona[];
   chats: ChatSession[];
+  diaryEntries: DiaryEntry[];
   messages: ChatMessage[];
   personaStates: PersonaRuntimeState[];
   memories: PersonaMemory[];
@@ -69,6 +71,7 @@ export interface AppBackupPayload {
   meta: {
     personas: number;
     chats: number;
+    diaryEntries: number;
     messages: number;
     personaStates: number;
     memories: number;
@@ -259,6 +262,7 @@ function buildPayloadMeta(bundle: BackupDataBundle): AppBackupPayload["meta"] {
   return {
     personas: bundle.personas.length,
     chats: bundle.chats.length,
+    diaryEntries: bundle.diaryEntries.length,
     messages: bundle.messages.length,
     personaStates: bundle.personaStates.length,
     memories: bundle.memories.length,
@@ -285,6 +289,7 @@ function buildRawMeta(stores: Record<string, unknown[]>): AppBackupPayload["meta
   return {
     personas: count("personas"),
     chats: count("chats"),
+    diaryEntries: count("diaryEntries"),
     messages: count("messages"),
     personaStates: count("personaStates"),
     memories: count("memories"),
@@ -312,6 +317,7 @@ export async function buildBackupPayload({
   const [
     allPersonas,
     allChats,
+    allDiaryEntries,
     allMessages,
     allStates,
     allMemories,
@@ -322,6 +328,7 @@ export async function buildBackupPayload({
   ] = await Promise.all([
     dbApi.getPersonas(),
     dbApi.getAllChats(),
+    dbApi.getAllDiaryEntries(),
     dbApi.getAllMessages(),
     dbApi.getAllPersonaStates(),
     dbApi.getAllMemories(),
@@ -333,6 +340,7 @@ export async function buildBackupPayload({
 
   let personas: Persona[] = [];
   let chats: ChatSession[] = [];
+  let diaryEntries: DiaryEntry[] = [];
   let messages: ChatMessage[] = [];
   let personaStates: PersonaRuntimeState[] = [];
   let memories: PersonaMemory[] = [];
@@ -430,6 +438,7 @@ export async function buildBackupPayload({
         chats = allChats;
       }
       const chatIdSet = new Set(chats.map((chat) => chat.id));
+      diaryEntries = allDiaryEntries.filter((entry) => chatIdSet.has(entry.chatId));
       messages = allMessages.filter((message) => chatIdSet.has(message.chatId));
       personaStates = allStates.filter((state) => chatIdSet.has(state.chatId));
       memories = allMemories.filter((memory) => chatIdSet.has(memory.chatId));
@@ -497,6 +506,7 @@ export async function buildBackupPayload({
       includeSettings = true;
       personas = allPersonas;
       chats = allChats;
+      diaryEntries = allDiaryEntries;
       messages = allMessages;
       personaStates = allStates;
       memories = allMemories;
@@ -517,6 +527,7 @@ export async function buildBackupPayload({
     } else if (legacyScope === "all_chats") {
       chats = allChats;
       const chatIdSet = new Set(chats.map((chat) => chat.id));
+      diaryEntries = allDiaryEntries.filter((entry) => chatIdSet.has(entry.chatId));
       messages = allMessages.filter((message) => chatIdSet.has(message.chatId));
       personaStates = allStates.filter((state) => chatIdSet.has(state.chatId));
       memories = allMemories.filter((memory) => chatIdSet.has(memory.chatId));
@@ -533,6 +544,7 @@ export async function buildBackupPayload({
         throw new Error("Выбранный чат не найден.");
       }
       chats = [selectedChat];
+      diaryEntries = allDiaryEntries.filter((entry) => entry.chatId === normalizedChatId);
       messages = allMessages.filter((message) => message.chatId === normalizedChatId);
       personaStates = allStates.filter((state) => state.chatId === normalizedChatId);
       memories = allMemories.filter((memory) => memory.chatId === normalizedChatId);
@@ -561,6 +573,7 @@ export async function buildBackupPayload({
     settings: includeSettings ? settings : undefined,
     personas: uniqueByKey(personas, (persona) => persona.id),
     chats: uniqueByKey(chats, (chat) => chat.id),
+    diaryEntries: uniqueByKey(diaryEntries, (entry) => entry.id),
     messages: uniqueByKey(messages, (message) => message.id),
     personaStates: uniqueByKey(personaStates, (state) => state.chatId),
     memories: uniqueByKey(memories, (memory) => memory.id),
@@ -727,6 +740,7 @@ export async function parseBackupFile(file: File): Promise<ParsedBackupPayload> 
     settings,
     personas: readArray<Persona>(dataObject.personas),
     chats: readArray<ChatSession>(dataObject.chats),
+    diaryEntries: readArray<DiaryEntry>(dataObject.diaryEntries),
     messages: readArray<ChatMessage>(dataObject.messages),
     personaStates: readArray<PersonaRuntimeState>(dataObject.personaStates),
     memories: readArray<PersonaMemory>(dataObject.memories),
@@ -781,6 +795,7 @@ export async function importBackupPayload(
     const imageAssets = uniqueByKey(data.imageAssets, (asset) => asset.id);
     const personas = uniqueByKey(data.personas, (persona) => persona.id);
     const chats = uniqueByKey(data.chats, (chat) => chat.id);
+    const diaryEntries = uniqueByKey(data.diaryEntries, (entry) => entry.id);
     const messages = uniqueByKey(data.messages, (message) => message.id);
     const personaStates = uniqueByKey(data.personaStates, (state) => state.chatId);
     const memories = uniqueByKey(data.memories, (memory) => memory.id);
@@ -819,6 +834,7 @@ export async function importBackupPayload(
     payloadStats = {
       personas: personas.length,
       chats: chats.length,
+      diaryEntries: diaryEntries.length,
       messages: messages.length,
       personaStates: personaStates.length,
       memories: memories.length,
@@ -847,6 +863,8 @@ export async function importBackupPayload(
     await Promise.all(personas.map((persona) => dbApi.savePersona(persona)));
     stage = "save_chats";
     await Promise.all(chats.map((chat) => dbApi.saveChat(chat)));
+    stage = "save_diary_entries";
+    await dbApi.saveDiaryEntries(diaryEntries);
     stage = "save_messages";
     await Promise.all(messages.map((message) => dbApi.saveMessage(message)));
     stage = "save_persona_states";
@@ -889,6 +907,7 @@ export async function importBackupPayload(
       settings: data.settings,
       personas,
       chats,
+      diaryEntries,
       messages,
       personaStates,
       memories,

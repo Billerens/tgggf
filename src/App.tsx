@@ -201,6 +201,7 @@ export default function App() {
     messages,
     activePersonaState,
     activeMemories,
+    activeDiaryEntries,
     activePersonaId,
     activeChatId,
     settings,
@@ -216,6 +217,10 @@ export default function App() {
     deleteChat,
     renameChat,
     setChatStyleStrength,
+    setChatDiaryEnabled,
+    updateDiaryEntryTags,
+    testGenerateDiaryEntry,
+    runDiarySchedulerTick,
     setActiveInfluenceProfile,
     updateActivePersonaState,
     addManualMemory,
@@ -485,6 +490,16 @@ export default function App() {
     isAndroidRuntime,
     syncOneToOneStateFromDb,
   });
+  useEffect(() => {
+    if (!initialized || isAndroidRuntime) return;
+    void runDiarySchedulerTick();
+    const timer = window.setInterval(() => {
+      void runDiarySchedulerTick();
+    }, 60_000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [initialized, isAndroidRuntime, runDiarySchedulerTick]);
   useGroupIterationBackgroundWorker({
     activeGroupRoom,
     isAndroidRuntime,
@@ -1226,6 +1241,7 @@ export default function App() {
           messages={messages}
           imageMetaByUrl={chatImageMetaByUrl}
           memories={activeMemories}
+          diaryEntries={activeDiaryEntries}
           runtimeState={activePersonaState}
           settings={settings}
           imageActionBusy={imageActionBusy}
@@ -1234,6 +1250,13 @@ export default function App() {
           onUpdateChatStyleStrength={(chatId, value) => {
             void setChatStyleStrength(chatId, value);
           }}
+          onToggleDiaryEnabled={(chatId, enabled) => {
+            void setChatDiaryEnabled(chatId, enabled);
+          }}
+          onUpdateDiaryTags={(chatId, diaryEntryId, tags) => {
+            void updateDiaryEntryTags(chatId, diaryEntryId, tags);
+          }}
+          onTestDiaryGeneration={(chatId) => testGenerateDiaryEntry(chatId)}
           onUpdateRuntimeState={(chatId, patch) => {
             if (chatId !== activeChatId) return;
             void updateActivePersonaState(patch);
