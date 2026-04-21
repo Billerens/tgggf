@@ -118,6 +118,7 @@ interface AppState {
     diaryEntryId: string,
     tags: string[],
   ) => Promise<void>;
+  deleteDiaryEntry: (chatId: string, diaryEntryId: string) => Promise<void>;
   testGenerateDiaryEntry: (chatId: string) => Promise<DiaryEntry | null>;
   runDiarySchedulerTick: () => Promise<void>;
   setActiveInfluenceProfile: (
@@ -1076,6 +1077,35 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (activeChatId === chatId) {
         const activeDiaryEntries = sourceEntries
           .map((entry) => (entry.id === diaryEntryId ? updatedEntry : entry))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        set({ activeDiaryEntries });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  deleteDiaryEntry: async (chatId, diaryEntryId) => {
+    try {
+      const activeChatId = get().activeChatId;
+      const sourceEntries =
+        activeChatId === chatId
+          ? get().activeDiaryEntries
+          : await dbApi.getDiaryEntries(chatId);
+      const target = sourceEntries.find((entry) => entry.id === diaryEntryId);
+      if (!target) return;
+
+      await dbApi.deleteDiaryEntries([diaryEntryId]);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: target.personaId,
+        });
+        await triggerBackgroundRuntime("one_to_one_diary_delete");
+      }
+      if (activeChatId === chatId) {
+        const activeDiaryEntries = sourceEntries
+          .filter((entry) => entry.id !== diaryEntryId)
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
         set({ activeDiaryEntries });
       }

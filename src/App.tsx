@@ -219,6 +219,7 @@ export default function App() {
     setChatStyleStrength,
     setChatDiaryEnabled,
     updateDiaryEntryTags,
+    deleteDiaryEntry,
     testGenerateDiaryEntry,
     runDiarySchedulerTick,
     setActiveInfluenceProfile,
@@ -1255,6 +1256,9 @@ export default function App() {
           }}
           onUpdateDiaryTags={(chatId, diaryEntryId, tags) => {
             void updateDiaryEntryTags(chatId, diaryEntryId, tags);
+          }}
+          onDeleteDiaryEntry={(chatId, diaryEntryId) => {
+            void deleteDiaryEntry(chatId, diaryEntryId);
           }}
           onTestDiaryGeneration={(chatId) => testGenerateDiaryEntry(chatId)}
           onUpdateRuntimeState={(chatId, patch) => {

@@ -50,6 +50,7 @@ interface ChatDetailsModalProps {
   onUpdateChatStyleStrength: (chatId: string, value: number | null) => void;
   onToggleDiaryEnabled: (chatId: string, enabled: boolean) => void;
   onUpdateDiaryTags: (chatId: string, diaryEntryId: string, tags: string[]) => void;
+  onDeleteDiaryEntry: (chatId: string, diaryEntryId: string) => void;
   onTestDiaryGeneration: (chatId: string) => Promise<DiaryEntry | null>;
   onUpdateRuntimeState: (
     chatId: string,
@@ -466,6 +467,7 @@ export function ChatDetailsModal({
   onUpdateChatStyleStrength,
   onToggleDiaryEnabled,
   onUpdateDiaryTags,
+  onDeleteDiaryEntry,
   onTestDiaryGeneration,
   onUpdateRuntimeState,
   onAddMemory,
@@ -852,12 +854,20 @@ export function ChatDetailsModal({
     }
   }
 
+  function handleDeleteSelectedDiaryEntry() {
+    if (!chat?.id || !selectedDiaryEntry) return;
+    const confirmed = window.confirm("Удалить эту запись дневника?");
+    if (!confirmed) return;
+    onDeleteDiaryEntry(chat.id, selectedDiaryEntry.id);
+  }
+
   function renderDiaryEntryContent(
     entry: DiaryEntry,
     options: {
       createdLabel: string;
       removableTags: boolean;
       showTagEditor: boolean;
+      showDeleteAction: boolean;
     },
   ) {
     return (
@@ -870,6 +880,17 @@ export function ChatDetailsModal({
           <p>
             <strong>Источник:</strong> {entry.sourceRange.messageCount} сообщ.
           </p>
+          {options.showDeleteAction ? (
+            <div className="diary-entry-head-actions">
+              <button
+                type="button"
+                className="danger"
+                onClick={handleDeleteSelectedDiaryEntry}
+              >
+                Удалить запись
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="diary-entry-tags">
           {entry.tags.map((tag) =>
@@ -1658,6 +1679,7 @@ export function ChatDetailsModal({
                   createdLabel: "Тестовый результат",
                   removableTags: false,
                   showTagEditor: false,
+                  showDeleteAction: false,
                 })}
               </article>
             ) : null}
@@ -1697,6 +1719,7 @@ export function ChatDetailsModal({
                       createdLabel: "Создано",
                       removableTags: true,
                       showTagEditor: true,
+                      showDeleteAction: true,
                     })
                   ) : (
                     <p className="empty-state">Выберите запись слева.</p>
