@@ -534,78 +534,36 @@ object OneToOneChatNativeExecutor {
         messages.put(userMessageIndex, userMessage)
 
         val assistantMessage = buildAssistantMessage(scope, llmResult)
-        val assistantMessageWithImages =
-            maybeGenerateMessageImages(
-                context = context,
-                repository = repository,
-                runtime = runtime,
-                jobId = job.id,
-                scope = scope,
-                settings = settings,
-                chat = chat,
-                persona = effectivePersona,
-                evolutionHistoryApplied = evolutionHistoryForPrompt,
-                baseAssistantMessage = assistantMessage,
-            )
-        val finalAssistantMessage = assistantMessageWithImages.message
-        messages.put(finalAssistantMessage)
-
-        val fallbackState =
-            evolveStateFallback(
-                baseState = existingState,
-                persona = effectivePersona,
-                userMessage = userContent,
-                assistantMessage = finalAssistantMessage.optString("content", ""),
-            )
-        val controlApplied =
-            applyPersonaControl(
-                control = llmResult.personaControl,
-                baseState = fallbackState,
-                userMessage = userContent,
-            )
-        val resolvedState = controlApplied.state
-        upsertByChatId(personaStates, resolvedState, "chatId")
-        val evolutionResult =
-            processPersonaControlEvolution(
-                control = llmResult.personaControl,
-                config = evolutionConfig,
-                state = existingEvolutionState,
-                timestamp = nowIsoUtc(),
-            )
-        val resolvedEvolutionState = evolutionResult.state
-        upsertByChatId(personaEvolutionStates, resolvedEvolutionState, "chatId")
-
-        val memoriesAfterRemoval = applyMemoryRemovals(memoryPool, controlApplied.memoryRemovals)
-        val derivedMemoryCandidates =
-            if (llmResult.personaControl == null) {
-                derivePersistentMemoriesFromUserMessage(
-                    persona = effectivePersona,
-                    text = userContent,
-                )
+        val promptBlocks =
+            parseStringList(assistantMessage.optJSONArray("comfyPrompts"))
+                .ifEmpty {
+                    assistantMessage
+                        .optString("comfyPrompt", "")
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
+                }
+        val imageDescriptionBlocks =
+            parseStringList(assistantMessage.optJSONArray("comfyImageDescriptions"))
+                .ifEmpty {
+                    assistantMessage
+                        .optString("comfyImageDescription", "")
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
+                }
+        val requestedImageCount =
+            if (imageDescriptionBlocks.isNotEmpty()) {
+                imageDescriptionBlocks.size
             } else {
-                emptyList()
+                promptBlocks.size
             }
-        val candidates = derivedMemoryCandidates + controlApplied.memoryCandidates
-        val maxMemories = resolvePersonaMaxMemories(effectivePersona)
-        val reconciledMemories =
-            reconcileMemories(
-                existing = memoriesAfterRemoval.first,
-                candidates = candidates,
-                maxMemories = maxMemories,
-                decayDays = decayDays,
-                chatId = scope.chatId,
-                personaId = persona.optString("id", "").trim(),
-            )
-        writeChatMemories(
-            store = memories,
-            chatId = scope.chatId,
-            memoriesForChat = reconciledMemories.first,
-        )
-        val deletedMemoryIds =
-            (memoriesAfterRemoval.second + reconciledMemories.second)
-                .map { id -> id.trim() }
-                .filter { id -> id.isNotEmpty() }
-                .distinct()
+        if (requestedImageCount > 0) {
+            assistantMessage.put("imageGenerationPending", true)
+            assistantMessage.put("imageGenerationExpected", requestedImageCount)
+            assistantMessage.put("imageGenerationCompleted", 0)
+        }
+        messages.put(assistantMessage)
 
         chat.put(
             "title",
@@ -618,22 +576,11 @@ object OneToOneChatNativeExecutor {
         if (!llmResult.responseId.isNullOrBlank()) {
             chat.put("lastResponseId", llmResult.responseId)
         }
-
-        val timelineAfterAssistant = buildChatMessageTimeline(messages, scope.chatId)
-        maybeRefreshConversationSummary(
-            settings = settings,
-            persona = effectivePersona,
-            chat = chat,
-            timeline = timelineAfterAssistant,
-        )
         chats.put(chatIndex, chat)
 
+        // Publish assistant message immediately after LLM response.
         repository.writeStoreJson("chats", chats.toString())
         repository.writeStoreJson("messages", messages.toString())
-        repository.writeStoreJson("personaStates", personaStates.toString())
-        repository.writeStoreJson("personaEvolutionStates", personaEvolutionStates.toString())
-        repository.writeStoreJson("memories", memories.toString())
-
         appendStatePatch(
             runtime = runtime,
             scopeId = scope.chatId,
@@ -645,44 +592,254 @@ object OneToOneChatNativeExecutor {
                         "messages",
                         JSONArray().apply {
                             put(JSONObject(userMessage.toString()))
-                            put(JSONObject(finalAssistantMessage.toString()))
+                            put(JSONObject(assistantMessage.toString()))
                         },
                     )
-                    put("personaStates", JSONArray().put(JSONObject(resolvedState.toString())))
-                    put(
-                        "personaEvolutionStates",
-                        JSONArray().put(JSONObject(resolvedEvolutionState.toString())),
-                    )
-                    put(
-                        "memories",
-                        JSONArray().apply {
-                            reconciledMemories.first.forEach { memory ->
-                                put(JSONObject(memory.toString()))
-                            }
-                        },
-                    )
-                    if (deletedMemoryIds.isNotEmpty()) {
-                        put("deletedMemoryIds", JSONArray(deletedMemoryIds))
-                    }
                 },
-            assetIds =
-                assistantMessageWithImages.generatedAssets
-                    .mapNotNull { asset -> asset.optString("id", "").trim().ifBlank { null } },
         )
         appendRuntimeEvent(
             runtime = runtime,
             scopeId = scope.chatId,
             jobId = job.id,
-            stage = "state_persisted",
+            stage = "assistant_published",
             level = "info",
-            message = "One-to-one state persisted",
+            message = "Assistant message published before side actions",
             details =
                 JSONObject().apply {
-                    put("memoryCount", reconciledMemories.first.size)
-                    put("deletedMemoryCount", deletedMemoryIds.size)
-                    put("evolutionAppliedNow", evolutionResult.appliedNow)
+                    put("requestedImageCount", requestedImageCount)
                 },
         )
+        ForegroundSyncService.updateWorkerStatus(
+            context = context,
+            worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+            state = "running",
+            scopeId = scope.chatId,
+            detail = "assistant_published",
+            progress = true,
+            claimed = true,
+            lastError = "",
+        )
+
+        try {
+            var finalAssistantMessage = JSONObject(assistantMessage.toString())
+            val assistantMessageWithImages =
+                maybeGenerateMessageImages(
+                    context = context,
+                    repository = repository,
+                    runtime = runtime,
+                    jobId = job.id,
+                    scope = scope,
+                    settings = settings,
+                    chat = chat,
+                    persona = effectivePersona,
+                    evolutionHistoryApplied = evolutionHistoryForPrompt,
+                    baseAssistantMessage = finalAssistantMessage,
+                )
+            finalAssistantMessage = assistantMessageWithImages.message
+            val generatedAssetIds =
+                assistantMessageWithImages.generatedAssets
+                    .mapNotNull { asset -> asset.optString("id", "").trim().ifBlank { null } }
+
+            if (!replaceMessageById(messages, finalAssistantMessage)) {
+                messages.put(finalAssistantMessage)
+            }
+            if (generatedAssetIds.isNotEmpty() || requestedImageCount > 0) {
+                persistMessageUpdatesMerged(
+                    repository = repository,
+                    updates = listOf(finalAssistantMessage),
+                )
+                appendStatePatch(
+                    runtime = runtime,
+                    scopeId = scope.chatId,
+                    jobId = job.id,
+                    stores =
+                        JSONObject().apply {
+                            put(
+                                "messages",
+                                JSONArray().put(JSONObject(finalAssistantMessage.toString())),
+                            )
+                        },
+                    assetIds = generatedAssetIds,
+                )
+            }
+
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+                state = "running",
+                scopeId = scope.chatId,
+                detail = "state_persisting",
+                progress = true,
+                claimed = true,
+                lastError = "",
+            )
+
+            val fallbackState =
+                evolveStateFallback(
+                    baseState = existingState,
+                    persona = effectivePersona,
+                    userMessage = userContent,
+                    assistantMessage = finalAssistantMessage.optString("content", ""),
+                )
+            val controlApplied =
+                applyPersonaControl(
+                    control = llmResult.personaControl,
+                    baseState = fallbackState,
+                    userMessage = userContent,
+                )
+            val resolvedState = controlApplied.state
+            upsertByChatId(personaStates, resolvedState, "chatId")
+            val evolutionResult =
+                processPersonaControlEvolution(
+                    control = llmResult.personaControl,
+                    config = evolutionConfig,
+                    state = existingEvolutionState,
+                    timestamp = nowIsoUtc(),
+                )
+            val resolvedEvolutionState = evolutionResult.state
+            upsertByChatId(personaEvolutionStates, resolvedEvolutionState, "chatId")
+
+            val memoriesAfterRemoval = applyMemoryRemovals(memoryPool, controlApplied.memoryRemovals)
+            val derivedMemoryCandidates =
+                if (llmResult.personaControl == null) {
+                    derivePersistentMemoriesFromUserMessage(
+                        persona = effectivePersona,
+                        text = userContent,
+                    )
+                } else {
+                    emptyList()
+                }
+            val candidates = derivedMemoryCandidates + controlApplied.memoryCandidates
+            val maxMemories = resolvePersonaMaxMemories(effectivePersona)
+            val reconciledMemories =
+                reconcileMemories(
+                    existing = memoriesAfterRemoval.first,
+                    candidates = candidates,
+                    maxMemories = maxMemories,
+                    decayDays = decayDays,
+                    chatId = scope.chatId,
+                    personaId = persona.optString("id", "").trim(),
+                )
+            writeChatMemories(
+                store = memories,
+                chatId = scope.chatId,
+                memoriesForChat = reconciledMemories.first,
+            )
+            val deletedMemoryIds =
+                (memoriesAfterRemoval.second + reconciledMemories.second)
+                    .map { id -> id.trim() }
+                    .filter { id -> id.isNotEmpty() }
+                    .distinct()
+
+            val timelineAfterAssistant = buildChatMessageTimeline(messages, scope.chatId)
+            maybeRefreshConversationSummary(
+                settings = settings,
+                persona = effectivePersona,
+                chat = chat,
+                timeline = timelineAfterAssistant,
+            )
+            chats.put(chatIndex, chat)
+
+            val latestChats = readStoreArray(repository, "chats")
+            val latestMessages = readStoreArray(repository, "messages")
+            val latestPersonaStates = readStoreArray(repository, "personaStates")
+            val latestPersonaEvolutionStates = readStoreArray(repository, "personaEvolutionStates")
+            val latestMemories = readStoreArray(repository, "memories")
+
+            upsertByChatId(latestChats, JSONObject(chat.toString()), "id")
+            upsertByChatId(latestMessages, JSONObject(userMessage.toString()), "id")
+            upsertByChatId(latestMessages, JSONObject(finalAssistantMessage.toString()), "id")
+            upsertByChatId(latestPersonaStates, JSONObject(resolvedState.toString()), "chatId")
+            val latestEvolutionState =
+                normalizePersonaEvolutionState(
+                    state = findPersonaEvolutionStateForChat(latestPersonaEvolutionStates, scope.chatId),
+                    chatId = scope.chatId,
+                    persona = persona,
+                )
+            val mergedEvolutionState =
+                mergePersonaEvolutionStateDelta(
+                    latestState = latestEvolutionState,
+                    stateAtJobStart = existingEvolutionState,
+                    stateAfterJob = resolvedEvolutionState,
+                )
+            upsertByChatId(latestPersonaEvolutionStates, mergedEvolutionState, "chatId")
+            writeChatMemories(
+                store = latestMemories,
+                chatId = scope.chatId,
+                memoriesForChat = reconciledMemories.first.map { memory -> JSONObject(memory.toString()) },
+            )
+
+            repository.writeStoreJson("chats", latestChats.toString())
+            repository.writeStoreJson("messages", latestMessages.toString())
+            repository.writeStoreJson("personaStates", latestPersonaStates.toString())
+            repository.writeStoreJson("personaEvolutionStates", latestPersonaEvolutionStates.toString())
+            repository.writeStoreJson("memories", latestMemories.toString())
+
+            appendStatePatch(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stores =
+                    JSONObject().apply {
+                        put("chats", JSONArray().put(JSONObject(chat.toString())))
+                        put("messages", JSONArray().put(JSONObject(finalAssistantMessage.toString())))
+                        put("personaStates", JSONArray().put(JSONObject(resolvedState.toString())))
+                        put(
+                            "personaEvolutionStates",
+                            JSONArray().put(JSONObject(mergedEvolutionState.toString())),
+                        )
+                        put(
+                            "memories",
+                            JSONArray().apply {
+                                reconciledMemories.first.forEach { memory ->
+                                    put(JSONObject(memory.toString()))
+                                }
+                            },
+                        )
+                        if (deletedMemoryIds.isNotEmpty()) {
+                            put("deletedMemoryIds", JSONArray(deletedMemoryIds))
+                        }
+                    },
+            )
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "state_persisted",
+                level = "info",
+                message = "One-to-one state persisted",
+                details =
+                    JSONObject().apply {
+                        put("memoryCount", reconciledMemories.first.size)
+                        put("deletedMemoryCount", deletedMemoryIds.size)
+                        put("evolutionAppliedNow", evolutionResult.appliedNow)
+                    },
+            )
+        } catch (error: Exception) {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "post_llm_side_effects_failed",
+                level = "warn",
+                message = "Post-LLM side effects failed after assistant publish (soft-fail)",
+                details =
+                    JSONObject().apply {
+                        put("error", error.message ?: "post_llm_side_effects_failed")
+                    },
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+                state = "running",
+                scopeId = scope.chatId,
+                detail = "post_llm_side_effects_failed",
+                progress = true,
+                claimed = true,
+                lastError = error.message ?: "post_llm_side_effects_failed",
+            )
+        }
+
         jobs.completeJob(job.id)
         appendRuntimeEvent(
             runtime = runtime,
@@ -1582,6 +1739,18 @@ object OneToOneChatNativeExecutor {
         return -1
     }
 
+    private fun replaceMessageById(messages: JSONArray, nextMessage: JSONObject): Boolean {
+        val targetId = nextMessage.optString("id", "").trim()
+        if (targetId.isEmpty()) return false
+        for (index in 0 until messages.length()) {
+            val message = messages.optJSONObject(index) ?: continue
+            if (message.optString("id", "").trim() != targetId) continue
+            messages.put(index, nextMessage)
+            return true
+        }
+        return false
+    }
+
     private fun findObjectById(items: JSONArray, id: String): JSONObject? {
         val normalizedId = id.trim()
         if (normalizedId.isEmpty()) return null
@@ -1614,6 +1783,136 @@ object OneToOneChatNativeExecutor {
         } catch (_: Exception) {
             JSONArray()
         }
+    }
+
+    private fun persistMessageUpdatesMerged(
+        repository: LocalRepository,
+        updates: List<JSONObject>,
+    ) {
+        if (updates.isEmpty()) return
+        val latestMessages = readStoreArray(repository, "messages")
+        updates.forEach { message ->
+            upsertByChatId(
+                items = latestMessages,
+                next = JSONObject(message.toString()),
+                key = "id",
+            )
+        }
+        repository.writeStoreJson("messages", latestMessages.toString())
+    }
+
+    private fun mergePersonaEvolutionStateDelta(
+        latestState: JSONObject,
+        stateAtJobStart: JSONObject,
+        stateAfterJob: JSONObject,
+    ): JSONObject {
+        val merged = JSONObject(latestState.toString())
+        val latestHistory = merged.optJSONArray("history")?.let { JSONArray(it.toString()) } ?: JSONArray()
+        val latestPending = merged.optJSONArray("pendingProposals")?.let { JSONArray(it.toString()) } ?: JSONArray()
+        val baseHistoryIds = collectJsonObjectIds(stateAtJobStart.optJSONArray("history"))
+        val basePendingIds = collectJsonObjectIds(stateAtJobStart.optJSONArray("pendingProposals"))
+        val historyAdded =
+            appendJsonObjectDeltaById(
+                source = stateAfterJob.optJSONArray("history"),
+                baseIds = baseHistoryIds,
+                target = latestHistory,
+            )
+        val pendingAdded =
+            appendJsonObjectDeltaById(
+                source = stateAfterJob.optJSONArray("pendingProposals"),
+                baseIds = basePendingIds,
+                target = latestPending,
+            )
+        merged.put("history", latestHistory)
+        merged.put("pendingProposals", latestPending)
+        if (historyAdded) {
+            merged.put("currentProfile", rebuildPersonaEvolutionCurrentProfile(merged))
+        }
+        if (historyAdded || pendingAdded) {
+            val mergedUpdatedAt =
+                maxIsoTimestamp(
+                    merged.optString("updatedAt", ""),
+                    stateAfterJob.optString("updatedAt", ""),
+                    nowIsoUtc(),
+                )
+            merged.put("updatedAt", mergedUpdatedAt)
+        }
+        return merged
+    }
+
+    private fun collectJsonObjectIds(items: JSONArray?): Set<String> {
+        if (items == null) return emptySet()
+        val ids = mutableSetOf<String>()
+        for (index in 0 until items.length()) {
+            val row = items.optJSONObject(index) ?: continue
+            val id = row.optString("id", "").trim()
+            if (id.isNotEmpty()) {
+                ids.add(id)
+            }
+        }
+        return ids
+    }
+
+    private fun appendJsonObjectDeltaById(
+        source: JSONArray?,
+        baseIds: Set<String>,
+        target: JSONArray,
+    ): Boolean {
+        if (source == null || source.length() == 0) return false
+        val targetIds = collectJsonObjectIds(target).toMutableSet()
+        var changed = false
+        for (index in 0 until source.length()) {
+            val row = source.optJSONObject(index) ?: continue
+            val rowId = row.optString("id", "").trim()
+            if (rowId.isNotEmpty()) {
+                if (baseIds.contains(rowId)) continue
+                if (targetIds.contains(rowId)) continue
+                target.put(JSONObject(row.toString()))
+                targetIds.add(rowId)
+                changed = true
+                continue
+            }
+            val serialized = row.toString()
+            var alreadyExists = false
+            for (targetIndex in 0 until target.length()) {
+                val existing = target.optJSONObject(targetIndex) ?: continue
+                if (existing.toString() == serialized) {
+                    alreadyExists = true
+                    break
+                }
+            }
+            if (!alreadyExists) {
+                target.put(JSONObject(row.toString()))
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    private fun rebuildPersonaEvolutionCurrentProfile(state: JSONObject): JSONObject {
+        val baselineProfile = state.optJSONObject("baselineProfile")?.let { JSONObject(it.toString()) } ?: JSONObject()
+        val historyOnlyState =
+            JSONObject().apply {
+                put("history", state.optJSONArray("history")?.let { JSONArray(it.toString()) } ?: JSONArray())
+            }
+        var currentProfile = JSONObject(baselineProfile.toString())
+        selectAppliedPersonaEvolutionHistory(historyOnlyState).forEach { event ->
+            val patch = normalizePersonaEvolutionPatch(parseOptionalJsonObject(event.opt("patch"))) ?: return@forEach
+            currentProfile = applyPersonaEvolutionPatch(currentProfile, patch)
+        }
+        return currentProfile
+    }
+
+    private fun maxIsoTimestamp(vararg values: String): String {
+        var latest = ""
+        values.forEach { raw ->
+            val value = raw.trim()
+            if (value.isBlank()) return@forEach
+            if (latest.isBlank() || value > latest) {
+                latest = value
+            }
+        }
+        return if (latest.isNotBlank()) latest else nowIsoUtc()
     }
 
     private fun parseJsonObject(raw: String?): JSONObject {
@@ -1880,6 +2179,41 @@ object OneToOneChatNativeExecutor {
         return normalized.ifBlank { null }
     }
 
+    private fun normalizeStandalonePersonaTextPatchField(value: Any?): String? {
+        val normalized = normalizeTextPatchField(value) ?: return null
+        if (!looksLikeStandalonePersonaText(normalized)) return null
+        return normalized
+    }
+
+    private fun looksLikeStandalonePersonaText(value: String): Boolean {
+        val normalized = value.trim()
+        if (normalized.isEmpty()) return false
+        val compact = normalized.lowercase()
+        if (compact.contains("->")) return false
+        val deltaPrefixes =
+            listOf(
+                "станов",
+                "стал ",
+                "стала ",
+                "стало ",
+                "станет ",
+                "делается ",
+                "чуть ",
+                "немного ",
+                "слегка ",
+                "более ",
+                "менее ",
+                "теперь ",
+                "ещё ",
+                "еще ",
+                "по-прежнему ",
+                "остаётся ",
+                "остается ",
+                "как раньше",
+            )
+        return deltaPrefixes.none { prefix -> compact.startsWith(prefix) }
+    }
+
     private fun pickFirstNonNullValue(raw: JSONObject?, vararg keys: String): Any? {
         if (raw == null) return null
         for (key in keys) {
@@ -2087,8 +2421,8 @@ object OneToOneChatNativeExecutor {
     private fun normalizePersonaEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        normalizeTextPatchField(pickFirstNonNullValue(raw, "personalityPrompt", "personality_prompt"))?.let { patch.put("personalityPrompt", it) }
-        normalizeTextPatchField(pickFirstNonNullValue(raw, "stylePrompt", "style_prompt"))?.let { patch.put("stylePrompt", it) }
+        normalizeStandalonePersonaTextPatchField(pickFirstNonNullValue(raw, "personalityPrompt", "personality_prompt"))?.let { patch.put("personalityPrompt", it) }
+        normalizeStandalonePersonaTextPatchField(pickFirstNonNullValue(raw, "stylePrompt", "style_prompt"))?.let { patch.put("stylePrompt", it) }
         normalizeAppearanceEvolutionPatch(pickFirstObject(raw, "appearance"))?.let { patch.put("appearance", it) }
         normalizeAdvancedEvolutionPatch(pickFirstObject(raw, "advanced"))?.let { patch.put("advanced", it) }
         return if (patch.length() > 0) patch else null

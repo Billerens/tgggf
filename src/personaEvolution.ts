@@ -32,6 +32,33 @@ function toTrimmedString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function isStandalonePersonaText(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.includes("->")) return false;
+  const deltaPrefixes = [
+    "станов",
+    "стал ",
+    "стала ",
+    "стало ",
+    "станет ",
+    "делается ",
+    "чуть ",
+    "немного ",
+    "слегка ",
+    "более ",
+    "менее ",
+    "теперь ",
+    "ещё ",
+    "еще ",
+    "по-прежнему ",
+    "остаётся ",
+    "остается ",
+    "как раньше",
+  ];
+  return deltaPrefixes.every((prefix) => !normalized.startsWith(prefix));
+}
+
 function toFiniteNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
@@ -224,11 +251,15 @@ export function normalizePersonaEvolutionPatch(
   const personalityPrompt = toTrimmedString(
     pickFirstDefined(input, ["personalityPrompt", "personality_prompt"]),
   );
-  if (personalityPrompt) patch.personalityPrompt = personalityPrompt;
+  if (personalityPrompt && isStandalonePersonaText(personalityPrompt)) {
+    patch.personalityPrompt = personalityPrompt;
+  }
   const stylePrompt = toTrimmedString(
     pickFirstDefined(input, ["stylePrompt", "style_prompt"]),
   );
-  if (stylePrompt) patch.stylePrompt = stylePrompt;
+  if (stylePrompt && isStandalonePersonaText(stylePrompt)) {
+    patch.stylePrompt = stylePrompt;
+  }
   const appearance = normalizeAppearancePatch(
     pickFirstDefined(input, ["appearance"]),
   );

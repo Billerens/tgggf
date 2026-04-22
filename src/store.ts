@@ -157,6 +157,13 @@ interface AppState {
       patch: unknown;
     },
   ) => Promise<void>;
+  rejectEvolutionPatchNow: (
+    chatId: string,
+    payload: {
+      reason: string;
+      patch: unknown;
+    },
+  ) => Promise<void>;
   approvePendingEvolution: (chatId: string, proposalId: string) => Promise<void>;
   rejectPendingEvolution: (chatId: string, proposalId: string) => Promise<void>;
   undoLastAppliedEvolution: (chatId: string) => Promise<void>;
@@ -539,7 +546,10 @@ function areEvolutionPatchesEqual(
   left: PersonaEvolutionProfile,
   right: PersonaEvolutionProfile,
 ) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const leftPatch = normalizePersonaEvolutionPatch(left);
+  const rightPatch = normalizePersonaEvolutionPatch(right);
+  if (!leftPatch || !rightPatch) return false;
+  return JSON.stringify(leftPatch) === JSON.stringify(rightPatch);
 }
 
 function applyEvolutionPatchWithHistory(
@@ -1580,6 +1590,71 @@ export const useAppStore = create<AppState>((set, get) => ({
           personaId: activePersona.id,
         });
         await triggerBackgroundRuntime("one_to_one_evolution_approve");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  rejectEvolutionPatchNow: async (chatId, payload) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    if (!activeChat.evolutionConfig?.enabled) return;
+    if ((activeChat.evolutionConfig?.applyMode ?? "manual") !== "manual") return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      const patch = normalizePersonaEvolutionPatch(payload.patch);
+      if (!patch) {
+        throw new Error(
+          "Невалидный patch эволюции. Разрешены только поля personalityPrompt/stylePrompt/appearance/advanced.",
+        );
+      }
+      const reason = resolveEvolutionReason(payload.reason, patch);
+      const timestamp = nowIso();
+
+      const matchingPending = evolutionState.pendingProposals.find((proposal) =>
+        areEvolutionPatchesEqual(proposal.patch, patch),
+      );
+
+      const rejectedEvent = createEvolutionHistoryItem({
+        status: "rejected",
+        reason: matchingPending?.reason ?? reason,
+        patch: matchingPending?.patch ?? patch,
+        proposalId: matchingPending?.id,
+        timestamp,
+      });
+      const nextState: PersonaEvolutionState = {
+        ...evolutionState,
+        pendingProposals: matchingPending
+          ? evolutionState.pendingProposals.filter(
+              (proposal) => proposal.id !== matchingPending.id,
+            )
+          : evolutionState.pendingProposals,
+        history: [...evolutionState.history, rejectedEvent],
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_reject");
       }
       if (state.activeChatId === chatId) {
         set({ activePersonaEvolutionState: nextState });

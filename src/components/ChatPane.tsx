@@ -93,6 +93,11 @@ interface ChatPaneProps {
     reason: string;
     patch: unknown;
   }) => Promise<void> | void;
+  onRejectEvolutionFromMessage: (payload: {
+    messageId: string;
+    reason: string;
+    patch: unknown;
+  }) => Promise<void> | void;
   onSaveInfluenceProfile: (profile: InfluenceProfile) => void;
   onResetInfluenceProfile: () => void;
   onOpenSidebar: () => void;
@@ -131,7 +136,10 @@ function areEvolutionPatchesEqual(
   left: unknown,
   right: unknown,
 ) {
-  return JSON.stringify(left) === JSON.stringify(right);
+  const leftPatch = normalizePersonaEvolutionPatch(left);
+  const rightPatch = normalizePersonaEvolutionPatch(right);
+  if (!leftPatch || !rightPatch) return false;
+  return JSON.stringify(leftPatch) === JSON.stringify(rightPatch);
 }
 
 function buildStatusDetails(control: PersonaControlPayload | undefined) {
@@ -250,6 +258,7 @@ export function ChatPane({
   onRegeneratePromptAtIndex,
   onResolveRelationshipProposal,
   onApplyEvolutionFromMessage,
+  onRejectEvolutionFromMessage,
   onSaveInfluenceProfile,
   onResetInfluenceProfile,
   onOpenSidebar,
@@ -268,6 +277,9 @@ export function ChatPane({
     Record<string, string>
   >({});
   const [applyingEvolutionMessageId, setApplyingEvolutionMessageId] = useState<
+    string | null
+  >(null);
+  const [rejectingEvolutionMessageId, setRejectingEvolutionMessageId] = useState<
     string | null
   >(null);
   const composerWrapperRef = useRef<HTMLDivElement | null>(null);
@@ -494,6 +506,13 @@ export function ChatPane({
       ),
     [activePersonaEvolutionState?.history],
   );
+  const rejectedEvolutionHistory = useMemo(
+    () =>
+      (activePersonaEvolutionState?.history ?? []).filter(
+        (event) => event.status === "rejected",
+      ),
+    [activePersonaEvolutionState?.history],
+  );
   const renderedMessages = useMemo(
     () =>
       messages.map((msg) => {
@@ -595,7 +614,16 @@ export function ChatPane({
               areEvolutionPatchesEqual(event.patch, evolutionPatch),
             ),
         );
+        const evolutionAlreadyRejected = Boolean(
+          evolutionPatch &&
+            rejectedEvolutionHistory.some((event) =>
+              areEvolutionPatchesEqual(event.patch, evolutionPatch),
+            ),
+        );
+        const evolutionAlreadyHandled =
+          evolutionAlreadyApplied || evolutionAlreadyRejected;
         const applyEvolutionBusy = applyingEvolutionMessageId === msg.id;
+        const rejectEvolutionBusy = rejectingEvolutionMessageId === msg.id;
         const relationshipProposalSummary = [
           relationshipProposalType ? `Тип: ${relationshipProposalType}` : "",
           relationshipProposalStage ? `Этап: ${relationshipProposalStage}` : "",
@@ -767,12 +795,16 @@ export function ChatPane({
                     </ul>
                   </>
                 ) : null}
-                {canApplyEvolutionFromMessage && !evolutionAlreadyApplied ? (
+                {canApplyEvolutionFromMessage && !evolutionAlreadyHandled ? (
                   <div className="evolution-message-actions">
                     <button
                       type="button"
                       className="mini primary"
-                      disabled={isLoading || applyEvolutionBusy}
+                      disabled={
+                        isLoading ||
+                        applyEvolutionBusy ||
+                        rejectEvolutionBusy
+                      }
                       onClick={async () => {
                         if (!evolutionPatch) return;
                         try {
@@ -791,7 +823,39 @@ export function ChatPane({
                     >
                       {applyEvolutionBusy ? "Применяю..." : "Применить эволюцию"}
                     </button>
+                    <button
+                      type="button"
+                      className="mini"
+                      disabled={
+                        isLoading ||
+                        applyEvolutionBusy ||
+                        rejectEvolutionBusy
+                      }
+                      onClick={async () => {
+                        if (!evolutionPatch) return;
+                        try {
+                          setRejectingEvolutionMessageId(msg.id);
+                          await onRejectEvolutionFromMessage({
+                            messageId: msg.id,
+                            reason: evolutionReason,
+                            patch: evolutionPatch,
+                          });
+                        } finally {
+                          setRejectingEvolutionMessageId((current) =>
+                            current === msg.id ? null : current,
+                          );
+                        }
+                      }}
+                    >
+                      {rejectEvolutionBusy ? "Отклоняю..." : "Отклонить эволюцию"}
+                    </button>
                   </div>
+                ) : evolutionAlreadyHandled ? (
+                  <p className="relationship-proposal-result">
+                    {evolutionAlreadyApplied
+                      ? "Эволюция уже применена."
+                      : "Эволюция отклонена."}
+                  </p>
                 ) : null}
               </section>
             ) : null}
@@ -857,12 +921,15 @@ export function ChatPane({
       isLoading,
       messages,
       applyingEvolutionMessageId,
+      rejectingEvolutionMessageId,
       appliedEvolutionHistory,
+      rejectedEvolutionHistory,
       evolutionApplyMode,
       evolutionEnabled,
       evolutionDeltaBaseLabel,
       evolutionDeltaBaseProfile,
       onApplyEvolutionFromMessage,
+      onRejectEvolutionFromMessage,
       showStatusChangeDetails,
       showSystemImageBlock,
       resolvedImageBySource,

@@ -225,6 +225,7 @@ export default function App() {
     updatePendingEvolutionProposal,
     deletePendingEvolutionProposal,
     applyEvolutionPatchNow,
+    rejectEvolutionPatchNow,
     approvePendingEvolution,
     rejectPendingEvolution,
     undoLastAppliedEvolution,
@@ -1239,6 +1240,10 @@ export default function App() {
             onApplyEvolutionFromMessage={async ({ reason, patch }) => {
               if (!activeChatId) return;
               await applyEvolutionPatchNow(activeChatId, { reason, patch });
+            }}
+            onRejectEvolutionFromMessage={async ({ reason, patch }) => {
+              if (!activeChatId) return;
+              await rejectEvolutionPatchNow(activeChatId, { reason, patch });
             }}
             onSaveInfluenceProfile={(profile) => {
               void setActiveInfluenceProfile(profile);
