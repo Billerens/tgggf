@@ -1,4 +1,5 @@
 import type { PersonaControlPayload } from "./personaDynamics";
+import { normalizePersonaEvolutionPatch } from "./personaEvolution";
 
 const COMFY_UI_PROMPT_BLOCK_REGEX = /<comfyui_prompt\b[^>]*>([\s\S]*?)<\/comfyui_prompt>/gi;
 const COMFY_UI_IMAGE_DESCRIPTION_BLOCK_REGEX =
@@ -9,6 +10,7 @@ const JSON_FENCED_BLOCK_REGEX = /```(?:json)?\s*([\s\S]*?)```/gi;
 type ControlStateDelta = NonNullable<PersonaControlPayload["state_delta"]>;
 type ControlMemoryAddItem = NonNullable<PersonaControlPayload["memory_add"]>[number];
 type ControlMemoryRemoveItem = NonNullable<PersonaControlPayload["memory_remove"]>[number];
+type ControlEvolution = NonNullable<PersonaControlPayload["evolution"]>;
 
 export interface AssistantContentParts {
   visibleText: string;
@@ -303,6 +305,34 @@ function normalizeIntents(obj: Record<string, unknown>) {
   return asStringArray(obj.intent ?? obj.actions ?? obj.labels, 24);
 }
 
+function normalizeEvolution(obj: Record<string, unknown>) {
+  const source = pickRecord(obj, ["evolution", "persona_evolution", "personaEvolution"]);
+  if (!source) return undefined;
+  const evolution: ControlEvolution = {};
+  const shouldEvolveRaw = source.shouldEvolve ?? source.should_evolve;
+  if (typeof shouldEvolveRaw === "boolean") {
+    evolution.shouldEvolve = shouldEvolveRaw;
+  }
+  const reason = pickString(source, ["reason", "rationale", "why"]);
+  if (reason) {
+    evolution.reason = reason;
+  }
+  const patch = normalizePersonaEvolutionPatch(
+    pickRecord(source, ["patch", "delta", "profile_patch", "profilePatch"]),
+  );
+  if (patch) {
+    evolution.patch = patch;
+  }
+  if (
+    typeof evolution.shouldEvolve !== "boolean" &&
+    !evolution.reason &&
+    !evolution.patch
+  ) {
+    return undefined;
+  }
+  return evolution;
+}
+
 function normalizePersonaControl(input: unknown): PersonaControlPayload | undefined {
   if (!input || typeof input !== "object") return undefined;
   const obj = input as Record<string, unknown>;
@@ -320,7 +350,18 @@ function normalizePersonaControl(input: unknown): PersonaControlPayload | undefi
   const memoryRemove = normalizeMemoryRemove(obj);
   if (memoryRemove) control.memory_remove = memoryRemove;
 
-  if (!control.intents && !control.state_delta && !control.memory_add && !control.memory_remove) return undefined;
+  const evolution = normalizeEvolution(obj);
+  if (evolution) control.evolution = evolution;
+
+  if (
+    !control.intents &&
+    !control.state_delta &&
+    !control.memory_add &&
+    !control.memory_remove &&
+    !control.evolution
+  ) {
+    return undefined;
+  }
   return control;
 }
 

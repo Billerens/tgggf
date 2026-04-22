@@ -254,6 +254,7 @@ export interface ChatSession {
   personaId: string;
   title: string;
   diaryConfig?: ChatDiaryConfig;
+  evolutionConfig?: ChatEvolutionConfig;
   lastResponseId?: string;
   chatStyleStrength?: number;
   conversationSummary?: string;
@@ -265,6 +266,55 @@ export interface ChatSession {
   summaryUpdatedAt?: string;
   summaryTokenBudget?: number;
   createdAt: string;
+  updatedAt: string;
+}
+
+export type PersonaEvolutionApplyMode = "auto" | "manual";
+
+export interface ChatEvolutionConfig {
+  enabled: boolean;
+  applyMode: PersonaEvolutionApplyMode;
+}
+
+export interface PersonaEvolutionProfile {
+  personalityPrompt?: string;
+  stylePrompt?: string;
+  appearance?: Partial<PersonaAppearanceProfile>;
+  advanced?: {
+    core?: Partial<PersonaCoreProfile>;
+    voice?: Partial<PersonaVoiceProfile>;
+    behavior?: Partial<PersonaBehaviorProfile>;
+    emotion?: Partial<PersonaEmotionProfile>;
+    memory?: Partial<PersonaMemoryPolicy>;
+  };
+}
+
+export interface PersonaEvolutionProposal {
+  id: string;
+  createdAt: string;
+  reason: string;
+  patch: PersonaEvolutionProfile;
+}
+
+export type PersonaEvolutionHistoryStatus = "applied" | "rejected" | "undone";
+
+export interface PersonaEvolutionHistoryItem {
+  id: string;
+  proposalId?: string;
+  targetEventId?: string;
+  status: PersonaEvolutionHistoryStatus;
+  timestamp: string;
+  reason: string;
+  patch: PersonaEvolutionProfile;
+}
+
+export interface PersonaEvolutionState {
+  chatId: string;
+  personaId: string;
+  baselineProfile: PersonaEvolutionProfile;
+  currentProfile: PersonaEvolutionProfile;
+  pendingProposals: PersonaEvolutionProposal[];
+  history: PersonaEvolutionHistoryItem[];
   updatedAt: string;
 }
 

@@ -3,6 +3,7 @@ import type {
   ChatSession,
   DiaryEntry,
   ImageAsset,
+  PersonaEvolutionState,
   Persona,
   PersonaMemory,
   PersonaRuntimeState,
@@ -134,12 +135,22 @@ export async function syncOneToOneContextToNative(input: {
   const plugin = resolveLocalApiPlugin(scope);
   if (!plugin) return;
 
-  const [settings, personas, chats, chatMessages, chatState, chatMemories, chatDiaryEntries] = await Promise.all([
+  const [
+    settings,
+    personas,
+    chats,
+    chatMessages,
+    chatState,
+    chatEvolutionState,
+    chatMemories,
+    chatDiaryEntries,
+  ] = await Promise.all([
     dbApi.getSettings(),
     dbApi.getPersonas(),
     dbApi.getAllChats(),
     dbApi.getMessages(input.chatId),
     dbApi.getPersonaState(input.chatId),
+    dbApi.getPersonaEvolutionState(input.chatId),
     dbApi.getMemories(input.chatId),
     dbApi.getDiaryEntries(input.chatId),
   ]);
@@ -166,6 +177,7 @@ export async function syncOneToOneContextToNative(input: {
         chats,
         messages: chatMessages,
         personaStates: chatState ? [chatState] : [],
+        personaEvolutionStates: chatEvolutionState ? [chatEvolutionState] : [],
         memories: chatMemories,
         diaryEntries: chatDiaryEntries,
         imageAssets,
@@ -205,6 +217,23 @@ export async function applyOneToOneStatePatch(
   );
   for (const state of personaStates) {
     await dbApi.savePersonaState(state as unknown as PersonaRuntimeState);
+    touched = true;
+  }
+
+  const personaEvolutionStates = normalizeStoreRows(
+    stores,
+    "personaEvolutionStates",
+  ).filter(
+    (row): row is Record<string, unknown> =>
+      typeof row.chatId === "string" &&
+      row.chatId.trim().length > 0 &&
+      typeof row.personaId === "string" &&
+      row.personaId.trim().length > 0,
+  );
+  for (const evolutionState of personaEvolutionStates) {
+    await dbApi.savePersonaEvolutionState(
+      evolutionState as unknown as PersonaEvolutionState,
+    );
     touched = true;
   }
 

@@ -178,6 +178,19 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
     }
   }
 
+  if (control.evolution) {
+    const evolution = control.evolution;
+    const changed =
+      evolution.patch && typeof evolution.patch === "object"
+        ? Object.keys(evolution.patch).join(", ")
+        : "";
+    lines.push(
+      `evolution: shouldEvolve=${evolution.shouldEvolve ? "true" : "false"}${
+        evolution.reason ? `, reason=${evolution.reason}` : ""
+      }${changed ? `, patch=${changed}` : ""}`,
+    );
+  }
+
   return lines.join("\n");
 }
 

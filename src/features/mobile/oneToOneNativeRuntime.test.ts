@@ -7,12 +7,14 @@ const { mockDbApi } = vi.hoisted(() => ({
     getAllChats: vi.fn(),
     getMessages: vi.fn(),
     getPersonaState: vi.fn(),
+    getPersonaEvolutionState: vi.fn(),
     getMemories: vi.fn(),
     getDiaryEntries: vi.fn(),
     getImageAssets: vi.fn(),
     saveChat: vi.fn(),
     saveMessage: vi.fn(),
     savePersonaState: vi.fn(),
+    savePersonaEvolutionState: vi.fn(),
     saveMemories: vi.fn(),
     saveDiaryEntries: vi.fn(),
     saveImageAsset: vi.fn(),
@@ -41,6 +43,7 @@ interface NativeContextSyncPayload {
       chats?: unknown[];
       messages?: unknown[];
       personaStates?: unknown[];
+      personaEvolutionStates?: unknown[];
       memories?: unknown[];
       diaryEntries?: unknown[];
       imageAssets?: unknown[];
@@ -81,6 +84,15 @@ describe("oneToOneNativeRuntime", () => {
       { id: "m1", chatId: "chat-1", imageUrls: ["idb://asset-msg"] },
     ]);
     mockDbApi.getPersonaState.mockResolvedValue({ id: "state-1", chatId: "chat-1" });
+    mockDbApi.getPersonaEvolutionState.mockResolvedValue({
+      chatId: "chat-1",
+      personaId: "persona-1",
+      baselineProfile: {},
+      currentProfile: {},
+      pendingProposals: [],
+      history: [],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
     mockDbApi.getMemories.mockResolvedValue([{ id: "mem-1", chatId: "chat-1" }]);
     mockDbApi.getDiaryEntries.mockResolvedValue([
       {
@@ -120,6 +132,7 @@ describe("oneToOneNativeRuntime", () => {
     expect(stores.chats).toHaveLength(1);
     expect(stores.messages).toHaveLength(1);
     expect(stores.personaStates).toHaveLength(1);
+    expect(stores.personaEvolutionStates).toHaveLength(1);
     expect(stores.memories).toHaveLength(1);
     expect(stores.diaryEntries).toHaveLength(1);
     expect(stores.imageAssets).toHaveLength(3);
@@ -132,6 +145,17 @@ describe("oneToOneNativeRuntime", () => {
         chats: [{ id: "chat-1" }],
         messages: [{ id: "message-1" }],
         personaStates: [{ id: "state-1", chatId: "chat-1" }],
+        personaEvolutionStates: [
+          {
+            chatId: "chat-1",
+            personaId: "persona-1",
+            baselineProfile: {},
+            currentProfile: {},
+            pendingProposals: [],
+            history: [],
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
         memories: [{ id: "memory-1", chatId: "chat-1" }],
         diaryEntries: [
           {
@@ -163,6 +187,7 @@ describe("oneToOneNativeRuntime", () => {
     expect(mockDbApi.saveChat).toHaveBeenCalledOnce();
     expect(mockDbApi.saveMessage).toHaveBeenCalledOnce();
     expect(mockDbApi.savePersonaState).toHaveBeenCalledOnce();
+    expect(mockDbApi.savePersonaEvolutionState).toHaveBeenCalledOnce();
     expect(mockDbApi.saveMemories).toHaveBeenCalledOnce();
     expect(mockDbApi.saveDiaryEntries).toHaveBeenCalledOnce();
     expect(mockDbApi.saveImageAsset).toHaveBeenCalledOnce();

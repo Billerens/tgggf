@@ -469,6 +469,7 @@ object NativeLlmClient {
         runtimeState: JSONObject?,
         memoryCard: JSONObject?,
         conversationSummary: JSONObject?,
+        evolutionHistoryApplied: List<JSONObject> = emptyList(),
     ): NativeOneToOneTurnResponse? {
         val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
         val baseUrl = resolveProviderBaseUrl(settings, provider)
@@ -491,6 +492,7 @@ object NativeLlmClient {
                         runtimeState = runtimeState,
                         memoryCard = memoryCard,
                         conversationSummary = conversationSummary,
+                        evolutionHistoryApplied = evolutionHistoryApplied,
                     ),
                 userPrompt =
                     buildOneToOneUserPrompt(
@@ -696,6 +698,7 @@ object NativeLlmClient {
         chatTitle: String,
         existing: NativeConversationSummaryState,
         transcript: List<NativeSummaryTranscriptEntry>,
+        evolutionHistoryApplied: List<JSONObject> = emptyList(),
     ): NativeOneToOneDiaryDraft? {
         if (transcript.isEmpty()) return null
         val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
@@ -743,6 +746,9 @@ object NativeLlmClient {
             buildString {
                 appendLine("Персона: ${persona.optString("name", "Персона").trim().ifEmpty { "Персона" }}")
                 appendLine("Чат: ${chatTitle.trim().ifEmpty { "Без названия" }}")
+                appendLine()
+                appendLine("Applied persona evolution history (last 10):")
+                appendLine(formatPersonaEvolutionHistoryForPrompt(evolutionHistoryApplied))
                 appendLine()
                 appendLine("Текущее summary чата:")
                 appendLine(existingJson)
@@ -808,6 +814,7 @@ object NativeLlmClient {
         speakerPersona: JSONObject,
         imageDescriptions: List<String>,
         participantCatalog: List<ComfyPromptParticipantCatalogEntry> = emptyList(),
+        evolutionHistoryApplied: List<JSONObject> = emptyList(),
     ): List<String> {
         val descriptions =
             imageDescriptions
@@ -840,6 +847,7 @@ object NativeLlmClient {
             .filter { it.isSelf }
             .forEach { selfTokens.add("persona:${it.id}") }
         val participantCatalogContext = formatParticipantCatalogContext(normalizedCatalog)
+        val evolutionHistoryContext = formatPersonaEvolutionHistoryForPrompt(evolutionHistoryApplied)
 
         val prompts = mutableListOf<String>()
         for ((index, description) in descriptions.withIndex()) {
@@ -919,6 +927,7 @@ object NativeLlmClient {
                             lookPromptCacheContext = lookPromptCacheContext,
                             imageDescription = sceneContext.normalizedDescription,
                             iteration = index + 1,
+                            evolutionHistoryContext = evolutionHistoryContext,
                         ),
                     forceJsonObject = true,
                     toolDefinition = toolDefinition,
@@ -2179,6 +2188,7 @@ object NativeLlmClient {
         runtimeState: JSONObject?,
         memoryCard: JSONObject?,
         conversationSummary: JSONObject?,
+        evolutionHistoryApplied: List<JSONObject>,
     ): String {
         val advanced = persona.optJSONObject("advanced") ?: JSONObject()
         val core = advanced.optJSONObject("core") ?: JSONObject()
@@ -2188,6 +2198,7 @@ object NativeLlmClient {
         val memories = collectMemoriesFromCard(memoryCard)
         val memoryContext = formatMemoryContextWithUsage(memories)
         val conversationSummaryContext = formatConversationSummaryContext(conversationSummary)
+        val evolutionHistoryContext = formatPersonaEvolutionHistoryForPrompt(evolutionHistoryApplied)
         val influencePromptContext = formatInfluenceProfileForPrompt(runtimeState)
         val valuesContext =
             getValuesImplementation(
@@ -2265,9 +2276,22 @@ object NativeLlmClient {
             "Если используешь markdown для service JSON, только один короткий fenced json-блок без дополнительного текста внутри.",
             "",
             "После каждого ответа добавляй persona_control в service JSON:",
-            "{\"persona_control\":{\"intents\":[],\"state_delta\":{\"trust\":0,\"engagement\":0,\"energy\":0,\"lust\":0,\"fear\":0,\"affection\":0,\"tension\":0,\"mood\":\"calm\",\"relationshipDepth\":0},\"memory_add\":[],\"memory_remove\":[]}}",
+            "{\"persona_control\":{\"intents\":[],\"state_delta\":{\"trust\":0,\"engagement\":0,\"energy\":0,\"lust\":0,\"fear\":0,\"affection\":0,\"tension\":0,\"mood\":\"calm\",\"relationshipDepth\":0},\"memory_add\":[],\"memory_remove\":[],\"evolution\":{\"shouldEvolve\":false,\"reason\":\"\",\"patch\":{}}}}",
             "Если изменений нет, оставь нули и пустые массивы.",
             "Ты сама определяешь intents, state_delta и операции памяти (memory_add/memory_remove).",
+            "Для persona_control.evolution используй формат: {\"shouldEvolve\":boolean,\"reason\":\"...\",\"patch\":{...}}.",
+            "Разрешённые поля evolution.patch верхнего уровня: personalityPrompt, stylePrompt, appearance, advanced.",
+            "Разрешённые поля evolution.patch.appearance: faceDescription, height, eyes, lips, hair, ageType, bodyType, markers, accessories, clothingStyle, skin.",
+            "Разрешённые поля evolution.patch.advanced.core: archetype, backstory, goals, values, boundaries, expertise, selfGender(auto|female|male|neutral).",
+            "Разрешённые поля evolution.patch.advanced.voice: tone, lexicalStyle, sentenceLength(short|balanced|long), formality, expressiveness, emoji.",
+            "Разрешённые поля evolution.patch.advanced.behavior: initiative, empathy, directness, curiosity, challenge, creativity.",
+            "Разрешённые поля evolution.patch.advanced.emotion: baselineMood, warmth, stability, positiveTriggers, negativeTriggers.",
+            "Разрешённые поля evolution.patch.advanced.memory: rememberFacts, rememberPreferences, rememberGoals, rememberEvents, maxMemories, decayDays.",
+            "Не выдумывай новые ключи в evolution.patch: неизвестные поля будут отброшены.",
+            "Эволюцию включай ТОЛЬКО при реально значимых событиях диалога.",
+            "Эволюция должна быть плавной и согласованной с предыдущей траекторией; не дергай параметры без новых существенных сигналов.",
+            "Разворот или частичный откат допустим, если контекст действительно изменился; в reason коротко укажи новый сигнал-триггер.",
+            "Каждое изменение эволюции ОБЯЗАТЕЛЬНО сопровождай короткой reason.",
             "Исполняемые intents (whitelist): flirt, deepen_connection, sensual_description, comfort, reassure, boundary_set, deescalate, ask_clarification, topic_shift, reflect_user, playful_banter, self_disclosure.",
             "Разрешённые mood: calm, warm, playful, focused, analytical, inspired, annoyed, upset, angry.",
             "Не заполняй relationshipType и relationshipStage в state_delta: эти поля рассчитываются системой.",
@@ -2327,6 +2351,9 @@ object NativeLlmClient {
             "",
             "=== CONVERSATION SUMMARY ===",
             conversationSummaryContext,
+            "",
+            "=== APPLIED PERSONA EVOLUTION HISTORY (LAST 10) ===",
+            evolutionHistoryContext,
             "",
             "=== MEMORY CONTEXT ===",
             memoryContext,
@@ -2437,6 +2464,58 @@ object NativeLlmClient {
         ).joinToString("\n")
     }
 
+    private fun flattenPersonaEvolutionPatchFields(
+        value: Any?,
+        prefix: String = "",
+        target: MutableList<String>,
+    ) {
+        if (value !is JSONObject) {
+            if (prefix.isNotBlank()) {
+                target.add(prefix)
+            }
+            return
+        }
+        val keys = value.keys().asSequence().toList().sorted()
+        keys.forEach { key ->
+            val child = value.opt(key)
+            if (child == null || child == JSONObject.NULL) return@forEach
+            val path = if (prefix.isBlank()) key else "$prefix.$key"
+            if (child is JSONObject) {
+                if (child.length() == 0) return@forEach
+                flattenPersonaEvolutionPatchFields(child, path, target)
+            } else {
+                target.add(path)
+            }
+        }
+    }
+
+    private fun summarizePersonaEvolutionPatchFields(
+        patch: JSONObject?,
+        maxItems: Int = 10,
+    ): List<String> {
+        if (patch == null) return emptyList()
+        val fields = mutableListOf<String>()
+        flattenPersonaEvolutionPatchFields(patch, target = fields)
+        if (fields.isEmpty()) return emptyList()
+        return fields.take(max(1, maxItems))
+    }
+
+    private fun formatPersonaEvolutionHistoryForPrompt(
+        history: List<JSONObject>,
+        limit: Int = 10,
+    ): String {
+        if (history.isEmpty()) return "none"
+        val normalized = history.takeLast(max(1, limit))
+        if (normalized.isEmpty()) return "none"
+        return normalized.joinToString("\n") { event ->
+            val timestamp = event.optString("timestamp", "").trim().ifBlank { "unknown" }
+            val reason = clipText(event.optString("reason", "").trim().ifBlank { "-" }, 180)
+            val fields = summarizePersonaEvolutionPatchFields(event.optJSONObject("patch"), maxItems = 10)
+            val changed = if (fields.isEmpty()) "patch" else fields.joinToString(", ")
+            "- $timestamp: reason=$reason; changed=$changed"
+        }
+    }
+
     private fun normalizeForPromptComparison(value: String): String {
         return value.replace(Regex("\\s+"), " ").trim()
     }
@@ -2476,7 +2555,144 @@ object NativeLlmClient {
         ).joinToString("\n")
     }
 
+    private fun buildPrimitiveSchema(type: String): JSONObject {
+        return JSONObject().apply { put("type", type) }
+    }
+
+    private fun buildObjectSchema(
+        properties: JSONObject,
+        additionalProperties: Boolean = false,
+    ): JSONObject {
+        return JSONObject().apply {
+            put("type", "object")
+            put("properties", properties)
+            put("additionalProperties", additionalProperties)
+        }
+    }
+
+    private fun buildPersonaEvolutionPatchSchemaJson(): JSONObject {
+        val appearance =
+            buildObjectSchema(
+                properties =
+                    JSONObject().apply {
+                        put("faceDescription", buildPrimitiveSchema("string"))
+                        put("height", buildPrimitiveSchema("string"))
+                        put("eyes", buildPrimitiveSchema("string"))
+                        put("lips", buildPrimitiveSchema("string"))
+                        put("hair", buildPrimitiveSchema("string"))
+                        put("ageType", buildPrimitiveSchema("string"))
+                        put("bodyType", buildPrimitiveSchema("string"))
+                        put("markers", buildPrimitiveSchema("string"))
+                        put("accessories", buildPrimitiveSchema("string"))
+                        put("clothingStyle", buildPrimitiveSchema("string"))
+                        put("skin", buildPrimitiveSchema("string"))
+                    },
+            )
+        val core =
+            buildObjectSchema(
+                properties =
+                    JSONObject().apply {
+                        put("archetype", buildPrimitiveSchema("string"))
+                        put("backstory", buildPrimitiveSchema("string"))
+                        put("goals", buildPrimitiveSchema("string"))
+                        put("values", buildPrimitiveSchema("string"))
+                        put("boundaries", buildPrimitiveSchema("string"))
+                        put("expertise", buildPrimitiveSchema("string"))
+                        put(
+                            "selfGender",
+                            JSONObject().apply {
+                                put("type", "string")
+                                put("enum", JSONArray().apply {
+                                    put("auto")
+                                    put("female")
+                                    put("male")
+                                    put("neutral")
+                                })
+                            },
+                        )
+                    },
+            )
+        val voice =
+            buildObjectSchema(
+                properties =
+                    JSONObject().apply {
+                        put("tone", buildPrimitiveSchema("string"))
+                        put("lexicalStyle", buildPrimitiveSchema("string"))
+                        put(
+                            "sentenceLength",
+                            JSONObject().apply {
+                                put("type", "string")
+                                put("enum", JSONArray().apply {
+                                    put("short")
+                                    put("balanced")
+                                    put("long")
+                                })
+                            },
+                        )
+                        put("formality", buildPrimitiveSchema("number"))
+                        put("expressiveness", buildPrimitiveSchema("number"))
+                        put("emoji", buildPrimitiveSchema("number"))
+                    },
+            )
+        val behavior =
+            buildObjectSchema(
+                properties =
+                    JSONObject().apply {
+                        put("initiative", buildPrimitiveSchema("number"))
+                        put("empathy", buildPrimitiveSchema("number"))
+                        put("directness", buildPrimitiveSchema("number"))
+                        put("curiosity", buildPrimitiveSchema("number"))
+                        put("challenge", buildPrimitiveSchema("number"))
+                        put("creativity", buildPrimitiveSchema("number"))
+                    },
+            )
+        val emotion =
+            buildObjectSchema(
+                properties =
+                    JSONObject().apply {
+                        put("baselineMood", buildPrimitiveSchema("string"))
+                        put("warmth", buildPrimitiveSchema("number"))
+                        put("stability", buildPrimitiveSchema("number"))
+                        put("positiveTriggers", buildPrimitiveSchema("string"))
+                        put("negativeTriggers", buildPrimitiveSchema("string"))
+                    },
+            )
+        val memory =
+            buildObjectSchema(
+                properties =
+                    JSONObject().apply {
+                        put("rememberFacts", buildPrimitiveSchema("boolean"))
+                        put("rememberPreferences", buildPrimitiveSchema("boolean"))
+                        put("rememberGoals", buildPrimitiveSchema("boolean"))
+                        put("rememberEvents", buildPrimitiveSchema("boolean"))
+                        put("maxMemories", buildPrimitiveSchema("number"))
+                        put("decayDays", buildPrimitiveSchema("number"))
+                    },
+            )
+        val advanced =
+            buildObjectSchema(
+                properties =
+                    JSONObject().apply {
+                        put("core", core)
+                        put("voice", voice)
+                        put("behavior", behavior)
+                        put("emotion", emotion)
+                        put("memory", memory)
+                    },
+            )
+        return buildObjectSchema(
+            properties =
+                JSONObject().apply {
+                    put("personalityPrompt", buildPrimitiveSchema("string"))
+                    put("stylePrompt", buildPrimitiveSchema("string"))
+                    put("appearance", appearance)
+                    put("advanced", advanced)
+                },
+        )
+    }
+
     private fun buildOneToOneChatTurnToolDefinition(): LlmToolDefinition {
+        val evolutionPatchSchema = buildPersonaEvolutionPatchSchemaJson()
         return LlmToolDefinition(
             name = "emit_chat_turn",
             description = "Return assistant turn and optional image/control payload for one-to-one chat.",
@@ -2516,8 +2732,60 @@ object NativeLlmClient {
                                     put("items", JSONObject().apply { put("type", "string") })
                                 },
                             )
-                            put("persona_control", JSONObject().apply { put("type", "object") })
-                            put("personaControl", JSONObject().apply { put("type", "object") })
+                            put(
+                                "persona_control",
+                                JSONObject().apply {
+                                    put("type", "object")
+                                    put(
+                                        "properties",
+                                        JSONObject().apply {
+                                            put(
+                                                "evolution",
+                                                JSONObject().apply {
+                                                    put("type", "object")
+                                                    put(
+                                                        "properties",
+                                                        JSONObject().apply {
+                                                            put("shouldEvolve", JSONObject().apply { put("type", "boolean") })
+                                                            put("reason", JSONObject().apply { put("type", "string") })
+                                                            put("patch", evolutionPatchSchema)
+                                                        },
+                                                    )
+                                                    put("additionalProperties", false)
+                                                },
+                                            )
+                                        },
+                                    )
+                                    put("additionalProperties", true)
+                                },
+                            )
+                            put(
+                                "personaControl",
+                                JSONObject().apply {
+                                    put("type", "object")
+                                    put(
+                                        "properties",
+                                        JSONObject().apply {
+                                            put(
+                                                "evolution",
+                                                JSONObject().apply {
+                                                    put("type", "object")
+                                                    put(
+                                                        "properties",
+                                                        JSONObject().apply {
+                                                            put("shouldEvolve", JSONObject().apply { put("type", "boolean") })
+                                                            put("reason", JSONObject().apply { put("type", "string") })
+                                                            put("patch", evolutionPatchSchema)
+                                                        },
+                                                    )
+                                                    put("additionalProperties", false)
+                                                },
+                                            )
+                                        },
+                                    )
+                                    put("additionalProperties", true)
+                                },
+                            )
                         },
                     )
                     put("additionalProperties", true)
@@ -2952,6 +3220,7 @@ object NativeLlmClient {
         lookPromptCacheContext: String,
         imageDescription: String,
         iteration: Int,
+        evolutionHistoryContext: String,
     ): String {
         return listOf(
             "Character name: $personaName",
@@ -2965,6 +3234,7 @@ object NativeLlmClient {
             "Appearance: $appearanceContext",
             "Style: $stylePrompt",
             "Personality: $personalityPrompt",
+            "Applied persona evolution history (last 10):\n$evolutionHistoryContext",
             "LookPrompt cache:\n$lookPromptCacheContext",
             "Image description: $imageDescription",
             "Iteration: $iteration",

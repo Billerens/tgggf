@@ -31,6 +31,14 @@ import {
   normalizeInfluenceProfile,
   resolveInfluenceCurrentIntent,
 } from "./influenceProfile";
+import {
+  applyPersonaEvolutionPatch,
+  applyPersonaEvolutionProfile,
+  createInitialPersonaEvolutionState,
+  normalizePersonaEvolutionPatch,
+  normalizePersonaEvolutionState,
+  selectAppliedPersonaEvolutionHistory,
+} from "./personaEvolution";
 import type { PersonaControlPayload } from "./personaDynamics";
 import { splitAssistantContent } from "./messageContent";
 import {
@@ -45,6 +53,10 @@ import type {
   ImageGenerationMeta,
   Persona,
   PersonaAdvancedProfile,
+  PersonaEvolutionApplyMode,
+  PersonaEvolutionHistoryItem,
+  PersonaEvolutionProfile,
+  PersonaEvolutionState,
   PersonaMemory,
   PersonaRuntimeState,
   RelationshipStage,
@@ -94,6 +106,7 @@ interface AppState {
   chats: ChatSession[];
   messages: ChatMessage[];
   activePersonaState: PersonaRuntimeState | null;
+  activePersonaEvolutionState: PersonaEvolutionState | null;
   activeMemories: PersonaMemory[];
   activeDiaryEntries: DiaryEntry[];
   activePersonaId: string | null;
@@ -113,6 +126,14 @@ interface AppState {
   renameChat: (chatId: string, title: string) => Promise<void>;
   setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
   setChatDiaryEnabled: (chatId: string, enabled: boolean) => Promise<void>;
+  setChatEvolutionEnabled: (chatId: string, enabled: boolean) => Promise<void>;
+  setChatEvolutionApplyMode: (
+    chatId: string,
+    applyMode: PersonaEvolutionApplyMode,
+  ) => Promise<void>;
+  approvePendingEvolution: (chatId: string, proposalId: string) => Promise<void>;
+  rejectPendingEvolution: (chatId: string, proposalId: string) => Promise<void>;
+  undoLastAppliedEvolution: (chatId: string) => Promise<void>;
   updateDiaryEntryTags: (
     chatId: string,
     diaryEntryId: string,
@@ -393,6 +414,120 @@ function applyMemoryRemovalDirectives(
   return { kept, removedIds: Array.from(removedIds) };
 }
 
+interface EvolutionProcessingResult {
+  next: PersonaEvolutionState;
+  appliedNow: boolean;
+}
+
+function getEffectivePersonaForChat(
+  persona: Persona,
+  chat: ChatSession | undefined,
+  evolutionState: PersonaEvolutionState | undefined | null,
+) {
+  if (!chat?.evolutionConfig?.enabled) return persona;
+  if (!evolutionState) return persona;
+  return applyPersonaEvolutionProfile(persona, evolutionState.currentProfile);
+}
+
+function getAppliedEvolutionHistoryForPrompt(
+  state: PersonaEvolutionState | null | undefined,
+) {
+  if (!state) return [] as PersonaEvolutionHistoryItem[];
+  return selectAppliedPersonaEvolutionHistory(state.history).slice(-10);
+}
+
+function createEvolutionHistoryItem(input: {
+  status: PersonaEvolutionHistoryItem["status"];
+  reason: string;
+  patch: PersonaEvolutionProfile;
+  proposalId?: string;
+  targetEventId?: string;
+  timestamp: string;
+}) {
+  return {
+    id: crypto.randomUUID(),
+    proposalId: input.proposalId,
+    targetEventId: input.targetEventId,
+    status: input.status,
+    timestamp: input.timestamp,
+    reason: input.reason,
+    patch: input.patch,
+  } satisfies PersonaEvolutionHistoryItem;
+}
+
+function applyEvolutionPatchWithHistory(
+  state: PersonaEvolutionState,
+  patch: PersonaEvolutionProfile,
+  reason: string,
+  timestamp: string,
+  proposalId?: string,
+): PersonaEvolutionState {
+  const appliedEvent = createEvolutionHistoryItem({
+    status: "applied",
+    reason: reason.trim() || "evolution_update",
+    patch,
+    proposalId,
+    timestamp,
+  });
+  return {
+    ...state,
+    currentProfile: applyPersonaEvolutionPatch(state.currentProfile, patch),
+    history: [...state.history, appliedEvent],
+    updatedAt: timestamp,
+  };
+}
+
+function rebuildEvolutionCurrentProfile(
+  baselineProfile: PersonaEvolutionProfile,
+  history: PersonaEvolutionHistoryItem[],
+) {
+  return selectAppliedPersonaEvolutionHistory(history).reduce(
+    (profile, event) => applyPersonaEvolutionPatch(profile, event.patch),
+    baselineProfile,
+  );
+}
+
+function processPersonaControlEvolution(params: {
+  config: ChatSession["evolutionConfig"];
+  state: PersonaEvolutionState;
+  control: PersonaControlPayload | undefined;
+  timestamp: string;
+}): EvolutionProcessingResult {
+  const { config, state, control, timestamp } = params;
+  if (!config?.enabled) {
+    return { next: state, appliedNow: false };
+  }
+  const evolution = control?.evolution;
+  if (!evolution?.shouldEvolve) {
+    return { next: state, appliedNow: false };
+  }
+  const patch = normalizePersonaEvolutionPatch(evolution.patch);
+  if (!patch) {
+    return { next: state, appliedNow: false };
+  }
+  const reason = (evolution.reason || "").trim() || "evolution_update";
+  if (config.applyMode === "auto") {
+    return {
+      next: applyEvolutionPatchWithHistory(state, patch, reason, timestamp),
+      appliedNow: true,
+    };
+  }
+  const pendingProposal = {
+    id: crypto.randomUUID(),
+    createdAt: timestamp,
+    reason,
+    patch,
+  };
+  return {
+    next: {
+      ...state,
+      pendingProposals: [...state.pendingProposals, pendingProposal],
+      updatedAt: timestamp,
+    },
+    appliedNow: false,
+  };
+}
+
 function clampSummaryTokenBudget(value: number | undefined) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     return SUMMARY_DEFAULT_TOKEN_BUDGET;
@@ -568,21 +703,25 @@ async function loadChatArtifacts(chatId: string | null) {
     return {
       messages: [] as ChatMessage[],
       state: null as PersonaRuntimeState | null,
+      evolutionState: null as PersonaEvolutionState | null,
       memories: [] as PersonaMemory[],
       diaryEntries: [] as DiaryEntry[],
     };
   }
-  const [messages, state, memories, diaryEntries] = await Promise.all([
+  const [messages, state, evolutionState, memories, diaryEntries] =
+    await Promise.all([
     dbApi.getMessages(chatId),
     dbApi.getPersonaState(chatId),
+    dbApi.getPersonaEvolutionState(chatId),
     dbApi.getMemories(chatId),
     dbApi.getDiaryEntries(chatId),
-  ]);
+    ]);
   const recoveredMessages =
     await recoverAbandonedChatImageGenerations(messages);
   return {
     messages: recoveredMessages,
     state: state ?? null,
+    evolutionState: evolutionState ?? null,
     memories,
     diaryEntries,
   };
@@ -632,6 +771,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   chats: [],
   messages: [],
   activePersonaState: null,
+  activePersonaEvolutionState: null,
   activeMemories: [],
   activeDiaryEntries: [],
   activePersonaId: null,
@@ -700,6 +840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChatId,
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
+        activePersonaEvolutionState: artifacts.evolutionState,
         activeMemories: artifacts.memories,
         activeDiaryEntries: artifacts.diaryEntries,
         initialized: true,
@@ -727,6 +868,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChatId,
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
+        activePersonaEvolutionState: artifacts.evolutionState,
         activeMemories: artifacts.memories,
         activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
@@ -744,6 +886,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChatId: chatId,
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
+        activePersonaEvolutionState: artifacts.evolutionState,
         activeMemories: artifacts.memories,
         activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
@@ -771,6 +914,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChatId,
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
+        activePersonaEvolutionState: artifacts.evolutionState,
         activeMemories: artifacts.memories,
         activeDiaryEntries: artifacts.diaryEntries,
       });
@@ -855,6 +999,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChatId,
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
+        activePersonaEvolutionState: artifacts.evolutionState,
         activeMemories: artifacts.memories,
         activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
@@ -878,6 +1023,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         diaryConfig: {
           enabled: false,
         },
+        evolutionConfig: {
+          enabled: false,
+          applyMode: "manual",
+        },
         chatStyleStrength: undefined,
         createdAt: ts,
         updatedAt: ts,
@@ -893,6 +1042,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (initialState) {
         await dbApi.savePersonaState(initialState);
       }
+      const personaEvolutionState = persona
+        ? createInitialPersonaEvolutionState(chat.id, persona, ts)
+        : null;
+      if (personaEvolutionState) {
+        await dbApi.savePersonaEvolutionState(personaEvolutionState);
+      }
 
       const chats = await dbApi.getChats(activePersonaId);
       set({
@@ -900,6 +1055,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChatId: chat.id,
         messages: [],
         activePersonaState: initialState,
+        activePersonaEvolutionState: personaEvolutionState,
         activeMemories: [],
         activeDiaryEntries: [],
         isLoading: false,
@@ -920,6 +1076,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           activeChatId: null,
           messages: [],
           activePersonaState: null,
+          activePersonaEvolutionState: null,
           activeMemories: [],
           activeDiaryEntries: [],
           isLoading: false,
@@ -935,6 +1092,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         activeChatId,
         messages: artifacts.messages,
         activePersonaState: artifacts.state,
+        activePersonaEvolutionState: artifacts.evolutionState,
         activeMemories: artifacts.memories,
         activeDiaryEntries: artifacts.diaryEntries,
         isLoading: false,
@@ -1051,6 +1209,235 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  setChatEvolutionEnabled: async (chatId, enabled) => {
+    set({ isLoading: true, error: null });
+    try {
+      const currentChat = get().chats.find((chat) => chat.id === chatId);
+      if (!currentChat) {
+        set({ isLoading: false });
+        return;
+      }
+      const updatedChat: ChatSession = {
+        ...currentChat,
+        evolutionConfig: {
+          enabled,
+          applyMode: currentChat.evolutionConfig?.applyMode ?? "manual",
+        },
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveChat(updatedChat);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: updatedChat.personaId,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_toggle");
+      }
+      const chats = await dbApi.getChats(updatedChat.personaId);
+      set({
+        chats,
+        activeChatId: chatId,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  setChatEvolutionApplyMode: async (chatId, applyMode) => {
+    set({ isLoading: true, error: null });
+    try {
+      const currentChat = get().chats.find((chat) => chat.id === chatId);
+      if (!currentChat) {
+        set({ isLoading: false });
+        return;
+      }
+      const updatedChat: ChatSession = {
+        ...currentChat,
+        evolutionConfig: {
+          enabled: currentChat.evolutionConfig?.enabled ?? false,
+          applyMode: applyMode === "auto" ? "auto" : "manual",
+        },
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveChat(updatedChat);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: updatedChat.personaId,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_apply_mode");
+      }
+      const chats = await dbApi.getChats(updatedChat.personaId);
+      set({
+        chats,
+        activeChatId: chatId,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  approvePendingEvolution: async (chatId, proposalId) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      const proposal = evolutionState.pendingProposals.find(
+        (item) => item.id === proposalId,
+      );
+      if (!proposal) return;
+      const timestamp = nowIso();
+      const applied = applyEvolutionPatchWithHistory(
+        evolutionState,
+        proposal.patch,
+        proposal.reason,
+        timestamp,
+        proposal.id,
+      );
+      const nextState: PersonaEvolutionState = {
+        ...applied,
+        pendingProposals: evolutionState.pendingProposals.filter(
+          (item) => item.id !== proposalId,
+        ),
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_approve");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  rejectPendingEvolution: async (chatId, proposalId) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      const proposal = evolutionState.pendingProposals.find(
+        (item) => item.id === proposalId,
+      );
+      if (!proposal) return;
+      const timestamp = nowIso();
+      const rejectedEvent = createEvolutionHistoryItem({
+        status: "rejected",
+        reason: proposal.reason,
+        patch: proposal.patch,
+        proposalId: proposal.id,
+        timestamp,
+      });
+      const nextState: PersonaEvolutionState = {
+        ...evolutionState,
+        pendingProposals: evolutionState.pendingProposals.filter(
+          (item) => item.id !== proposalId,
+        ),
+        history: [...evolutionState.history, rejectedEvent],
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_reject");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  undoLastAppliedEvolution: async (chatId) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      const applied = selectAppliedPersonaEvolutionHistory(evolutionState.history);
+      const target = applied[applied.length - 1];
+      if (!target) return;
+      const timestamp = nowIso();
+      const undoEvent = createEvolutionHistoryItem({
+        status: "undone",
+        reason: `undo:${target.reason}`,
+        patch: target.patch,
+        targetEventId: target.id,
+        timestamp,
+      });
+      const nextHistory = [...evolutionState.history, undoEvent];
+      const nextState: PersonaEvolutionState = {
+        ...evolutionState,
+        history: nextHistory,
+        currentProfile: rebuildEvolutionCurrentProfile(
+          evolutionState.baselineProfile,
+          nextHistory,
+        ),
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_undo");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
   updateDiaryEntryTags: async (chatId, diaryEntryId, tags) => {
     const normalizedTags = normalizeDiaryTags(tags);
     try {
@@ -1123,6 +1510,25 @@ export const useAppStore = create<AppState>((set, get) => ({
         state.personas.find((candidate) => candidate.id === chat.personaId) ??
         (await dbApi.getPersonas()).find((candidate) => candidate.id === chat.personaId);
       if (!persona) return null;
+      const loadedEvolutionState =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loadedEvolutionState ?? undefined,
+        chatId,
+        persona,
+      );
+      if (!loadedEvolutionState) {
+        await dbApi.savePersonaEvolutionState(evolutionState);
+      }
+      const effectivePersona = getEffectivePersonaForChat(
+        persona,
+        chat,
+        evolutionState,
+      );
+      const evolutionHistoryForPrompt =
+        getAppliedEvolutionHistoryForPrompt(evolutionState);
 
       if (getRuntimeContext().mode === "android") {
         await syncOneToOneContextToNative({
@@ -1162,14 +1568,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         return null;
       }
 
-      const diaryDraft = await requestOneToOneDiaryEntry(state.settings, persona, {
+      const diaryDraft = await requestOneToOneDiaryEntry(
+        state.settings,
+        effectivePersona,
+        {
         chat,
         transcript: sourceMessages.map((message) => ({
           role: message.role === "assistant" ? "assistant" : "user",
           content: message.content.trim(),
           createdAt: message.createdAt,
         })),
-      });
+        evolutionHistoryApplied: evolutionHistoryForPrompt,
+        },
+      );
       if (!diaryDraft.shouldWrite || !diaryDraft.markdown.trim()) {
         return null;
       }
@@ -1211,12 +1622,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       const state = get();
       const settings = state.settings;
       const nowMs = Date.now();
-      const [personas, allChats, allMessages] = await Promise.all([
+      const [personas, allChats, allMessages, allEvolutionStates] = await Promise.all([
         dbApi.getPersonas(),
         dbApi.getAllChats(),
         dbApi.getAllMessages(),
+        dbApi.getAllPersonaEvolutionStates(),
       ]);
       const personaById = new Map(personas.map((persona) => [persona.id, persona]));
+      const evolutionStateByChatId = new Map(
+        allEvolutionStates.map((item) => [item.chatId, item]),
+      );
       const timelineByChatId = new Map<string, ChatMessage[]>();
       for (const message of allMessages) {
         if (message.role !== "user" && message.role !== "assistant") continue;
@@ -1281,15 +1696,36 @@ export const useAppStore = create<AppState>((set, get) => ({
 
         const persona = personaById.get(chat.personaId);
         if (!persona || sourceMessages.length === 0) continue;
+        const normalizedEvolutionState = normalizePersonaEvolutionState(
+          evolutionStateByChatId.get(chat.id),
+          chat.id,
+          persona,
+        );
+        if (!evolutionStateByChatId.has(chat.id)) {
+          await dbApi.savePersonaEvolutionState(normalizedEvolutionState);
+          evolutionStateByChatId.set(chat.id, normalizedEvolutionState);
+        }
+        const effectivePersona = getEffectivePersonaForChat(
+          persona,
+          chat,
+          normalizedEvolutionState,
+        );
+        const evolutionHistoryForPrompt =
+          getAppliedEvolutionHistoryForPrompt(normalizedEvolutionState);
 
-        const diaryDraft = await requestOneToOneDiaryEntry(settings, persona, {
+        const diaryDraft = await requestOneToOneDiaryEntry(
+          settings,
+          effectivePersona,
+          {
           chat,
           transcript: sourceMessages.map((message) => ({
             role: message.role === "assistant" ? "assistant" : "user",
             content: message.content.trim(),
             createdAt: message.createdAt,
           })),
-        });
+            evolutionHistoryApplied: evolutionHistoryForPrompt,
+          },
+        );
         if (!diaryDraft.shouldWrite || !diaryDraft.markdown.trim()) {
           const nextChat: ChatSession = {
             ...chat,
@@ -1681,6 +2117,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!loadedState) {
         await dbApi.savePersonaState(runtimeState);
       }
+      const loadedEvolutionState =
+        get().activePersonaEvolutionState?.chatId === activeChatId
+          ? get().activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(activeChatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loadedEvolutionState ?? undefined,
+        activeChatId,
+        activePersona,
+      );
+      if (!loadedEvolutionState) {
+        await dbApi.savePersonaEvolutionState(evolutionState);
+      }
+      const effectivePersona = getEffectivePersonaForChat(
+        activePersona,
+        activeChat,
+        evolutionState,
+      );
+      const evolutionHistoryForPrompt =
+        getAppliedEvolutionHistoryForPrompt(evolutionState);
 
       const memoryPool =
         get().activeMemories.length > 0
@@ -1699,7 +2154,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const answer = await requestChatCompletion(
         get().settings,
-        activePersona,
+        effectivePersona,
         content.trim(),
         activeChat?.lastResponseId,
         {
@@ -1709,6 +2164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           memoryCard,
           recentMessages,
           conversationSummary,
+          evolutionHistoryApplied: evolutionHistoryForPrompt,
         },
       );
 
@@ -1785,15 +2241,15 @@ export const useAppStore = create<AppState>((set, get) => ({
           let completedCount = 0;
           let expectedGenerationCount = requestedImageCount;
           const personaStyleReferenceImage =
-            activePersona.avatarUrl.trim() ||
-            activePersona.fullBodyUrl.trim() ||
+            effectivePersona.avatarUrl.trim() ||
+            effectivePersona.fullBodyUrl.trim() ||
             undefined;
           const chatStyleStrength =
             typeof activeChat?.chatStyleStrength === "number"
               ? activeChat.chatStyleStrength
               : get().settings.chatStyleStrength;
           const participantCatalog =
-            buildOneToOneParticipantCatalog(activePersona);
+            buildOneToOneParticipantCatalog(effectivePersona);
           let promptsForGeneration = [...promptBlocks];
           let parsedTypesForGeneration = promptsForGeneration.map((prompt) =>
             parseImageDescriptionType(prompt, activePersona.name),
@@ -1805,10 +2261,13 @@ export const useAppStore = create<AppState>((set, get) => ({
                 imageDescriptionBlocks.map((description, index) =>
                   generateComfyPromptsFromImageDescription(
                     get().settings,
-                    activePersona,
+                    effectivePersona,
                     description,
                     index + 1,
-                    { participantCatalog },
+                    {
+                      participantCatalog,
+                      evolutionHistoryApplied: evolutionHistoryForPrompt,
+                    },
                   ),
                 ),
               );
@@ -1965,7 +2424,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       const fallbackState = evolvePersonaState(
         runtimeState,
-        activePersona,
+        effectivePersona,
         content.trim(),
         assistantMessage.content,
       );
@@ -1976,7 +2435,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         const controlled = applyPersonaControlProposal({
           control: answer.personaControl,
           baseState: fallbackState,
-          persona: activePersona,
+          persona: effectivePersona,
           chatId: activeChatId,
           userMessage: content.trim(),
         });
@@ -1985,6 +2444,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         controlMemoryRemovals = controlled.memoryRemovals;
       }
       await dbApi.savePersonaState(resolvedState);
+      const evolutionProcessed = processPersonaControlEvolution({
+        config: activeChat?.evolutionConfig,
+        state: evolutionState,
+        control: answer.personaControl,
+        timestamp: nowIso(),
+      });
+      const resolvedEvolutionState = evolutionProcessed.next;
+      await dbApi.savePersonaEvolutionState(resolvedEvolutionState);
 
       const memoryPoolAfterRemovals = applyMemoryRemovalDirectives(
         memoryPool,
@@ -1994,7 +2461,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(answer.personaControl
           ? []
           : derivePersistentMemoriesFromUserMessage(
-              activePersona,
+              effectivePersona,
               activeChatId,
               content.trim(),
             )),
@@ -2003,8 +2470,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const memoryReconciliation = reconcilePersistentMemories(
         memoryPoolAfterRemovals.kept,
         candidates,
-        activePersona.advanced.memory.maxMemories,
-        activePersona.advanced.memory.decayDays,
+        effectivePersona.advanced.memory.maxMemories,
+        effectivePersona.advanced.memory.decayDays,
       );
       await dbApi.saveMemories(memoryReconciliation.kept);
       await dbApi.deleteMemories([
@@ -2026,7 +2493,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         };
         const summaryPatch = await maybeRefreshConversationSummary({
           chat: updatedChat,
-          persona: activePersona,
+          persona: effectivePersona,
           settings: get().settings,
           messages: finalMessages,
         });
@@ -2043,6 +2510,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         chats,
         activePersonaState: resolvedState,
+        activePersonaEvolutionState: resolvedEvolutionState,
         activeMemories: memoryReconciliation.kept,
         isLoading: false,
       });

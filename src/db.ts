@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import { normalizeMemoryRecord } from "./personaDynamics";
+import { normalizeChatEvolutionConfig } from "./personaEvolution";
 import { normalizePersonaRecord } from "./personaProfiles";
 import type {
   AppSettings,
@@ -26,6 +27,7 @@ import type {
   ImageAsset,
   LlmProvider,
   Persona,
+  PersonaEvolutionState,
   PersonaMemory,
   PersonaRuntimeState,
   OpenRouterProviderFilterMode,
@@ -55,6 +57,11 @@ interface TgGfDb extends DBSchema {
   personaStates: {
     key: string;
     value: PersonaRuntimeState;
+    indexes: { "by-persona": string; "by-updatedAt": string };
+  };
+  personaEvolutionStates: {
+    key: string;
+    value: PersonaEvolutionState;
     indexes: { "by-persona": string; "by-updatedAt": string };
   };
   memories: {
@@ -149,7 +156,7 @@ interface TgGfDb extends DBSchema {
 }
 
 const DB_NAME = "tg-gf-db";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const SETTINGS_KEY = "main";
 const DEV_PROXY_BASE_URL = "/lmstudio";
 const FALLBACK_PROD_BASE_URL = "https://t1.tun.uforge.online";
@@ -177,6 +184,7 @@ const ALL_KNOWN_STORE_NAMES = [
   "diaryEntries",
   "messages",
   "personaStates",
+  "personaEvolutionStates",
   "memories",
   "settings",
   "generatorSessions",
@@ -917,6 +925,7 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
     delete next.summaryTokenBudget;
   }
   next.diaryConfig = normalizeChatDiaryConfig(next.diaryConfig);
+  next.evolutionConfig = normalizeChatEvolutionConfig(next.evolutionConfig);
   return next;
 }
 
@@ -1105,6 +1114,17 @@ function getDb() {
           });
           personaStates.createIndex("by-persona", "personaId");
           personaStates.createIndex("by-updatedAt", "updatedAt");
+        }
+
+        if (!db.objectStoreNames.contains("personaEvolutionStates")) {
+          const personaEvolutionStates = db.createObjectStore(
+            "personaEvolutionStates",
+            {
+              keyPath: "chatId",
+            },
+          );
+          personaEvolutionStates.createIndex("by-persona", "personaId");
+          personaEvolutionStates.createIndex("by-updatedAt", "updatedAt");
         }
 
         if (!db.objectStoreNames.contains("memories")) {
@@ -1299,6 +1319,7 @@ export const dbApi = {
         "diaryEntries",
         "messages",
         "personaStates",
+        "personaEvolutionStates",
         "memories",
         "generatorSessions",
         "groupParticipants",
@@ -1315,6 +1336,13 @@ export const dbApi = {
       .getAllKeys(personaId);
     for (const key of personaStateKeys) {
       await tx.objectStore("personaStates").delete(key);
+    }
+    const personaEvolutionStateKeys = await tx
+      .objectStore("personaEvolutionStates")
+      .index("by-persona")
+      .getAllKeys(personaId);
+    for (const key of personaEvolutionStateKeys) {
+      await tx.objectStore("personaEvolutionStates").delete(key);
     }
     const memoryKeys = await tx
       .objectStore("memories")
@@ -1345,6 +1373,7 @@ export const dbApi = {
         await tx.objectStore("messages").delete(msg.id);
       }
       await tx.objectStore("personaStates").delete(chat.id);
+      await tx.objectStore("personaEvolutionStates").delete(chat.id);
       const memories = await tx
         .objectStore("memories")
         .index("by-chat")
@@ -1520,7 +1549,14 @@ export const dbApi = {
   async deleteChat(chatId: string) {
     const db = await getDb();
     const tx = db.transaction(
-      ["chats", "diaryEntries", "messages", "personaStates", "memories"],
+      [
+        "chats",
+        "diaryEntries",
+        "messages",
+        "personaStates",
+        "personaEvolutionStates",
+        "memories",
+      ],
       "readwrite",
     );
     await tx.objectStore("chats").delete(chatId);
@@ -1539,6 +1575,7 @@ export const dbApi = {
       await tx.objectStore("messages").delete(msg.id);
     }
     await tx.objectStore("personaStates").delete(chatId);
+    await tx.objectStore("personaEvolutionStates").delete(chatId);
     const memories = await tx
       .objectStore("memories")
       .index("by-chat")
@@ -1580,6 +1617,27 @@ export const dbApi = {
   async savePersonaState(state: PersonaRuntimeState) {
     const db = await getDb();
     await db.put("personaStates", state);
+  },
+
+  async getPersonaEvolutionState(chatId: string) {
+    const db = await getDb();
+    return db.get("personaEvolutionStates", chatId);
+  },
+
+  async getAllPersonaEvolutionStates() {
+    const db = await getDb();
+    const rows = await db.getAll("personaEvolutionStates");
+    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  },
+
+  async savePersonaEvolutionState(state: PersonaEvolutionState) {
+    const db = await getDb();
+    await db.put("personaEvolutionStates", state);
+  },
+
+  async deletePersonaEvolutionState(chatId: string) {
+    const db = await getDb();
+    await db.delete("personaEvolutionStates", chatId);
   },
 
   async getMemories(chatId: string) {

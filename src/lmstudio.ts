@@ -9,6 +9,7 @@ import type {
   PersonaAppearanceProfile,
   InfluenceProfile,
   PersonaLookPromptCache,
+  PersonaEvolutionHistoryItem,
   PersonaRuntimeState,
 } from "./types";
 import {
@@ -24,6 +25,7 @@ import {
   buildAdvancedProfileFromLegacy,
   normalizeAdvancedProfile,
 } from "./personaProfiles";
+import { formatPersonaEvolutionHistoryForPrompt } from "./personaEvolution";
 import {
   getToneUsageExamples,
   getExpressivenessBehavior,
@@ -62,6 +64,7 @@ export interface ChatCompletionContext {
     openThreads?: string[];
     agreements?: string[];
   };
+  evolutionHistoryApplied?: PersonaEvolutionHistoryItem[];
 }
 
 function sentenceLengthRule(
@@ -357,6 +360,10 @@ export function buildSystemPrompt(
   const conversationSummaryContext = formatConversationSummaryContext(
     context?.conversationSummary,
   );
+  const evolutionHistoryContext = formatPersonaEvolutionHistoryForPrompt(
+    context?.evolutionHistoryApplied ?? [],
+    10,
+  );
 
   return [
     "=== HARD CONSTRAINTS ===",
@@ -420,7 +427,7 @@ export function buildSystemPrompt(
     "Если используешь markdown для service JSON, только один короткий fenced json-блок без дополнительного текста внутри.",
     "",
     "После каждого ответа добавляй persona_control в service JSON:",
-    '{"persona_control":{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipDepth":0},"memory_add":[],"memory_remove":[]}}',
+    '{"persona_control":{"intents":[],"state_delta":{"trust":0,"engagement":0,"energy":0,"lust":0,"fear":0,"affection":0,"tension":0,"mood":"calm","relationshipDepth":0},"memory_add":[],"memory_remove":[],"evolution":{"shouldEvolve":false,"reason":"","patch":{}}}}',
     "Если изменений нет, оставь нули и пустые массивы.",
     "Ты сама определяешь intents, state_delta и операции памяти (memory_add/memory_remove).",
     "Исполняемые intents (whitelist): flirt, deepen_connection, sensual_description, comfort, reassure, boundary_set, deescalate, ask_clarification, topic_shift, reflect_user, playful_banter, self_disclosure.",
@@ -447,6 +454,21 @@ export function buildSystemPrompt(
     "Примеры того, что МОЖНО в long_term: постоянные предпочтения, биографические факты, долгосрочные цели, устойчивые ограничения.",
     "Никогда не копируй полные сообщения пользователя в long_term.",
     "Если пользователь просит забыть факт или исправляет его, используй memory_remove.",
+    "Для persona_control.evolution используй формат: {\"shouldEvolve\":boolean,\"reason\":\"...\",\"patch\":{...}}.",
+    "Разрешённые поля evolution.patch верхнего уровня: personalityPrompt, stylePrompt, appearance, advanced.",
+    "Разрешённые поля evolution.patch.appearance: faceDescription, height, eyes, lips, hair, ageType, bodyType, markers, accessories, clothingStyle, skin.",
+    "Разрешённые поля evolution.patch.advanced.core: archetype, backstory, goals, values, boundaries, expertise, selfGender(auto|female|male|neutral).",
+    "Разрешённые поля evolution.patch.advanced.voice: tone, lexicalStyle, sentenceLength(short|balanced|long), formality, expressiveness, emoji.",
+    "Разрешённые поля evolution.patch.advanced.behavior: initiative, empathy, directness, curiosity, challenge, creativity.",
+    "Разрешённые поля evolution.patch.advanced.emotion: baselineMood, warmth, stability, positiveTriggers, negativeTriggers.",
+    "Разрешённые поля evolution.patch.advanced.memory: rememberFacts, rememberPreferences, rememberGoals, rememberEvents, maxMemories, decayDays.",
+    "Не выдумывай новые ключи в evolution.patch: неизвестные поля будут отброшены.",
+    "Если эволюция не нужна, верни shouldEvolve=false и пустой patch.",
+    "Решение об эволюции принимаешь ты: код не ограничивает частоту или силу изменений.",
+    "Меняй параметры только при действительно значимых событиях диалога.",
+    "Делай изменения плавными и обоснованными, с кратким reason.",
+    "Учитывай предыдущую траекторию изменений и не дергай параметры без новых существенных сигналов.",
+    "Разворот или частичный откат допустим, если контекст действительно изменился; в reason коротко укажи новый сигнал-триггер.",
     "",
     "=== PERSONA CORE ===",
     `Имя: ${persona.name}`,
@@ -496,6 +518,9 @@ export function buildSystemPrompt(
     "",
     "=== MEMORY CONTEXT ===",
     memoryContext,
+    "",
+    "=== PERSONA EVOLUTION HISTORY (LAST 10 APPLIED) ===",
+    evolutionHistoryContext,
     "",
     "=== RESPONSE POLICY ===",
     "Сохраняй консистентность характера между ответами.",
@@ -1993,6 +2018,7 @@ interface OneToOneDiaryRequest {
     content: string;
     createdAt?: string;
   }>;
+  evolutionHistoryApplied?: PersonaEvolutionHistoryItem[];
 }
 
 export async function requestOneToOneDiaryEntry(
@@ -2020,6 +2046,10 @@ export async function requestOneToOneDiaryEntry(
     agreements: request.chat.summaryAgreements ?? [],
   };
   const diaryTagPrefixesText = DIARY_TAG_PREFIXES.join(", ");
+  const evolutionHistoryContext = formatPersonaEvolutionHistoryForPrompt(
+    request.evolutionHistoryApplied ?? [],
+    10,
+  );
 
   const systemPrompt = [
     "Ты модуль дневника персоны для 1:1 чата.",
@@ -2052,6 +2082,9 @@ export async function requestOneToOneDiaryEntry(
     "",
     "Текущее summary чата:",
     JSON.stringify(summary),
+    "",
+    "Примененная эволюция персоны (последние 10):",
+    evolutionHistoryContext,
     "",
     "Новые сообщения (последние релевантные):",
     ...transcript.map(
@@ -2571,6 +2604,7 @@ export async function generateComfyPromptsFromImageDescription(
   iteration: number,
   options?: {
     participantCatalog?: ComfyPromptParticipantCatalogEntry[];
+    evolutionHistoryApplied?: PersonaEvolutionHistoryItem[];
   },
 ): Promise<string[]> {
   const description = toTrimmedString(imageDescription);
@@ -2626,6 +2660,10 @@ export async function generateComfyPromptsFromImageDescription(
       : "none";
   const participantCatalogContext =
     formatParticipantCatalogContext(participantCatalog);
+  const evolutionHistoryContext = formatPersonaEvolutionHistoryForPrompt(
+    options?.evolutionHistoryApplied ?? [],
+    10,
+  );
 
   const systemPrompt = [
     "Ты конвертер описания сцены в список ComfyUI prompts.",
@@ -2706,6 +2744,8 @@ export async function generateComfyPromptsFromImageDescription(
     `Image description: ${resolveResult.repairedDescription}`,
     `Iteration: ${iteration}`,
     `Contract repair attempts used: ${resolveResult.repairAttemptsUsed}`,
+    "Applied persona evolution history (last 10):",
+    evolutionHistoryContext,
   ].join("\n");
 
   const comfyPromptsToolConfig = createComfyPromptsFromDescriptionToolConfig();
@@ -2740,6 +2780,7 @@ export async function generateComfyPromptFromImageDescription(
   iteration: number,
   options?: {
     participantCatalog?: ComfyPromptParticipantCatalogEntry[];
+    evolutionHistoryApplied?: PersonaEvolutionHistoryItem[];
   },
 ): Promise<string> {
   const prompts = await generateComfyPromptsFromImageDescription(

@@ -16,6 +16,7 @@ class LocalRepository(
     private val diaryEntriesJsonKey = "diary_entries_json"
     private val messagesJsonKey = "messages_json"
     private val personaStatesJsonKey = "persona_states_json"
+    private val personaEvolutionStatesJsonKey = "persona_evolution_states_json"
     private val memoriesJsonKey = "memories_json"
     private val generatorSessionsJsonKey = "generator_sessions_json"
     private val imageAssetsJsonKey = "image_assets_json"
@@ -48,6 +49,7 @@ class LocalRepository(
         "diaryEntries" to diaryEntriesJsonKey,
         "messages" to messagesJsonKey,
         "personaStates" to personaStatesJsonKey,
+        "personaEvolutionStates" to personaEvolutionStatesJsonKey,
         "memories" to memoriesJsonKey,
         "generatorSessions" to generatorSessionsJsonKey,
         "imageAssets" to imageAssetsJsonKey,

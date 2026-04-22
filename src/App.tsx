@@ -200,6 +200,7 @@ export default function App() {
     chats,
     messages,
     activePersonaState,
+    activePersonaEvolutionState,
     activeMemories,
     activeDiaryEntries,
     activePersonaId,
@@ -218,6 +219,11 @@ export default function App() {
     renameChat,
     setChatStyleStrength,
     setChatDiaryEnabled,
+    setChatEvolutionEnabled,
+    setChatEvolutionApplyMode,
+    approvePendingEvolution,
+    rejectPendingEvolution,
+    undoLastAppliedEvolution,
     updateDiaryEntryTags,
     deleteDiaryEntry,
     testGenerateDiaryEntry,
@@ -1244,6 +1250,7 @@ export default function App() {
           memories={activeMemories}
           diaryEntries={activeDiaryEntries}
           runtimeState={activePersonaState}
+          evolutionState={activePersonaEvolutionState}
           settings={settings}
           imageActionBusy={imageActionBusy}
           onEnhanceImage={enhanceSharedImage}
@@ -1253,6 +1260,21 @@ export default function App() {
           }}
           onToggleDiaryEnabled={(chatId, enabled) => {
             void setChatDiaryEnabled(chatId, enabled);
+          }}
+          onToggleEvolutionEnabled={(chatId, enabled) => {
+            void setChatEvolutionEnabled(chatId, enabled);
+          }}
+          onChangeEvolutionApplyMode={(chatId, applyMode) => {
+            void setChatEvolutionApplyMode(chatId, applyMode);
+          }}
+          onApprovePendingEvolution={(chatId, proposalId) => {
+            void approvePendingEvolution(chatId, proposalId);
+          }}
+          onRejectPendingEvolution={(chatId, proposalId) => {
+            void rejectPendingEvolution(chatId, proposalId);
+          }}
+          onUndoLastAppliedEvolution={(chatId) => {
+            void undoLastAppliedEvolution(chatId);
           }}
           onUpdateDiaryTags={(chatId, diaryEntryId, tags) => {
             void updateDiaryEntryTags(chatId, diaryEntryId, tags);

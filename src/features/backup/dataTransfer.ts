@@ -17,6 +17,7 @@ import type {
   GroupSnapshot,
   ImageAsset,
   Persona,
+  PersonaEvolutionState,
   PersonaMemory,
   PersonaRuntimeState,
 } from "../../types";
@@ -49,6 +50,7 @@ interface BackupDataBundle {
   diaryEntries: DiaryEntry[];
   messages: ChatMessage[];
   personaStates: PersonaRuntimeState[];
+  personaEvolutionStates: PersonaEvolutionState[];
   memories: PersonaMemory[];
   generatorSessions: GeneratorSession[];
   imageAssets: ImageAsset[];
@@ -74,6 +76,7 @@ export interface AppBackupPayload {
     diaryEntries: number;
     messages: number;
     personaStates: number;
+    personaEvolutionStates: number;
     memories: number;
     generatorSessions: number;
     imageAssets: number;
@@ -265,6 +268,7 @@ function buildPayloadMeta(bundle: BackupDataBundle): AppBackupPayload["meta"] {
     diaryEntries: bundle.diaryEntries.length,
     messages: bundle.messages.length,
     personaStates: bundle.personaStates.length,
+    personaEvolutionStates: bundle.personaEvolutionStates.length,
     memories: bundle.memories.length,
     generatorSessions: bundle.generatorSessions.length,
     imageAssets: bundle.imageAssets.length,
@@ -292,6 +296,7 @@ function buildRawMeta(stores: Record<string, unknown[]>): AppBackupPayload["meta
     diaryEntries: count("diaryEntries"),
     messages: count("messages"),
     personaStates: count("personaStates"),
+    personaEvolutionStates: count("personaEvolutionStates"),
     memories: count("memories"),
     generatorSessions: count("generatorSessions"),
     imageAssets: count("imageAssets"),
@@ -320,6 +325,7 @@ export async function buildBackupPayload({
     allDiaryEntries,
     allMessages,
     allStates,
+    allEvolutionStates,
     allMemories,
     allGeneratorSessions,
     allImageAssets,
@@ -331,6 +337,7 @@ export async function buildBackupPayload({
     dbApi.getAllDiaryEntries(),
     dbApi.getAllMessages(),
     dbApi.getAllPersonaStates(),
+    dbApi.getAllPersonaEvolutionStates(),
     dbApi.getAllMemories(),
     dbApi.getAllGeneratorSessions(),
     dbApi.getAllImageAssets(),
@@ -343,6 +350,7 @@ export async function buildBackupPayload({
   let diaryEntries: DiaryEntry[] = [];
   let messages: ChatMessage[] = [];
   let personaStates: PersonaRuntimeState[] = [];
+  let personaEvolutionStates: PersonaEvolutionState[] = [];
   let memories: PersonaMemory[] = [];
   let generatorSessions: GeneratorSession[] = [];
   let imageAssets: ImageAsset[] = [];
@@ -441,6 +449,9 @@ export async function buildBackupPayload({
       diaryEntries = allDiaryEntries.filter((entry) => chatIdSet.has(entry.chatId));
       messages = allMessages.filter((message) => chatIdSet.has(message.chatId));
       personaStates = allStates.filter((state) => chatIdSet.has(state.chatId));
+      personaEvolutionStates = allEvolutionStates.filter((state) =>
+        chatIdSet.has(state.chatId),
+      );
       memories = allMemories.filter((memory) => chatIdSet.has(memory.chatId));
       for (const chat of chats) {
         linkedPersonaIds.add(chat.personaId);
@@ -509,6 +520,7 @@ export async function buildBackupPayload({
       diaryEntries = allDiaryEntries;
       messages = allMessages;
       personaStates = allStates;
+      personaEvolutionStates = allEvolutionStates;
       memories = allMemories;
       generatorSessions = allGeneratorSessions;
       imageAssets = allImageAssets;
@@ -530,6 +542,9 @@ export async function buildBackupPayload({
       diaryEntries = allDiaryEntries.filter((entry) => chatIdSet.has(entry.chatId));
       messages = allMessages.filter((message) => chatIdSet.has(message.chatId));
       personaStates = allStates.filter((state) => chatIdSet.has(state.chatId));
+      personaEvolutionStates = allEvolutionStates.filter((state) =>
+        chatIdSet.has(state.chatId),
+      );
       memories = allMemories.filter((memory) => chatIdSet.has(memory.chatId));
       const personaIds = toUniqueIds(chats.map((chat) => chat.personaId));
       const personaIdSet = new Set(personaIds);
@@ -547,6 +562,9 @@ export async function buildBackupPayload({
       diaryEntries = allDiaryEntries.filter((entry) => entry.chatId === normalizedChatId);
       messages = allMessages.filter((message) => message.chatId === normalizedChatId);
       personaStates = allStates.filter((state) => state.chatId === normalizedChatId);
+      personaEvolutionStates = allEvolutionStates.filter(
+        (state) => state.chatId === normalizedChatId,
+      );
       memories = allMemories.filter((memory) => memory.chatId === normalizedChatId);
       personas = allPersonas.filter((persona) => persona.id === selectedChat.personaId);
     } else if (legacyScope === "generation_sessions") {
@@ -576,6 +594,10 @@ export async function buildBackupPayload({
     diaryEntries: uniqueByKey(diaryEntries, (entry) => entry.id),
     messages: uniqueByKey(messages, (message) => message.id),
     personaStates: uniqueByKey(personaStates, (state) => state.chatId),
+    personaEvolutionStates: uniqueByKey(
+      personaEvolutionStates,
+      (state) => state.chatId,
+    ),
     memories: uniqueByKey(memories, (memory) => memory.id),
     generatorSessions: uniqueByKey(generatorSessions, (session) => session.id),
     imageAssets: uniqueByKey(imageAssets, (asset) => asset.id),
@@ -743,6 +765,9 @@ export async function parseBackupFile(file: File): Promise<ParsedBackupPayload> 
     diaryEntries: readArray<DiaryEntry>(dataObject.diaryEntries),
     messages: readArray<ChatMessage>(dataObject.messages),
     personaStates: readArray<PersonaRuntimeState>(dataObject.personaStates),
+    personaEvolutionStates: readArray<PersonaEvolutionState>(
+      dataObject.personaEvolutionStates,
+    ),
     memories: readArray<PersonaMemory>(dataObject.memories),
     generatorSessions: readArray<GeneratorSession>(dataObject.generatorSessions),
     imageAssets: readArray<ImageAsset>(dataObject.imageAssets),
@@ -798,6 +823,10 @@ export async function importBackupPayload(
     const diaryEntries = uniqueByKey(data.diaryEntries, (entry) => entry.id);
     const messages = uniqueByKey(data.messages, (message) => message.id);
     const personaStates = uniqueByKey(data.personaStates, (state) => state.chatId);
+    const personaEvolutionStates = uniqueByKey(
+      data.personaEvolutionStates,
+      (state) => state.chatId,
+    );
     const memories = uniqueByKey(data.memories, (memory) => memory.id);
     const generatorSessions = uniqueByKey(
       data.generatorSessions,
@@ -837,6 +866,7 @@ export async function importBackupPayload(
       diaryEntries: diaryEntries.length,
       messages: messages.length,
       personaStates: personaStates.length,
+      personaEvolutionStates: personaEvolutionStates.length,
       memories: memories.length,
       generatorSessions: generatorSessions.length,
       imageAssets: imageAssets.length,
@@ -870,6 +900,12 @@ export async function importBackupPayload(
     stage = "save_persona_states";
     await Promise.all(
       personaStates.map((state) => dbApi.savePersonaState(state)),
+    );
+    stage = "save_persona_evolution_states";
+    await Promise.all(
+      personaEvolutionStates.map((state) =>
+        dbApi.savePersonaEvolutionState(state),
+      ),
     );
     stage = "save_memories";
     await dbApi.saveMemories(memories);
@@ -910,6 +946,7 @@ export async function importBackupPayload(
       diaryEntries,
       messages,
       personaStates,
+      personaEvolutionStates,
       memories,
       generatorSessions,
       imageAssets,

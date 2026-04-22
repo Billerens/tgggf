@@ -1,6 +1,7 @@
 import type {
   ChatMessage,
   Persona,
+  PersonaEvolutionProfile,
   PersonaMemory,
   PersonaMemoryKind,
   PersonaMemoryLayer,
@@ -50,6 +51,11 @@ export interface PersonaControlPayload {
     kind?: PersonaMemoryKind;
     content?: string;
   }>;
+  evolution?: {
+    shouldEvolve?: boolean;
+    reason?: string;
+    patch?: PersonaEvolutionProfile;
+  };
 }
 
 function clamp(value: number, min: number, max: number) {
