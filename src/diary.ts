@@ -1,10 +1,14 @@
-import type { DiaryTag, DiaryTagPrefix } from "./types";
+import type { DiaryEntry, DiaryTag, DiaryTagPrefix } from "./types";
 
 export const DIARY_IDLE_MS = 10 * 60 * 1000;
 export const DIARY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 export const DIARY_RECENT_MESSAGE_LIMIT = 30;
 export const DIARY_MIN_MESSAGE_COUNT = 4;
 export const DIARY_MIN_CHAR_COUNT = 240;
+export const DIARY_GENERATION_MAX_ENTRIES = 64;
+export const DIARY_EXISTING_TAGS_LIMIT = 200;
+export const DIARY_GENERATED_ENTRY_MIN_NON_DATE_TAGS = 1;
+export const DIARY_GENERATED_ENTRY_MAX_NON_DATE_TAGS = 3;
 const DIARY_MAX_TAGS = 256;
 
 export const DIARY_TAG_PREFIXES: readonly DiaryTagPrefix[] = [
@@ -88,6 +92,84 @@ export function normalizeDiaryTags(input: unknown, maxItems = DIARY_MAX_TAGS): D
     if (result.length >= maxItems) break;
   }
   return result;
+}
+
+export interface DiaryGeneratedEntryDraft {
+  markdown: string;
+  tags: string[];
+}
+
+export interface DiaryGeneratedEntryNormalized {
+  markdown: string;
+  tags: DiaryTag[];
+}
+
+export function isDiaryDateTag(tag: string) {
+  return tag.trim().toLowerCase().startsWith("date:");
+}
+
+export function normalizeGeneratedDiaryEntries(
+  entries: DiaryGeneratedEntryDraft[],
+  dateTag: DiaryTag,
+  maxEntries = DIARY_GENERATION_MAX_ENTRIES,
+): DiaryGeneratedEntryNormalized[] {
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const result: DiaryGeneratedEntryNormalized[] = [];
+  for (const entry of entries.slice(0, Math.max(1, Math.floor(maxEntries)))) {
+    const markdown = (entry?.markdown ?? "").trim();
+    if (!markdown) continue;
+    const normalizedTags = normalizeDiaryTags(entry?.tags ?? []);
+    const nonDateTags = normalizedTags
+      .filter((tag) => !isDiaryDateTag(tag))
+      .slice(0, DIARY_GENERATED_ENTRY_MAX_NON_DATE_TAGS);
+    if (nonDateTags.length < DIARY_GENERATED_ENTRY_MIN_NON_DATE_TAGS) continue;
+    result.push({
+      markdown,
+      tags: normalizeDiaryTags([dateTag, ...nonDateTags]),
+    });
+  }
+  return result;
+}
+
+export function buildDiaryExistingTagsCatalog(
+  entries: DiaryEntry[],
+  nowMs = Date.now(),
+  maxItems = DIARY_EXISTING_TAGS_LIMIT,
+): DiaryTag[] {
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const stats = new Map<string, { count: number; lastCreatedAtMs: number }>();
+  for (const entry of entries) {
+    const createdAtMs = Date.parse(entry.createdAt);
+    const safeCreatedAtMs = Number.isFinite(createdAtMs) ? createdAtMs : 0;
+    const normalizedTags = normalizeDiaryTags(entry.tags);
+    for (const tag of normalizedTags) {
+      if (isDiaryDateTag(tag)) continue;
+      const current = stats.get(tag);
+      if (!current) {
+        stats.set(tag, { count: 1, lastCreatedAtMs: safeCreatedAtMs });
+        continue;
+      }
+      current.count += 1;
+      if (safeCreatedAtMs > current.lastCreatedAtMs) {
+        current.lastCreatedAtMs = safeCreatedAtMs;
+      }
+    }
+  }
+  const scored = Array.from(stats.entries())
+    .map(([tag, item]) => {
+      const ageHours = Math.max(0, (nowMs - item.lastCreatedAtMs) / 3_600_000);
+      const recencyBoost = 1 / (1 + ageHours / 12);
+      const score = item.count * 10 + recencyBoost;
+      return { tag: tag as DiaryTag, score, lastCreatedAtMs: item.lastCreatedAtMs };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (b.lastCreatedAtMs !== a.lastCreatedAtMs) {
+        return b.lastCreatedAtMs - a.lastCreatedAtMs;
+      }
+      return a.tag.localeCompare(b.tag);
+    });
+  return scored.slice(0, Math.max(1, Math.floor(maxItems))).map((item) => item.tag);
 }
 
 export function refineDiaryTagsForRetrieval(

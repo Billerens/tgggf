@@ -80,6 +80,10 @@ data class NativeConversationSummaryState(
 
 data class NativeOneToOneDiaryDraft(
     val shouldWrite: Boolean,
+    val entries: List<NativeOneToOneDiaryEntryDraft>,
+)
+
+data class NativeOneToOneDiaryEntryDraft(
     val markdown: String,
     val tags: List<String>,
 )
@@ -698,6 +702,7 @@ object NativeLlmClient {
         chatTitle: String,
         existing: NativeConversationSummaryState,
         transcript: List<NativeSummaryTranscriptEntry>,
+        existingTags: List<String> = emptyList(),
         evolutionHistoryApplied: List<JSONObject> = emptyList(),
     ): NativeOneToOneDiaryDraft? {
         if (transcript.isEmpty()) return null
@@ -705,6 +710,12 @@ object NativeLlmClient {
         val baseUrl = resolveProviderBaseUrl(settings, provider)
         val model = settings.optString("model", "").trim()
         if (model.isBlank()) return null
+        val normalizedExistingTags =
+            existingTags
+                .map { value -> value.trim() }
+                .filter { value -> value.isNotBlank() }
+                .distinct()
+                .take(200)
 
         // Keep in sync with src/lmstudio.ts::requestOneToOneDiaryEntry.
         val systemPrompt =
@@ -712,7 +723,9 @@ object NativeLlmClient {
                 "Ты модуль дневника персоны для 1:1 чата.",
                 "Твоя задача: решить, стоит ли сейчас писать запись в дневник.",
                 "Если писать нечего (нет новых заметных эмоций/впечатлений/событий), верни shouldWrite=false.",
-                "Если писать стоит, верни shouldWrite=true и markdown в формате .md от первого лица.",
+                "Если писать стоит, верни shouldWrite=true и entries (массив атомарных записей).",
+                "Каждый элемент entries — самостоятельная запись с полями markdown и tags.",
+                "Одна запись должна описывать один отдельный момент/эпизод, без склейки разных тем в один блок.",
                 "Стиль: личный дневник живого человека.",
                 "Тон естественный: тепло, уязвимо, иногда с самоиронией; без официоза и без сухого отчета.",
                 "Можно аккуратно добавлять внутренние секреты, личные детали и образные формулировки, если это органично персоне и контексту.",
@@ -723,13 +736,16 @@ object NativeLlmClient {
                 "Не ограничивай запись слишком жестко по длине: если деталей много, пиши развернуто.",
                 "Не повторяй слово в слово предыдущие формулировки summary.",
                 "Пиши на русском языке.",
-                "Теги должны быть максимально конкретными и узкими, в формате prefix:value.",
-                "Верни 10-18 тегов (можно больше только при реальной конкретике, без воды).",
+                "В КАЖДОЙ записи tags должны быть максимально конкретными и узкими, в формате prefix:value.",
+                "Для каждой записи верни 1-3 содержательных non-date тега (дата добавится вне модели).",
                 "Избегай широких и абстрактных тегов вроде topic:отношения, emotion:чувства, decision:доверие.",
                 "Теги должны помогать точечно находить запись, а не описывать жизнь в целом.",
+                "Тебе передан список existingTags. При логическом совпадении ОБЯЗАТЕЛЬНО переиспользуй уже существующий тег.",
+                "Создавай новый тег только если в existingTags нет подходящей формулировки для конкретной сущности.",
                 "Допустимые prefix: ${DiaryTagSpec.PREFIXES_TEXT}.",
                 "Возвращай только JSON.",
-                "Формат: {\"shouldWrite\":true|false,\"markdown\":\"...\",\"tags\":[\"topic:...\",\"emotion:...\"]}",
+                "Формат: {\"shouldWrite\":true|false,\"entries\":[{\"markdown\":\"...\",\"tags\":[\"topic:...\",\"emotion:...\"]}]}",
+                "Не возвращай markdown/tags на верхнем уровне JSON.",
                 "Не выдумывай факты, которых нет в контексте.",
             ).joinToString("\n")
 
@@ -749,6 +765,9 @@ object NativeLlmClient {
                 appendLine()
                 appendLine("Applied persona evolution history (last 10):")
                 appendLine(formatPersonaEvolutionHistoryForPrompt(evolutionHistoryApplied))
+                appendLine()
+                appendLine("existingTags (используй повторно при семантическом совпадении):")
+                appendLine(JSONArray(normalizedExistingTags).toString())
                 appendLine()
                 appendLine("Текущее summary чата:")
                 appendLine(existingJson)
@@ -778,30 +797,39 @@ object NativeLlmClient {
                 )
             val parsed = parseJsonObjectLoose(response.content)
             if (parsed.length() == 0) return null
-            val markdown =
-                readFirstNonBlankEntry(parsed, "markdown", "entry", "text")?.value?.trim().orEmpty()
-            val shouldWrite =
-                when {
-                    parsed.has("shouldWrite") -> parsed.optBoolean("shouldWrite", markdown.isNotBlank())
-                    parsed.has("should_write") -> parsed.optBoolean("should_write", markdown.isNotBlank())
-                    else -> markdown.isNotBlank()
-                }
-            val tags =
-                parseStringArrayFlexible(parsed.opt("tags"))
-                    .map { value -> value.trim() }
-                    .filter { value -> value.isNotBlank() }
-                    .distinct()
-            if (!shouldWrite || markdown.isBlank()) {
+            val shouldWrite = parsed.optBoolean("shouldWrite", false)
+            val entries =
+                parsed
+                    .optJSONArray("entries")
+                    ?.let { rawEntries ->
+                        val normalized = mutableListOf<NativeOneToOneDiaryEntryDraft>()
+                        for (index in 0 until rawEntries.length()) {
+                            val item = rawEntries.optJSONObject(index) ?: continue
+                            val markdown = item.optString("markdown", "").trim()
+                            if (markdown.isBlank()) continue
+                            val tags =
+                                parseStringArrayFlexible(item.opt("tags"))
+                                    .map { value -> value.trim() }
+                                    .filter { value -> value.isNotBlank() }
+                                    .distinct()
+                            normalized.add(
+                                NativeOneToOneDiaryEntryDraft(
+                                    markdown = markdown,
+                                    tags = tags,
+                                ),
+                            )
+                        }
+                        normalized
+                    } ?: emptyList()
+            if (!shouldWrite) {
                 NativeOneToOneDiaryDraft(
                     shouldWrite = false,
-                    markdown = "",
-                    tags = emptyList(),
+                    entries = emptyList(),
                 )
             } else {
                 NativeOneToOneDiaryDraft(
                     shouldWrite = true,
-                    markdown = markdown,
-                    tags = tags,
+                    entries = entries,
                 )
             }
         } catch (_: Exception) {

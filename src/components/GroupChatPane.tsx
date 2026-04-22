@@ -8,6 +8,8 @@ import {
 } from "react";
 import {
   Image,
+  Loader2,
+  Mic,
   Pause,
   Play,
   RefreshCcw,
@@ -29,6 +31,10 @@ import { formatShortTime } from "../ui/format";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { PersonaProfileModal } from "./PersonaProfileModal";
 import { useSmartMessageAutoscroll } from "../ui/useSmartMessageAutoscroll";
+import {
+  isSpeechInputSupported,
+  transcribeSpeechInput,
+} from "../features/mobile/speechInput";
 import type {
   GroupMessage,
   GroupMessageMention,
@@ -711,6 +717,24 @@ function parseIdbAssetId(value: string) {
   return normalized.slice("idb://".length).trim();
 }
 
+function resolveSpeechErrorMessage(error: unknown) {
+  const code = error instanceof Error ? error.message.trim() : "";
+  if (!code || code === "speech_cancelled") return "";
+  if (code === "microphone_permission_denied") {
+    return "Нет доступа к микрофону. Разрешите доступ в настройках Android.";
+  }
+  if (code === "speech_not_supported") {
+    return "Распознавание речи на этом устройстве недоступно.";
+  }
+  if (code === "speech_empty_result") {
+    return "Не удалось распознать речь. Попробуйте еще раз.";
+  }
+  if (code === "speech_busy") {
+    return "Распознавание уже выполняется.";
+  }
+  return "Не удалось распознать речь.";
+}
+
 export function GroupChatPane({
   activeRoom,
   participants,
@@ -760,7 +784,12 @@ export function GroupChatPane({
     selected: number[];
   } | null>(null);
   const [profilePersonaId, setProfilePersonaId] = useState<string | null>(null);
+  const [voiceInputBusy, setVoiceInputBusy] = useState(false);
+  const [voiceInputError, setVoiceInputError] = useState("");
   const composerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const inputValueRef = useRef(inputValue);
+  const speechInputSupported = useMemo(() => isSpeechInputSupported(), []);
   const messageIds = useMemo(() => messages.map((message) => message.id), [messages]);
   const {
     messagesContainerRef,
@@ -777,6 +806,11 @@ export function GroupChatPane({
     bottomObscurerSelector: ".mobile-bottom-nav",
     bottomOverlayGapPx: 12,
   });
+  inputValueRef.current = inputValue;
+
+  useEffect(() => {
+    setVoiceInputError("");
+  }, [activeRoom?.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -882,6 +916,30 @@ export function GroupChatPane({
       cancelled = true;
     };
   }, [messages]);
+
+  async function handleVoiceInput() {
+    if (!speechInputSupported || voiceInputBusy) return;
+    setVoiceInputError("");
+    setVoiceInputBusy(true);
+    try {
+      const transcript = await transcribeSpeechInput({
+        prompt: "Говорите...",
+        maxResults: 1,
+      });
+      if (!transcript) return;
+      const base = inputValueRef.current.trimEnd();
+      const nextValue = base ? `${base} ${transcript}` : transcript;
+      setInputValue(nextValue);
+      requestAnimationFrame(() => composerTextareaRef.current?.focus());
+    } catch (error) {
+      const message = resolveSpeechErrorMessage(error);
+      if (message) {
+        setVoiceInputError(message);
+      }
+    } finally {
+      setVoiceInputBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!previewTarget) return;
@@ -1764,9 +1822,13 @@ export function GroupChatPane({
         ) : null}
         <form className="composer" onSubmit={onSubmitMessage}>
           <textarea
+            ref={composerTextareaRef}
             placeholder="Сообщение в группу..."
             value={inputValue}
-            onChange={(event) => setInputValue(event.target.value)}
+            onChange={(event) => {
+              setInputValue(event.target.value);
+              if (voiceInputError) setVoiceInputError("");
+            }}
             rows={1}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -1775,6 +1837,23 @@ export function GroupChatPane({
               }
             }}
           />
+          {speechInputSupported ? (
+            <button
+              type="button"
+              className={`composer-voice-btn ${voiceInputBusy ? "active" : ""}`}
+              onClick={() => {
+                void handleVoiceInput();
+              }}
+              disabled={!activeRoom || isLoading || voiceInputBusy}
+              title={voiceInputBusy ? "Распознавание..." : "Ввод голосом"}
+            >
+              {voiceInputBusy ? (
+                <Loader2 size={18} className="spin" />
+              ) : (
+                <Mic size={18} />
+              )}
+            </button>
+          ) : null}
           <button
             type="submit"
             disabled={!activeRoom || !inputValue.trim() || isLoading}
@@ -1782,6 +1861,11 @@ export function GroupChatPane({
             <SendHorizontal size={20} />
           </button>
         </form>
+        {voiceInputError ? (
+          <p className="composer-status-error" role="status">
+            {voiceInputError}
+          </p>
+        ) : null}
       </div>
       {imageRetryDialog ? (
         <div

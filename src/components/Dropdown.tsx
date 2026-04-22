@@ -30,6 +30,7 @@ interface DropdownProps {
   renderSelectedLabel?: (option: DropdownOption) => ReactNode;
   renderOption?: (option: DropdownOption, isSelected: boolean) => ReactNode;
   searchable?: boolean;
+  searchMinOptions?: number;
   searchPlaceholder?: string;
   emptyLabel?: string;
 }
@@ -46,6 +47,7 @@ export function Dropdown({
   renderSelectedLabel,
   renderOption,
   searchable = true,
+  searchMinOptions = 6,
   searchPlaceholder = "Поиск...",
   emptyLabel = "Ничего не найдено",
 }: DropdownProps) {
@@ -57,7 +59,7 @@ export function Dropdown({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const selectedOption = useMemo(() => options.find((option) => option.value === value), [options, value]);
-  const showSearch = searchable && options.length >= 6;
+  const showSearch = searchable && options.length >= searchMinOptions;
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const filteredOptions = useMemo(() => {
     if (!normalizedQuery) return options;

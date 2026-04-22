@@ -1,16 +1,25 @@
 package com.tggf.app.localapi
 
+import android.Manifest
+import android.app.Activity
 import android.content.ContentValues
+import android.content.Intent
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.speech.RecognizerIntent
 import android.util.Base64
+import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSObject
+import com.getcapacitor.PermissionState
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 import org.json.JSONException
 import org.json.JSONObject
 import org.json.JSONArray
@@ -21,7 +30,15 @@ import java.io.FileOutputStream
 import java.time.Instant
 import java.util.UUID
 
-@CapacitorPlugin(name = "LocalApi")
+@CapacitorPlugin(
+    name = "LocalApi",
+    permissions = [
+        Permission(
+            alias = "recordAudio",
+            strings = [Manifest.permission.RECORD_AUDIO],
+        ),
+    ],
+)
 class LocalApiBridgePlugin : Plugin() {
     companion object {
         @Volatile
@@ -58,6 +75,8 @@ class LocalApiBridgePlugin : Plugin() {
     private val repository by repositoryDelegate
     private val backgroundJobs by backgroundJobsDelegate
     private val backgroundRuntime by backgroundRuntimeDelegate
+    @Volatile
+    private var speechRecognitionActive = false
 
     override fun load() {
         super.load()
@@ -915,6 +934,114 @@ class LocalApiBridgePlugin : Plugin() {
         payload.put("ok", health["ok"])
         payload.put("service", health["service"])
         payload.put("storage", health["storage"])
+        call.resolve(payload)
+    }
+
+    @PluginMethod
+    fun transcribeSpeech(call: PluginCall) {
+        if (speechRecognitionActive) {
+            call.reject("speech_busy")
+            return
+        }
+        if (getPermissionState("recordAudio") != PermissionState.GRANTED) {
+            requestPermissionForAlias("recordAudio", call, "onRecordAudioPermissionResult")
+            return
+        }
+        launchSpeechRecognition(call)
+    }
+
+    @PermissionCallback
+    private fun onRecordAudioPermissionResult(call: PluginCall) {
+        if (getPermissionState("recordAudio") != PermissionState.GRANTED) {
+            call.reject("microphone_permission_denied")
+            return
+        }
+        launchSpeechRecognition(call)
+    }
+
+    private fun launchSpeechRecognition(call: PluginCall) {
+        val currentActivity = activity
+        if (currentActivity == null) {
+            call.reject("activity_unavailable")
+            return
+        }
+
+        val locale = (call.getString("locale", "") ?: "").trim()
+        val prompt = (call.getString("prompt", "") ?: "").trim()
+        val maxResults =
+            (call.getString("maxResults", "1") ?: "1")
+                .trim()
+                .toIntOrNull()
+                ?.coerceIn(1, 5)
+                ?: 1
+
+        val intent =
+            Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+                )
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, maxResults)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+                if (locale.isNotBlank()) {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale)
+                }
+                if (prompt.isNotBlank()) {
+                    putExtra(RecognizerIntent.EXTRA_PROMPT, prompt)
+                }
+            }
+
+        if (intent.resolveActivity(currentActivity.packageManager) == null) {
+            call.reject("speech_not_supported")
+            return
+        }
+
+        speechRecognitionActive = true
+        try {
+            startActivityForResult(call, intent, "onSpeechRecognitionResult")
+        } catch (_: Throwable) {
+            speechRecognitionActive = false
+            call.reject("speech_launch_failed")
+        }
+    }
+
+    @ActivityCallback
+    private fun onSpeechRecognitionResult(call: PluginCall, result: ActivityResult) {
+        speechRecognitionActive = false
+        if (result.resultCode != Activity.RESULT_OK) {
+            if (result.resultCode == Activity.RESULT_CANCELED) {
+                call.reject("speech_cancelled")
+                return
+            }
+            call.reject("speech_failed")
+            return
+        }
+
+        val matches =
+            result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                ?.map { value -> value.trim() }
+                ?.filter { value -> value.isNotEmpty() }
+                ?: emptyList()
+
+        if (matches.isEmpty()) {
+            call.reject("speech_empty_result")
+            return
+        }
+
+        val payload =
+            JSObject().apply {
+                put("ok", true)
+                put("text", matches.first())
+                put(
+                    "alternatives",
+                    JSONArray().apply {
+                        for (item in matches) {
+                            put(item)
+                        }
+                    },
+                )
+            }
         call.resolve(payload)
     }
 
@@ -1860,8 +1987,8 @@ class LocalApiBridgePlugin : Plugin() {
                 )
                 return
             }
-            val entry =
-                OneToOneChatNativeExecutor.generateDiaryPreviewEntry(
+            val entries =
+                OneToOneChatNativeExecutor.generateDiaryPreviewEntries(
                     repository = repository,
                     chatId = chatId,
                 )
@@ -1870,7 +1997,7 @@ class LocalApiBridgePlugin : Plugin() {
                 200,
                 JSObject().apply {
                     put("ok", true)
-                    put("entry", entry)
+                    put("entries", entries)
                 },
             )
             return

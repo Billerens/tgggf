@@ -88,7 +88,7 @@ interface ChatDetailsModalProps {
   onUndoLastAppliedEvolution: (chatId: string) => void;
   onUpdateDiaryTags: (chatId: string, diaryEntryId: string, tags: string[]) => void;
   onDeleteDiaryEntry: (chatId: string, diaryEntryId: string) => void;
-  onTestDiaryGeneration: (chatId: string) => Promise<DiaryEntry | null>;
+  onTestDiaryGeneration: (chatId: string) => Promise<DiaryEntry[]>;
   onUpdateRuntimeState: (
     chatId: string,
     patch: Partial<
@@ -221,6 +221,34 @@ function formatDateTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date);
+}
+
+function formatTime(value: string) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("ru-RU", {
+    timeStyle: "short",
+  }).format(date);
+}
+
+function resolveDiaryDateKey(value: string) {
+  const date = new Date(value);
+  if (!Number.isNaN(date.getTime())) {
+    const year = String(date.getFullYear());
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  if (value.includes("T")) return value.slice(0, 10);
+  return value.trim() || "unknown";
+}
+
+function formatDiaryDateGroupLabel(dateKey: string) {
+  if (!dateKey || dateKey === "unknown") return "Без даты";
+  const date = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return dateKey;
+  return new Intl.DateTimeFormat("ru-RU", { dateStyle: "full" }).format(date);
 }
 
 function groupMemories(memories: PersonaMemory[]) {
@@ -638,18 +666,72 @@ export function ChatDetailsModal({
   const [diaryTagDraft, setDiaryTagDraft] = useState("");
   const [testDiaryBusy, setTestDiaryBusy] = useState(false);
   const [testDiaryMessage, setTestDiaryMessage] = useState<string | null>(null);
-  const [testDiaryEntry, setTestDiaryEntry] = useState<DiaryEntry | null>(null);
+  const [testDiaryEntries, setTestDiaryEntries] = useState<DiaryEntry[]>([]);
+  const [selectedDiaryFilterTags, setSelectedDiaryFilterTags] = useState<string[]>([]);
+  const [diaryFilterPickerValue, setDiaryFilterPickerValue] = useState("");
+  const [isMobileDiaryViewport, setIsMobileDiaryViewport] = useState(false);
+  const [mobileDiaryDetailOpen, setMobileDiaryDetailOpen] = useState(false);
   const attachments = useMemo(
     () => extractImageAttachments(messages, imageMetaByUrl),
     [messages, imageMetaByUrl],
   );
+  const diaryFilterTagOptions = useMemo(() => {
+    const stats = new Map<string, number>();
+    for (const entry of diaryEntries) {
+      for (const tag of entry.tags) {
+        if (tag.startsWith("date:")) continue;
+        stats.set(tag, (stats.get(tag) ?? 0) + 1);
+      }
+    }
+    return Array.from(stats.entries())
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => {
+        if (b.count !== a.count) return b.count - a.count;
+        return a.tag.localeCompare(b.tag, "ru");
+      });
+  }, [diaryEntries]);
+  const diaryFilterPickerOptions = useMemo<DropdownOption[]>(
+    () =>
+      diaryFilterTagOptions
+        .filter((option) => !selectedDiaryFilterTags.includes(option.tag))
+        .map((option) => ({
+          value: option.tag,
+          label: formatDiaryTagForDisplay(option.tag),
+          description: `${option.count} шт.`,
+        })),
+    [diaryFilterTagOptions, selectedDiaryFilterTags],
+  );
+  const filteredDiaryEntries = useMemo(() => {
+    if (selectedDiaryFilterTags.length === 0) return diaryEntries;
+    const selectedSet = new Set(selectedDiaryFilterTags);
+    return diaryEntries.filter((entry) =>
+      entry.tags.some((tag) => selectedSet.has(tag)),
+    );
+  }, [diaryEntries, selectedDiaryFilterTags]);
+  const groupedDiaryEntries = useMemo(() => {
+    const byDate = new Map<string, DiaryEntry[]>();
+    const ordered = [...filteredDiaryEntries].sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt),
+    );
+    for (const entry of ordered) {
+      const dateKey = resolveDiaryDateKey(entry.createdAt);
+      const bucket = byDate.get(dateKey) ?? [];
+      bucket.push(entry);
+      byDate.set(dateKey, bucket);
+    }
+    return Array.from(byDate.entries()).map(([dateKey, entries]) => ({
+      dateKey,
+      label: formatDiaryDateGroupLabel(dateKey),
+      entries,
+    }));
+  }, [filteredDiaryEntries]);
   const selectedDiaryEntry = useMemo(() => {
-    if (diaryEntries.length === 0) return null;
+    if (filteredDiaryEntries.length === 0) return null;
     const selected = selectedDiaryEntryId
-      ? diaryEntries.find((entry) => entry.id === selectedDiaryEntryId)
+      ? filteredDiaryEntries.find((entry) => entry.id === selectedDiaryEntryId)
       : undefined;
-    return selected ?? diaryEntries[0] ?? null;
-  }, [diaryEntries, selectedDiaryEntryId]);
+    return selected ?? filteredDiaryEntries[0] ?? null;
+  }, [filteredDiaryEntries, selectedDiaryEntryId]);
   const diaryEnabled = Boolean(chat?.diaryConfig?.enabled);
   const evolutionEnabled = Boolean(chat?.evolutionConfig?.enabled);
   const evolutionApplyMode: PersonaEvolutionApplyMode =
@@ -850,24 +932,59 @@ export function ChatDetailsModal({
   }, [chat?.id, runtimeState]);
 
   useEffect(() => {
-    if (diaryEntries.length === 0) {
+    if (filteredDiaryEntries.length === 0) {
       setSelectedDiaryEntryId(null);
+      setMobileDiaryDetailOpen(false);
       return;
     }
     if (
       selectedDiaryEntryId &&
-      diaryEntries.some((entry) => entry.id === selectedDiaryEntryId)
+      filteredDiaryEntries.some((entry) => entry.id === selectedDiaryEntryId)
     ) {
       return;
     }
-    setSelectedDiaryEntryId(diaryEntries[0]?.id ?? null);
-  }, [chat?.id, diaryEntries, selectedDiaryEntryId]);
+    setSelectedDiaryEntryId(filteredDiaryEntries[0]?.id ?? null);
+  }, [chat?.id, filteredDiaryEntries, selectedDiaryEntryId]);
 
   useEffect(() => {
     setTestDiaryBusy(false);
     setTestDiaryMessage(null);
-    setTestDiaryEntry(null);
+    setTestDiaryEntries([]);
+    setSelectedDiaryFilterTags([]);
+    setDiaryFilterPickerValue("");
+    setMobileDiaryDetailOpen(false);
   }, [chat?.id]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mediaQuery = window.matchMedia("(max-width: 900px)");
+    const syncViewport = () => {
+      setIsMobileDiaryViewport(mediaQuery.matches);
+    };
+    syncViewport();
+    if (typeof mediaQuery.addEventListener === "function") {
+      mediaQuery.addEventListener("change", syncViewport);
+      return () => mediaQuery.removeEventListener("change", syncViewport);
+    }
+    mediaQuery.addListener(syncViewport);
+    return () => mediaQuery.removeListener(syncViewport);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileDiaryViewport) {
+      setMobileDiaryDetailOpen(false);
+    }
+  }, [isMobileDiaryViewport]);
+
+  useEffect(() => {
+    const allowed = new Set(diaryFilterTagOptions.map((option) => option.tag));
+    setSelectedDiaryFilterTags((current) =>
+      current.filter((tag) => allowed.has(tag)),
+    );
+    setDiaryFilterPickerValue((current) =>
+      allowed.has(current) ? current : "",
+    );
+  }, [diaryFilterTagOptions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1154,22 +1271,39 @@ export function ChatDetailsModal({
     setTestDiaryBusy(true);
     setTestDiaryMessage(null);
     try {
-      const generatedEntry = await onTestDiaryGeneration(chat.id);
-      if (!generatedEntry) {
-        setTestDiaryEntry(null);
+      const generatedEntries = await onTestDiaryGeneration(chat.id);
+      if (generatedEntries.length === 0) {
+        setTestDiaryEntries([]);
         setTestDiaryMessage(
-          "Тест не создал запись: мало контента или модель решила пропустить дневник.",
+          "Тест не создал записи: мало контента или модель решила пропустить дневник.",
         );
         return;
       }
-      setTestDiaryEntry(generatedEntry);
-      setTestDiaryMessage("Тестовая запись сгенерирована. В базу она не сохранена.");
+      setTestDiaryEntries(generatedEntries);
+      setTestDiaryMessage(
+        `Тестовые записи сгенерированы: ${generatedEntries.length}. В базу они не сохранены.`,
+      );
     } catch (error) {
-      setTestDiaryEntry(null);
+      setTestDiaryEntries([]);
       setTestDiaryMessage((error as Error).message || "Не удалось выполнить тест генерации.");
     } finally {
       setTestDiaryBusy(false);
     }
+  }
+
+  function handleAddDiaryFilterTag(tag: string) {
+    const normalized = tag.trim();
+    if (!normalized) return;
+    setSelectedDiaryFilterTags((current) =>
+      current.includes(normalized) ? current : [...current, normalized],
+    );
+    setDiaryFilterPickerValue("");
+  }
+
+  function handleRemoveDiaryFilterTag(tag: string) {
+    setSelectedDiaryFilterTags((current) =>
+      current.filter((value) => value !== tag),
+    );
   }
 
   function handleDeleteSelectedDiaryEntry() {
@@ -2270,15 +2404,19 @@ export function ChatDetailsModal({
               </p>
             ) : null}
 
-            {testDiaryEntry ? (
-              <article className="diary-entry-view">
-                {renderDiaryEntryContent(testDiaryEntry, {
-                  createdLabel: "Тестовый результат",
-                  removableTags: false,
-                  showTagEditor: false,
-                  showDeleteAction: false,
-                })}
-              </article>
+            {testDiaryEntries.length > 0 ? (
+              <div>
+                {testDiaryEntries.map((entry, index) => (
+                  <article key={entry.id} className="diary-entry-view">
+                    {renderDiaryEntryContent(entry, {
+                      createdLabel: `Тестовый результат #${index + 1}`,
+                      removableTags: false,
+                      showTagEditor: false,
+                      showDeleteAction: false,
+                    })}
+                  </article>
+                ))}
+              </div>
             ) : null}
 
             {diaryEntries.length === 0 ? (
@@ -2288,29 +2426,115 @@ export function ChatDetailsModal({
                   : "Записей пока нет. Включите автогенерацию, чтобы персона могла вести дневник."}
               </p>
             ) : (
-              <div className="diary-layout">
-                <aside className="diary-list">
-                  {diaryEntries.map((entry) => (
+              <div className="diary-filter-card">
+                <div className="diary-filter-card-head">
+                  <strong>Фильтр по тегам</strong>
+                  {selectedDiaryFilterTags.length > 0 ? (
                     <button
-                      key={entry.id}
                       type="button"
-                      className={`diary-list-item ${
-                        selectedDiaryEntry?.id === entry.id ? "active" : ""
-                      }`}
-                      onClick={() => setSelectedDiaryEntryId(entry.id)}
+                      className="secondary"
+                      onClick={() => setSelectedDiaryFilterTags([])}
                     >
-                      <strong>{formatDateTime(entry.createdAt)}</strong>
-                      <span>
-                        {entry.tags
-                          .slice(0, 3)
-                          .map((tag) => formatDiaryTagForDisplay(tag))
-                          .join(" • ") || "Без тегов"}
-                      </span>
+                      Сбросить
                     </button>
+                  ) : null}
+                </div>
+                <div className="diary-filter-picker">
+                  <Dropdown
+                    value={diaryFilterPickerValue}
+                    options={
+                      diaryFilterPickerOptions.length > 0
+                        ? diaryFilterPickerOptions
+                        : [{ value: "", label: "Все теги уже выбраны" }]
+                    }
+                    onChange={(nextTag) => {
+                      setDiaryFilterPickerValue(nextTag);
+                      if (nextTag) handleAddDiaryFilterTag(nextTag);
+                    }}
+                    placeholder="Выберите тег"
+                    disabled={diaryFilterPickerOptions.length === 0}
+                    portal
+                    searchable
+                    searchMinOptions={0}
+                    searchPlaceholder="Поиск тега..."
+                  />
+                </div>
+                <div className="diary-filter-chip-list" aria-label="Выбранные теги фильтра">
+                  {selectedDiaryFilterTags.map((tag) => (
+                    <span key={tag} className="diary-filter-chip">
+                      <span className="diary-filter-chip-meta">
+                        <strong>{formatDiaryTagForDisplay(tag)}</strong>
+                      </span>
+                      <button
+                        type="button"
+                        className="icon-btn mini"
+                        onClick={() => handleRemoveDiaryFilterTag(tag)}
+                        title="Удалить тег из фильтра"
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
                   ))}
+                  {selectedDiaryFilterTags.length === 0 ? (
+                    <small style={{ color: "var(--text-secondary)" }}>
+                      Выберите один или несколько тегов в списке выше.
+                    </small>
+                  ) : null}
+                </div>
+              </div>
+            )}
+
+            {diaryEntries.length > 0 ? (
+              <div className={`diary-layout ${isMobileDiaryViewport ? "mobile" : ""}`}>
+                <aside className="diary-list">
+                  {groupedDiaryEntries.length === 0 ? (
+                    <p className="empty-state">По выбранным тегам ничего не найдено.</p>
+                  ) : (
+                    groupedDiaryEntries.map((group) => (
+                      <section key={group.dateKey} className="diary-date-group">
+                        <p className="diary-date-group-title">{group.label}</p>
+                        {group.entries.map((entry) => (
+                          <button
+                            key={entry.id}
+                            type="button"
+                            className={`diary-list-item ${
+                              selectedDiaryEntry?.id === entry.id ? "active" : ""
+                            }`}
+                            onClick={() => {
+                              setSelectedDiaryEntryId(entry.id);
+                              if (isMobileDiaryViewport) setMobileDiaryDetailOpen(true);
+                            }}
+                          >
+                            <strong>{formatTime(entry.createdAt)}</strong>
+                            <span>
+                              {entry.tags
+                                .slice(0, 3)
+                                .map((tag) => formatDiaryTagForDisplay(tag))
+                                .join(" • ") || "Без тегов"}
+                            </span>
+                          </button>
+                        ))}
+                      </section>
+                    ))
+                  )}
                 </aside>
 
-                <article className="diary-entry-view">
+                <article
+                  className={`diary-entry-view diary-entry-panel ${
+                    !isMobileDiaryViewport || mobileDiaryDetailOpen ? "open" : ""
+                  }`}
+                >
+                  {isMobileDiaryViewport ? (
+                    <div className="diary-mobile-panel-head">
+                      <button
+                        type="button"
+                        className="secondary"
+                        onClick={() => setMobileDiaryDetailOpen(false)}
+                      >
+                        Назад
+                      </button>
+                    </div>
+                  ) : null}
                   {selectedDiaryEntry ? (
                     renderDiaryEntryContent(selectedDiaryEntry, {
                       createdLabel: "Создано",
@@ -2323,7 +2547,7 @@ export function ChatDetailsModal({
                   )}
                 </article>
               </div>
-            )}
+            ) : null}
           </section>
         )}
       </div>

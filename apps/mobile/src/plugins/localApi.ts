@@ -16,9 +16,24 @@ export interface LocalApiRequestOutput {
   body: unknown;
 }
 
+export interface LocalApiTranscribeSpeechInput {
+  locale?: string;
+  prompt?: string;
+  maxResults?: number;
+}
+
+export interface LocalApiTranscribeSpeechOutput {
+  ok: boolean;
+  text: string;
+  alternatives?: string[];
+}
+
 export interface LocalApiPlugin {
   health(): Promise<LocalApiHealthPayload>;
   request(input: LocalApiRequestInput): Promise<LocalApiRequestOutput>;
+  transcribeSpeech(
+    input?: LocalApiTranscribeSpeechInput,
+  ): Promise<LocalApiTranscribeSpeechOutput>;
 }
 
 export const LocalApi = registerPlugin<LocalApiPlugin>("LocalApi");

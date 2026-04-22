@@ -55,12 +55,12 @@ function resolveLocalApiPlugin(scope: CapacitorLikeScope): LocalApiPlugin | null
 
 export async function requestNativeDiaryPreview(
   chatId: string,
-): Promise<DiaryEntry | null> {
+): Promise<DiaryEntry[]> {
   const normalizedChatId = chatId.trim();
-  if (!normalizedChatId) return null;
+  if (!normalizedChatId) return [];
   const scope = globalThis as unknown as CapacitorLikeScope;
   const plugin = resolveLocalApiPlugin(scope);
-  if (!plugin) return null;
+  if (!plugin) return [];
 
   const response = await plugin.request({
     method: "PUT",
@@ -72,18 +72,18 @@ export async function requestNativeDiaryPreview(
   if (response.status < 200 || response.status >= 300) {
     throw new Error(`native_diary_preview_http_${response.status}`);
   }
-  if (!isRecord(response.body)) return null;
-  const entry = response.body.entry;
-  if (!isRecord(entry)) return null;
-  if (
-    typeof entry.id !== "string" ||
-    typeof entry.chatId !== "string" ||
-    typeof entry.personaId !== "string" ||
-    typeof entry.markdown !== "string"
-  ) {
-    return null;
-  }
-  return entry as unknown as DiaryEntry;
+  if (!isRecord(response.body)) return [];
+  const entriesRaw = response.body.entries;
+  if (!Array.isArray(entriesRaw)) return [];
+  return entriesRaw
+    .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+    .filter(
+      (entry) =>
+        typeof entry.id === "string" &&
+        typeof entry.chatId === "string" &&
+        typeof entry.personaId === "string" &&
+        typeof entry.markdown === "string",
+    ) as unknown as DiaryEntry[];
 }
 
 function parseIdbImageAssetId(value: string | undefined | null) {

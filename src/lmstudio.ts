@@ -2050,8 +2050,10 @@ export async function requestConversationSummaryUpdate(
 
 export interface OneToOneDiaryDraft {
   shouldWrite: boolean;
-  markdown: string;
-  tags: string[];
+  entries: Array<{
+    markdown: string;
+    tags: string[];
+  }>;
 }
 
 interface OneToOneDiaryRequest {
@@ -2061,6 +2063,7 @@ interface OneToOneDiaryRequest {
     content: string;
     createdAt?: string;
   }>;
+  existingTags?: string[];
   evolutionHistoryApplied?: PersonaEvolutionHistoryItem[];
 }
 
@@ -2078,7 +2081,7 @@ export async function requestOneToOneDiaryEntry(
     .filter((message) => message.content.length > 0)
     .slice(-DIARY_RECENT_MESSAGE_LIMIT);
   if (transcript.length === 0) {
-    return { shouldWrite: false, markdown: "", tags: [] };
+    return { shouldWrite: false, entries: [] };
   }
 
   const summary = {
@@ -2093,12 +2096,15 @@ export async function requestOneToOneDiaryEntry(
     request.evolutionHistoryApplied ?? [],
     10,
   );
+  const existingTags = normalizeDiaryTags(request.existingTags ?? [], 200);
 
   const systemPrompt = [
     "Ты модуль дневника персоны для 1:1 чата.",
     "Твоя задача: решить, стоит ли сейчас писать запись в дневник.",
     "Если писать нечего (нет новых заметных эмоций/впечатлений/событий), верни shouldWrite=false.",
-    "Если писать стоит, верни shouldWrite=true и markdown в формате .md от первого лица.",
+    "Если писать стоит, верни shouldWrite=true и entries (массив атомарных записей).",
+    "Каждый элемент entries — самостоятельная запись с полями markdown и tags.",
+    "Одна запись должна описывать один отдельный момент/эпизод, без склейки разных тем в один блок.",
     "Стиль: личный дневник живого человека.",
     "Тон естественный: тепло, уязвимо, иногда с самоиронией; без официоза и без сухого отчета.",
     "Можно аккуратно добавлять внутренние секреты, личные детали и образные формулировки, если это органично персоне и контексту.",
@@ -2109,13 +2115,16 @@ export async function requestOneToOneDiaryEntry(
     "Не ограничивай запись слишком жестко по длине: если деталей много, пиши развернуто.",
     "Не повторяй слово в слово предыдущие формулировки summary.",
     "Пиши на русском языке.",
-    "Теги должны быть максимально конкретными и узкими, в формате prefix:value.",
-    "Верни 10-18 тегов (можно больше только при реальной конкретике, без воды).",
+    "В КАЖДОЙ записи tags должны быть максимально конкретными и узкими, в формате prefix:value.",
+    "Для каждой записи верни 1-3 содержательных non-date тега (дата добавится вне модели).",
     "Избегай широких и абстрактных тегов вроде topic:отношения, emotion:чувства, decision:доверие.",
     "Теги должны помогать точечно находить запись, а не описывать жизнь в целом.",
+    "Тебе передан список existingTags. При логическом совпадении ОБЯЗАТЕЛЬНО переиспользуй уже существующий тег.",
+    "Создавай новый тег только если в existingTags нет подходящей формулировки для конкретной сущности.",
     `Допустимые prefix: ${diaryTagPrefixesText}.`,
     "Возвращай только JSON.",
-    'Формат: {"shouldWrite":true|false,"markdown":"...","tags":["topic:...","emotion:..."]}',
+    'Формат: {"shouldWrite":true|false,"entries":[{"markdown":"...","tags":["topic:...","emotion:..."]}]}',
+    "Не возвращай markdown/tags на верхнем уровне JSON.",
     "Не выдумывай факты, которых нет в контексте.",
   ].join("\n");
 
@@ -2128,6 +2137,9 @@ export async function requestOneToOneDiaryEntry(
     "",
     "Примененная эволюция персоны (последние 10):",
     evolutionHistoryContext,
+    "",
+    "existingTags (используй повторно при семантическом совпадении):",
+    JSON.stringify(existingTags),
     "",
     "Новые сообщения (последние релевантные):",
     ...transcript.map(
@@ -2153,33 +2165,34 @@ export async function requestOneToOneDiaryEntry(
       response.content,
     );
     if (!parsed) {
-      return { shouldWrite: false, markdown: "", tags: [] };
+      return { shouldWrite: false, entries: [] };
     }
-    const shouldWriteRaw =
+    const shouldWrite =
       typeof parsed.shouldWrite === "boolean"
         ? parsed.shouldWrite
-        : typeof parsed.should_write === "boolean"
-          ? parsed.should_write
-          : undefined;
-    const markdown =
-      toTrimmedString(parsed.markdown) ||
-      toTrimmedString(parsed.entry) ||
-      toTrimmedString(parsed.text);
-    const tags = normalizeDiaryTags(parsed.tags);
-    const shouldWrite =
-      typeof shouldWriteRaw === "boolean"
-        ? shouldWriteRaw
-        : Boolean(markdown);
-    if (!shouldWrite || !markdown) {
-      return { shouldWrite: false, markdown: "", tags: [] };
+        : false;
+    const rawEntries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    const entries: Array<{ markdown: string; tags: string[] }> = [];
+    for (const raw of rawEntries) {
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Record<string, unknown>;
+      const markdown = toTrimmedString(item.markdown);
+      const tags = normalizeDiaryTags(item.tags);
+      if (!markdown) continue;
+      entries.push({
+        markdown,
+        tags,
+      });
+    }
+    if (!shouldWrite) {
+      return { shouldWrite: false, entries: [] };
     }
     return {
       shouldWrite: true,
-      markdown,
-      tags,
+      entries,
     };
   } catch {
-    return { shouldWrite: false, markdown: "", tags: [] };
+    return { shouldWrite: false, entries: [] };
   }
 }
 

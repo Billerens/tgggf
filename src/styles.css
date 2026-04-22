@@ -1077,6 +1077,45 @@ body {
   box-shadow: 0 0 24px rgba(59, 130, 246, 0.5);
   transform: scale(1.05);
 }
+.composer-voice-btn {
+  border-radius: 50%;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(148, 163, 184, 0.18);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+.composer-voice-btn:hover:not(:disabled) {
+  border-color: rgba(96, 165, 250, 0.75);
+  background: rgba(96, 165, 250, 0.18);
+}
+.composer-voice-btn.active {
+  border-color: rgba(96, 165, 250, 0.95);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.4);
+}
+.composer-status-error {
+  margin: 8px 8px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #fca5a5;
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* Messages */
 .bubble {
@@ -1843,10 +1882,68 @@ button.danger:hover:not(:disabled) {
   margin-top: 8px;
   margin-bottom: 0;
 }
+.diary-filter-card {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px 12px;
+  display: grid;
+  gap: 10px;
+}
+.diary-filter-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.diary-filter-card-head strong {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.diary-filter-picker {
+  display: grid;
+  gap: 8px;
+}
+.diary-filter-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.diary-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 12px;
+}
+.diary-filter-chip-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.diary-filter-chip-meta strong {
+  font-size: 12px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diary-filter-chip .icon-btn.mini {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+}
 .diary-layout {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   gap: 12px;
+  position: relative;
 }
 .diary-list {
   border: 1px solid var(--border-light);
@@ -1858,6 +1955,18 @@ button.danger:hover:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.diary-date-group {
+  display: grid;
+  gap: 8px;
+}
+.diary-date-group-title {
+  margin: 4px 2px 0;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
 }
 .diary-list-item {
   border: 1px solid var(--border-light);
@@ -1883,6 +1992,9 @@ button.danger:hover:not(:disabled) {
 .diary-list-item.active {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.28);
+}
+.diary-mobile-panel-head {
+  display: none;
 }
 .diary-entry-view {
   border: 1px solid var(--border-light);
@@ -1975,8 +2087,31 @@ button.danger:hover:not(:disabled) {
   word-break: break-word;
 }
 @media (max-width: 900px) {
-  .diary-layout {
-    grid-template-columns: 1fr;
+  .diary-layout.mobile {
+    display: block;
+    min-height: 420px;
+    overflow: hidden;
+  }
+  .diary-layout.mobile .diary-list {
+    max-height: 420px;
+    height: 420px;
+  }
+  .diary-layout.mobile .diary-entry-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    transform: translateX(100%);
+    transition: transform 0.22s ease;
+    background: var(--bg-surface-solid);
+    box-shadow: -24px 0 36px rgba(0, 0, 0, 0.42);
+  }
+  .diary-layout.mobile .diary-entry-panel.open {
+    transform: translateX(0);
+  }
+  .diary-layout.mobile .diary-mobile-panel-head {
+    display: flex;
+    align-items: center;
+    margin-bottom: 4px;
   }
 }
 
@@ -3551,6 +3686,10 @@ select:focus,
     background: rgba(18, 22, 30, 0.95);
   }
   .composer button[type="submit"] {
+    width: 44px;
+    height: 44px;
+  }
+  .composer-voice-btn {
     width: 44px;
     height: 44px;
   }
