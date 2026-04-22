@@ -794,11 +794,11 @@ object OneToOneChatNativeExecutor {
 
         val personaName = persona.optString("name", "").trim()
         val requestedImageCount = if (comfyImageDescriptions.isNotEmpty()) comfyImageDescriptions.size else comfyPrompts.size
-        val personaStyleReferenceImage =
+        val personaStyleReferenceCandidates =
             listOf(
-                persona.optString("avatarUrl", "").trim(),
                 persona.optString("fullBodyUrl", "").trim(),
-            ).firstOrNull { value -> value.isNotBlank() }
+                persona.optString("avatarUrl", "").trim(),
+            ).filter { value -> value.isNotBlank() }.distinct()
         val chatStyleStrength = resolveChatStyleStrength(chat, settings)
         val effectiveSettings =
             if (chatStyleStrength != null) {
@@ -923,26 +923,102 @@ object OneToOneChatNativeExecutor {
                     ComfyNativeClient.stableSeedFromText("${scope.chatId}:${scope.userMessageId}:$index:$prompt")
                 val parsedType =
                     parsedTypesForGeneration.getOrNull(index) ?: parseImageDescriptionType(prompt, personaName)
-                val styleReferenceImage =
-                    if (shouldAttachPersonaReference(parsedType)) {
-                        personaStyleReferenceImage
+                val needsPersonaReference = shouldAttachPersonaReference(parsedType)
+                val styleReferenceCandidates =
+                    if (needsPersonaReference) {
+                        personaStyleReferenceCandidates
                     } else {
-                        null
+                        emptyList()
+                    }
+                if (needsPersonaReference && styleReferenceCandidates.isEmpty()) {
+                    appendRuntimeEvent(
+                        runtime = runtime,
+                        scopeId = scope.chatId,
+                        jobId = jobId,
+                        stage = "image_progress",
+                        level = "warn",
+                        message = "Style reference is required but persona has no reference image",
+                        details =
+                            JSONObject().apply {
+                                put("promptIndex", index)
+                                put("parsedType", parsedType.type)
+                            },
+                    )
+                }
+                val runGeneration =
+                    { styleReferenceImage: String?, strictStyleReference: Boolean ->
+                        ComfyNativeClient.runBaseGeneration(
+                            ComfyNativeClient.BaseGenerationRequest(
+                                context = context,
+                                settings = effectiveSettings,
+                                prompt = prompt,
+                                seed = seed,
+                                styleReferenceImage = styleReferenceImage,
+                                strictStyleReference = strictStyleReference,
+                                worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+                                workerScopeId = scope.chatId,
+                                workerQueueDetail = "image_queue",
+                                workerWaitDetail = "image_wait",
+                            ),
+                        )
                     }
                 val comfyResult =
-                    ComfyNativeClient.runBaseGeneration(
-                        ComfyNativeClient.BaseGenerationRequest(
-                            context = context,
-                            settings = effectiveSettings,
-                            prompt = prompt,
-                            seed = seed,
-                            styleReferenceImage = styleReferenceImage,
-                            worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
-                            workerScopeId = scope.chatId,
-                            workerQueueDetail = "image_queue",
-                            workerWaitDetail = "image_wait",
-                        ),
-                    )
+                    if (styleReferenceCandidates.isEmpty()) {
+                        runGeneration(null, false)
+                    } else {
+                        var recoveredWithFallback = false
+                        var result: ComfyNativeClient.ComfyRunResult? = null
+                        for (candidateIndex in styleReferenceCandidates.indices) {
+                            if (result != null) break
+                            val candidate = styleReferenceCandidates[candidateIndex]
+                            try {
+                                result = runGeneration(candidate, true)
+                                if (candidateIndex > 0) {
+                                    recoveredWithFallback = true
+                                }
+                            } catch (error: Exception) {
+                                val hasNextCandidate = candidateIndex < styleReferenceCandidates.lastIndex
+                                if (
+                                    hasNextCandidate &&
+                                    ComfyNativeClient.isRecoverableStyleReferenceError(error)
+                                ) {
+                                    appendRuntimeEvent(
+                                        runtime = runtime,
+                                        scopeId = scope.chatId,
+                                        jobId = jobId,
+                                        stage = "image_progress",
+                                        level = "warn",
+                                        message = "Style reference upload failed, retrying with fallback reference",
+                                        details =
+                                            JSONObject().apply {
+                                                put("promptIndex", index)
+                                                put("candidateIndex", candidateIndex)
+                                                put("candidateCount", styleReferenceCandidates.size)
+                                                put("error", error.message ?: "style_reference_failed")
+                                            },
+                                    )
+                                    continue
+                                }
+                                throw error
+                            }
+                        }
+                        if (recoveredWithFallback) {
+                            appendRuntimeEvent(
+                                runtime = runtime,
+                                scopeId = scope.chatId,
+                                jobId = jobId,
+                                stage = "image_progress",
+                                level = "info",
+                                message = "Image generation recovered using fallback style reference",
+                                details =
+                                    JSONObject().apply {
+                                        put("promptIndex", index)
+                                        put("candidateCount", styleReferenceCandidates.size)
+                                    },
+                            )
+                        }
+                        result ?: throw IllegalStateException("Failed to apply any style reference candidate.")
+                    }
                 val localizedUrls =
                     ComfyNativeClient.localizeOutputImageUrls(
                         context = context,

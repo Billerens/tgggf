@@ -85,6 +85,7 @@ object ComfyNativeClient {
         val seed: Long,
         val checkpointName: String? = null,
         val styleReferenceImage: String? = null,
+        val strictStyleReference: Boolean = false,
         val preferredTitleIncludes: List<String> = emptyList(),
         val strictPreferredMatch: Boolean = false,
         val pickLatestImageOnly: Boolean = false,
@@ -115,6 +116,7 @@ object ComfyNativeClient {
                 seed = request.seed,
                 checkpointName = request.checkpointName,
                 styleReferenceImage = request.styleReferenceImage,
+                strictStyleReference = request.strictStyleReference,
                 preferredTitleIncludes = request.preferredTitleIncludes,
                 strictPreferredMatch = request.strictPreferredMatch,
                 pickLatestImageOnly = request.pickLatestImageOnly,
@@ -132,6 +134,12 @@ object ComfyNativeClient {
             return 1L
         }
         return hash
+    }
+
+    @JvmStatic
+    fun isRecoverableStyleReferenceError(error: Throwable): Boolean {
+        val normalizedMessage = error.message?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return isRecoverableStyleReferenceErrorMessage(normalizedMessage)
     }
 
     @JvmStatic
@@ -376,6 +384,7 @@ object ComfyNativeClient {
         seed: Long,
         checkpointName: String?,
         styleReferenceImage: String?,
+        strictStyleReference: Boolean,
         preferredTitleIncludes: List<String>,
         strictPreferredMatch: Boolean,
         pickLatestImageOnly: Boolean,
@@ -439,9 +448,16 @@ object ComfyNativeClient {
                     filename = uploadedFilename,
                 )
             } catch (error: Exception) {
-                if (!shouldIgnoreReferenceImageError(error)) {
+                if (strictStyleReference || !shouldIgnoreReferenceImageError(error)) {
                     throw error
                 }
+                emitDebug(
+                    debugEmitter,
+                    "style_reference_ignored",
+                    JSONObject().apply {
+                        put("reason", error.message ?: "style_reference_failed")
+                    },
+                )
             }
         }
 
@@ -1450,6 +1466,10 @@ object ComfyNativeClient {
 
     private fun shouldIgnoreReferenceImageError(error: Exception): Boolean {
         val normalizedMessage = error.message?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        return isRecoverableStyleReferenceErrorMessage(normalizedMessage)
+    }
+
+    private fun isRecoverableStyleReferenceErrorMessage(normalizedMessage: String): Boolean {
         return normalizedMessage.contains("not found in local imageassets store") ||
             normalizedMessage.contains("invalid idb reference image source") ||
             normalizedMessage.contains("reference image source is empty") ||
