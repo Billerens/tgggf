@@ -8,7 +8,6 @@ export const DIARY_MIN_CHAR_COUNT = 240;
 export const DIARY_GENERATION_MAX_ENTRIES = 64;
 export const DIARY_EXISTING_TAGS_LIMIT = 200;
 export const DIARY_GENERATED_ENTRY_MIN_NON_DATE_TAGS = 1;
-export const DIARY_GENERATED_ENTRY_MAX_NON_DATE_TAGS = 3;
 const DIARY_MAX_TAGS = 256;
 
 export const DIARY_TAG_PREFIXES: readonly DiaryTagPrefix[] = [
@@ -119,9 +118,7 @@ export function normalizeGeneratedDiaryEntries(
     const markdown = (entry?.markdown ?? "").trim();
     if (!markdown) continue;
     const normalizedTags = normalizeDiaryTags(entry?.tags ?? []);
-    const nonDateTags = normalizedTags
-      .filter((tag) => !isDiaryDateTag(tag))
-      .slice(0, DIARY_GENERATED_ENTRY_MAX_NON_DATE_TAGS);
+    const nonDateTags = normalizedTags.filter((tag) => !isDiaryDateTag(tag));
     if (nonDateTags.length < DIARY_GENERATED_ENTRY_MIN_NON_DATE_TAGS) continue;
     result.push({
       markdown,

@@ -32,7 +32,6 @@ object OneToOneChatNativeExecutor {
     private const val DIARY_MAX_TAGS = 256
     private const val DIARY_GENERATION_MAX_ENTRIES = 64
     private const val DIARY_EXISTING_TAGS_LIMIT = 200
-    private const val DIARY_ENTRY_MAX_NON_DATE_TAGS = 3
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -1663,7 +1662,6 @@ object OneToOneChatNativeExecutor {
             val nonDateTags =
                 normalizeDiaryTags(entryDraft.tags)
                     .filter { tag -> !isDiaryDateTag(tag) }
-                    .take(DIARY_ENTRY_MAX_NON_DATE_TAGS)
             if (nonDateTags.isEmpty()) continue
             val tags = normalizeDiaryTags(listOf(dateTag) + nonDateTags)
             val diaryEntry =

@@ -99,7 +99,7 @@ describe("refineDiaryTagsForRetrieval", () => {
 });
 
 describe("normalizeGeneratedDiaryEntries", () => {
-  it("keeps only non-empty entries with 1-3 non-date tags and prepends date tag", () => {
+  it("keeps only non-empty entries with non-date tags and prepends date tag", () => {
     const entries = normalizeGeneratedDiaryEntries(
       [
         {
@@ -134,7 +134,13 @@ describe("normalizeGeneratedDiaryEntries", () => {
       },
       {
         markdown: "### Много тегов",
-        tags: ["date:2026-04-23", "topic:тег 1", "topic:тег 2", "topic:тег 3"],
+        tags: [
+          "date:2026-04-23",
+          "topic:тег 1",
+          "topic:тег 2",
+          "topic:тег 3",
+          "topic:тег 4",
+        ],
       },
     ]);
   });
