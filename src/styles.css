@@ -3001,6 +3001,49 @@ select:focus,
   white-space: pre-wrap;
   word-break: break-word;
 }
+.evolution-message-block {
+  margin-top: 12px;
+  padding: 14px;
+  background: rgba(52, 211, 153, 0.08);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+.evolution-message-block p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.evolution-message-block p:last-of-type {
+  margin-bottom: 0;
+}
+.evolution-message-caption {
+  margin-top: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.evolution-delta-list-chat {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+}
+.evolution-delta-list-chat li {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.evolution-message-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+.evolution-delta-list-chat code,
+.evolution-delta-list code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+.evolution-delta-list {
+  margin-top: 6px;
+}
 .relationship-proposal-block {
   margin-top: 12px;
   padding: 14px;

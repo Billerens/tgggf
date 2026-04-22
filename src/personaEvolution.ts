@@ -36,6 +36,19 @@ function toFiniteNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function pickFirstDefined(
+  source: Record<string, unknown>,
+  keys: readonly string[],
+): unknown {
+  for (const key of keys) {
+    if (!(key in source)) continue;
+    const value = source[key];
+    if (value === undefined || value === null) continue;
+    return value;
+  }
+  return undefined;
+}
+
 function normalizeSelfGender(value: unknown) {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim().toLowerCase() as PersonaSelfGender;
@@ -46,20 +59,20 @@ function normalizeAppearancePatch(input: unknown) {
   if (!isRecord(input)) return undefined;
   const next: NonNullable<PersonaEvolutionProfile["appearance"]> = {};
   const fields = [
-    "faceDescription",
-    "height",
-    "eyes",
-    "lips",
-    "hair",
-    "ageType",
-    "bodyType",
-    "markers",
-    "accessories",
-    "clothingStyle",
-    "skin",
+    ["faceDescription", ["faceDescription", "face_description"]],
+    ["height", ["height"]],
+    ["eyes", ["eyes"]],
+    ["lips", ["lips"]],
+    ["hair", ["hair"]],
+    ["ageType", ["ageType", "age_type"]],
+    ["bodyType", ["bodyType", "body_type"]],
+    ["markers", ["markers"]],
+    ["accessories", ["accessories"]],
+    ["clothingStyle", ["clothingStyle", "clothing_style"]],
+    ["skin", ["skin"]],
   ] as const;
-  for (const field of fields) {
-    const value = toTrimmedString(input[field]);
+  for (const [field, aliases] of fields) {
+    const value = toTrimmedString(pickFirstDefined(input, aliases));
     if (!value) continue;
     next[field] = value;
   }
@@ -70,19 +83,19 @@ function normalizeCorePatch(input: unknown) {
   if (!isRecord(input)) return undefined;
   const next: Partial<PersonaCoreProfile> = {};
   const textFields = [
-    "archetype",
-    "backstory",
-    "goals",
-    "values",
-    "boundaries",
-    "expertise",
+    ["archetype", ["archetype"]],
+    ["backstory", ["backstory"]],
+    ["goals", ["goals"]],
+    ["values", ["values"]],
+    ["boundaries", ["boundaries"]],
+    ["expertise", ["expertise"]],
   ] as const;
-  for (const field of textFields) {
-    const value = toTrimmedString(input[field]);
+  for (const [field, aliases] of textFields) {
+    const value = toTrimmedString(pickFirstDefined(input, aliases));
     if (!value) continue;
     next[field] = value;
   }
-  const selfGender = normalizeSelfGender(input.selfGender);
+  const selfGender = normalizeSelfGender(pickFirstDefined(input, ["selfGender", "self_gender"]));
   if (selfGender) next.selfGender = selfGender;
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -90,11 +103,15 @@ function normalizeCorePatch(input: unknown) {
 function normalizeVoicePatch(input: unknown) {
   if (!isRecord(input)) return undefined;
   const next: Partial<PersonaVoiceProfile> = {};
-  const tone = toTrimmedString(input.tone);
+  const tone = toTrimmedString(pickFirstDefined(input, ["tone"]));
   if (tone) next.tone = tone;
-  const lexicalStyle = toTrimmedString(input.lexicalStyle);
+  const lexicalStyle = toTrimmedString(
+    pickFirstDefined(input, ["lexicalStyle", "lexical_style"]),
+  );
   if (lexicalStyle) next.lexicalStyle = lexicalStyle;
-  const sentenceLength = toTrimmedString(input.sentenceLength);
+  const sentenceLength = toTrimmedString(
+    pickFirstDefined(input, ["sentenceLength", "sentence_length"]),
+  );
   if (
     sentenceLength === "short" ||
     sentenceLength === "balanced" ||
@@ -102,11 +119,13 @@ function normalizeVoicePatch(input: unknown) {
   ) {
     next.sentenceLength = sentenceLength;
   }
-  const formality = toFiniteNumber(input.formality);
+  const formality = toFiniteNumber(pickFirstDefined(input, ["formality"]));
   if (typeof formality === "number") next.formality = formality;
-  const expressiveness = toFiniteNumber(input.expressiveness);
+  const expressiveness = toFiniteNumber(
+    pickFirstDefined(input, ["expressiveness"]),
+  );
   if (typeof expressiveness === "number") next.expressiveness = expressiveness;
-  const emoji = toFiniteNumber(input.emoji);
+  const emoji = toFiniteNumber(pickFirstDefined(input, ["emoji"]));
   if (typeof emoji === "number") next.emoji = emoji;
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -115,15 +134,15 @@ function normalizeBehaviorPatch(input: unknown) {
   if (!isRecord(input)) return undefined;
   const next: Partial<PersonaBehaviorProfile> = {};
   const fields = [
-    "initiative",
-    "empathy",
-    "directness",
-    "curiosity",
-    "challenge",
-    "creativity",
+    ["initiative", ["initiative"]],
+    ["empathy", ["empathy"]],
+    ["directness", ["directness"]],
+    ["curiosity", ["curiosity"]],
+    ["challenge", ["challenge"]],
+    ["creativity", ["creativity"]],
   ] as const;
-  for (const field of fields) {
-    const value = toFiniteNumber(input[field]);
+  for (const [field, aliases] of fields) {
+    const value = toFiniteNumber(pickFirstDefined(input, aliases));
     if (typeof value !== "number") continue;
     next[field] = value;
   }
@@ -133,17 +152,23 @@ function normalizeBehaviorPatch(input: unknown) {
 function normalizeEmotionPatch(input: unknown) {
   if (!isRecord(input)) return undefined;
   const next: Partial<PersonaEmotionProfile> = {};
-  const baselineMood = toTrimmedString(input.baselineMood);
+  const baselineMood = toTrimmedString(
+    pickFirstDefined(input, ["baselineMood", "baseline_mood"]),
+  );
   if (baselineMood) {
     next.baselineMood = baselineMood as PersonaEmotionProfile["baselineMood"];
   }
-  const warmth = toFiniteNumber(input.warmth);
+  const warmth = toFiniteNumber(pickFirstDefined(input, ["warmth"]));
   if (typeof warmth === "number") next.warmth = warmth;
-  const stability = toFiniteNumber(input.stability);
+  const stability = toFiniteNumber(pickFirstDefined(input, ["stability"]));
   if (typeof stability === "number") next.stability = stability;
-  const positiveTriggers = toTrimmedString(input.positiveTriggers);
+  const positiveTriggers = toTrimmedString(
+    pickFirstDefined(input, ["positiveTriggers", "positive_triggers"]),
+  );
   if (positiveTriggers) next.positiveTriggers = positiveTriggers;
-  const negativeTriggers = toTrimmedString(input.negativeTriggers);
+  const negativeTriggers = toTrimmedString(
+    pickFirstDefined(input, ["negativeTriggers", "negative_triggers"]),
+  );
   if (negativeTriggers) next.negativeTriggers = negativeTriggers;
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -152,18 +177,23 @@ function normalizeMemoryPatch(input: unknown) {
   if (!isRecord(input)) return undefined;
   const next: Partial<PersonaMemoryPolicy> = {};
   const boolFields = [
-    "rememberFacts",
-    "rememberPreferences",
-    "rememberGoals",
-    "rememberEvents",
+    ["rememberFacts", ["rememberFacts", "remember_facts"]],
+    ["rememberPreferences", ["rememberPreferences", "remember_preferences"]],
+    ["rememberGoals", ["rememberGoals", "remember_goals"]],
+    ["rememberEvents", ["rememberEvents", "remember_events"]],
   ] as const;
-  for (const field of boolFields) {
-    if (typeof input[field] !== "boolean") continue;
-    next[field] = input[field];
+  for (const [field, aliases] of boolFields) {
+    const value = pickFirstDefined(input, aliases);
+    if (typeof value !== "boolean") continue;
+    next[field] = value;
   }
-  const maxMemories = toFiniteNumber(input.maxMemories);
+  const maxMemories = toFiniteNumber(
+    pickFirstDefined(input, ["maxMemories", "max_memories"]),
+  );
   if (typeof maxMemories === "number") next.maxMemories = maxMemories;
-  const decayDays = toFiniteNumber(input.decayDays);
+  const decayDays = toFiniteNumber(
+    pickFirstDefined(input, ["decayDays", "decay_days"]),
+  );
   if (typeof decayDays === "number") next.decayDays = decayDays;
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -171,15 +201,17 @@ function normalizeMemoryPatch(input: unknown) {
 function normalizeAdvancedPatch(input: unknown) {
   if (!isRecord(input)) return undefined;
   const next: NonNullable<PersonaEvolutionProfile["advanced"]> = {};
-  const core = normalizeCorePatch(input.core);
+  const core = normalizeCorePatch(pickFirstDefined(input, ["core"]));
   if (core) next.core = core;
-  const voice = normalizeVoicePatch(input.voice);
+  const voice = normalizeVoicePatch(pickFirstDefined(input, ["voice"]));
   if (voice) next.voice = voice;
-  const behavior = normalizeBehaviorPatch(input.behavior);
+  const behavior = normalizeBehaviorPatch(
+    pickFirstDefined(input, ["behavior"]),
+  );
   if (behavior) next.behavior = behavior;
-  const emotion = normalizeEmotionPatch(input.emotion);
+  const emotion = normalizeEmotionPatch(pickFirstDefined(input, ["emotion"]));
   if (emotion) next.emotion = emotion;
-  const memory = normalizeMemoryPatch(input.memory);
+  const memory = normalizeMemoryPatch(pickFirstDefined(input, ["memory"]));
   if (memory) next.memory = memory;
   return Object.keys(next).length > 0 ? next : undefined;
 }
@@ -189,13 +221,21 @@ export function normalizePersonaEvolutionPatch(
 ): PersonaEvolutionProfile | undefined {
   if (!isRecord(input)) return undefined;
   const patch: PersonaEvolutionProfile = {};
-  const personalityPrompt = toTrimmedString(input.personalityPrompt);
+  const personalityPrompt = toTrimmedString(
+    pickFirstDefined(input, ["personalityPrompt", "personality_prompt"]),
+  );
   if (personalityPrompt) patch.personalityPrompt = personalityPrompt;
-  const stylePrompt = toTrimmedString(input.stylePrompt);
+  const stylePrompt = toTrimmedString(
+    pickFirstDefined(input, ["stylePrompt", "style_prompt"]),
+  );
   if (stylePrompt) patch.stylePrompt = stylePrompt;
-  const appearance = normalizeAppearancePatch(input.appearance);
+  const appearance = normalizeAppearancePatch(
+    pickFirstDefined(input, ["appearance"]),
+  );
   if (appearance) patch.appearance = appearance;
-  const advanced = normalizeAdvancedPatch(input.advanced);
+  const advanced = normalizeAdvancedPatch(
+    pickFirstDefined(input, ["advanced"]),
+  );
   if (advanced) patch.advanced = advanced;
   return Object.keys(patch).length > 0 ? patch : undefined;
 }
@@ -360,6 +400,165 @@ export function summarizePersonaEvolutionPatchFields(
   maxItems = 12,
 ): string[] {
   return flattenPatchFields(patch).slice(0, Math.max(1, maxItems));
+}
+
+function readProfilePathValue(
+  profile: PersonaEvolutionProfile,
+  path: string,
+): unknown {
+  const parts = path.split(".");
+  let cursor: unknown = profile;
+  for (const part of parts) {
+    if (!isRecord(cursor)) return undefined;
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function collectProfileLeafPaths(
+  profile: PersonaEvolutionProfile,
+  prefix = "",
+): string[] {
+  const paths: string[] = [];
+  for (const [key, value] of Object.entries(profile)) {
+    if (value === undefined || value === null) continue;
+    const field = prefix ? `${prefix}.${key}` : key;
+    if (isRecord(value)) {
+      paths.push(...collectProfileLeafPaths(value as PersonaEvolutionProfile, field));
+      continue;
+    }
+    paths.push(field);
+  }
+  return paths;
+}
+
+function formatDeltaValue(value: unknown) {
+  if (value === undefined || value === null) return "—";
+  if (typeof value === "string") {
+    const compact = clipPromptLine(value, 120);
+    return compact || '""';
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return clipPromptLine(String(value), 120) || "—";
+}
+
+function sameDeltaValue(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export interface PersonaEvolutionFieldDelta {
+  field: string;
+  before: string;
+  after: string;
+}
+
+const EVOLUTION_FIELD_LABELS: Record<string, string> = {
+  personalityPrompt: "Личностный промпт",
+  stylePrompt: "Стиль ответа",
+  "appearance.faceDescription": "Внешность: лицо",
+  "appearance.height": "Внешность: рост",
+  "appearance.eyes": "Внешность: глаза",
+  "appearance.lips": "Внешность: губы",
+  "appearance.hair": "Внешность: волосы",
+  "appearance.ageType": "Внешность: возрастной тип",
+  "appearance.bodyType": "Внешность: телосложение",
+  "appearance.markers": "Внешность: особенности",
+  "appearance.accessories": "Внешность: аксессуары",
+  "appearance.clothingStyle": "Внешность: стиль одежды",
+  "appearance.skin": "Внешность: кожа",
+  "advanced.core.archetype": "Ядро: архетип",
+  "advanced.core.backstory": "Ядро: история",
+  "advanced.core.goals": "Ядро: цели",
+  "advanced.core.values": "Ядро: ценности",
+  "advanced.core.boundaries": "Ядро: границы",
+  "advanced.core.expertise": "Ядро: экспертиза",
+  "advanced.core.selfGender": "Ядро: самогендер",
+  "advanced.voice.tone": "Голос: тон",
+  "advanced.voice.lexicalStyle": "Голос: лексика",
+  "advanced.voice.sentenceLength": "Голос: длина фраз",
+  "advanced.voice.formality": "Голос: формальность",
+  "advanced.voice.expressiveness": "Голос: выразительность",
+  "advanced.voice.emoji": "Голос: emoji",
+  "advanced.behavior.initiative": "Поведение: инициативность",
+  "advanced.behavior.empathy": "Поведение: эмпатия",
+  "advanced.behavior.directness": "Поведение: прямота",
+  "advanced.behavior.curiosity": "Поведение: любопытство",
+  "advanced.behavior.challenge": "Поведение: вызов",
+  "advanced.behavior.creativity": "Поведение: креативность",
+  "advanced.emotion.baselineMood": "Эмоции: базовое настроение",
+  "advanced.emotion.warmth": "Эмоции: теплота",
+  "advanced.emotion.stability": "Эмоции: стабильность",
+  "advanced.emotion.positiveTriggers": "Эмоции: позитивные триггеры",
+  "advanced.emotion.negativeTriggers": "Эмоции: негативные триггеры",
+  "advanced.memory.rememberFacts": "Память: факты",
+  "advanced.memory.rememberPreferences": "Память: предпочтения",
+  "advanced.memory.rememberGoals": "Память: цели",
+  "advanced.memory.rememberEvents": "Память: события",
+  "advanced.memory.maxMemories": "Память: лимит",
+  "advanced.memory.decayDays": "Память: затухание (дни)",
+};
+
+function humanizePathSegment(segment: string) {
+  const withSpaces = segment
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/_/g, " ")
+    .trim();
+  if (!withSpaces) return segment;
+  return withSpaces.charAt(0).toUpperCase() + withSpaces.slice(1);
+}
+
+export function formatPersonaEvolutionFieldLabel(fieldPath: string) {
+  if (!fieldPath) return "Поле";
+  const mapped = EVOLUTION_FIELD_LABELS[fieldPath];
+  if (mapped) return mapped;
+  return fieldPath.split(".").map(humanizePathSegment).join(" -> ");
+}
+
+export function buildPersonaEvolutionProfileDeltaRows(
+  before: PersonaEvolutionProfile,
+  after: PersonaEvolutionProfile,
+  maxItems = 12,
+  fieldOrder?: string[],
+): PersonaEvolutionFieldDelta[] {
+  const limit = Math.max(1, maxItems);
+  const orderedFields = fieldOrder
+    ? fieldOrder
+    : Array.from(
+        new Set([
+          ...collectProfileLeafPaths(before),
+          ...collectProfileLeafPaths(after),
+        ]),
+      );
+  const deltas: PersonaEvolutionFieldDelta[] = [];
+  for (const field of orderedFields) {
+    const beforeValue = readProfilePathValue(before, field);
+    const afterValue = readProfilePathValue(after, field);
+    if (sameDeltaValue(beforeValue, afterValue)) continue;
+    deltas.push({
+      field,
+      before: formatDeltaValue(beforeValue),
+      after: formatDeltaValue(afterValue),
+    });
+    if (deltas.length >= limit) break;
+  }
+  return deltas;
+}
+
+export function buildPersonaEvolutionPatchDeltaRows(
+  before: PersonaEvolutionProfile,
+  patch: PersonaEvolutionProfile,
+  maxItems = 12,
+): PersonaEvolutionFieldDelta[] {
+  const nextProfile = applyPersonaEvolutionPatch(before, patch);
+  const fields = summarizePersonaEvolutionPatchFields(patch, Math.max(1, maxItems) * 2);
+  return buildPersonaEvolutionProfileDeltaRows(
+    before,
+    nextProfile,
+    maxItems,
+    fields,
+  );
 }
 
 export function selectAppliedPersonaEvolutionHistory(

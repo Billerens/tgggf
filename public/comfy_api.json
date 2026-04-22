@@ -94,8 +94,8 @@
   },
   "133": {
     "inputs": {
-      "Xi": 25,
-      "Xf": 25,
+      "Xi": 30,
+      "Xf": 30,
       "isfloatX": 0
     },
     "class_type": "mxSlider",
@@ -835,8 +835,8 @@
   },
   "587": {
     "inputs": {
-      "Xi": 20,
-      "Xf": 20,
+      "Xi": 25,
+      "Xf": 25,
       "isfloatX": 0
     },
     "class_type": "mxSlider",
@@ -957,8 +957,8 @@
   },
   "699": {
     "inputs": {
-      "Xi": 20,
-      "Xf": 20,
+      "Xi": 30,
+      "Xf": 30,
       "isfloatX": 0
     },
     "class_type": "mxSlider",

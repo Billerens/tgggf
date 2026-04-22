@@ -917,7 +917,7 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
   ) {
     const normalizedBudget = Math.max(
       600,
-      Math.min(3000, Math.round(next.summaryTokenBudget)),
+      Math.min(16000, Math.round(next.summaryTokenBudget)),
     );
     // Migrate legacy low values to the current default budget.
     next.summaryTokenBudget = Math.max(3000, normalizedBudget);

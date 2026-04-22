@@ -44,6 +44,8 @@ object ComfyNativeClient {
     private const val COMFY_COMPOSITION_IMAGE_NODE_ID = "455"
     private const val COMFY_STYLE_STRENGTH_NODE_ID = "430"
     private const val COMFY_COMPOSITION_STRENGTH_NODE_ID = "431"
+    private const val COMFY_STYLE_IMAGE_TITLE = "Load Style Image"
+    private const val COMFY_STYLE_STRENGTH_TITLE = "IPAdapter Style Strength"
     private const val COMFY_HISTORY_TIMEOUT_MS = 600_000L
     private const val COMFY_HISTORY_POLL_INTERVAL_MS = 1_200L
     private const val COMFY_WEBP_QUALITY = 82
@@ -419,16 +421,48 @@ object ComfyNativeClient {
         setBooleanByExactTitle(workflow, "Inpaint?", false)
         setSliderValue(workflow, COMFY_COMPOSITION_STRENGTH_NODE_ID, 0.0)
         if (!styleReferenceImage.isNullOrBlank()) {
-            setSliderValue(
-                workflow,
-                COMFY_STYLE_STRENGTH_NODE_ID,
-                settings.optDouble("chatStyleStrength", Double.NaN),
+            val requestedStyleStrength = settings.optDouble("chatStyleStrength", Double.NaN)
+            val styleStrengthAppliedByNodeId =
+                setSliderValue(
+                    workflow,
+                    COMFY_STYLE_STRENGTH_NODE_ID,
+                    requestedStyleStrength,
+                )
+            val styleStrengthAppliedByTitle =
+                if (styleStrengthAppliedByNodeId) {
+                    false
+                } else {
+                    setSliderValueByExactTitle(
+                        workflow,
+                        COMFY_STYLE_STRENGTH_TITLE,
+                        requestedStyleStrength,
+                    )
+                }
+            emitDebug(
+                debugEmitter,
+                "style_strength_configured",
+                JSONObject().apply {
+                    put("requested", if (requestedStyleStrength.isFinite()) requestedStyleStrength else JSONObject.NULL)
+                    put("applied", styleStrengthAppliedByNodeId || styleStrengthAppliedByTitle)
+                    put("appliedByNodeId", styleStrengthAppliedByNodeId)
+                    put("appliedByTitle", styleStrengthAppliedByTitle)
+                    put("nodeId", COMFY_STYLE_STRENGTH_NODE_ID)
+                    put("title", COMFY_STYLE_STRENGTH_TITLE)
+                },
             )
         }
         if (!checkpointName.isNullOrBlank()) {
             setCheckpointName(workflow, checkpointName)
         }
         if (!styleReferenceImage.isNullOrBlank()) {
+            emitDebug(
+                debugEmitter,
+                "style_reference_requested",
+                JSONObject().apply {
+                    put("sourcePreview", styleReferenceImage.take(180))
+                    put("strict", strictStyleReference)
+                },
+            )
             try {
                 val uploadedFilename =
                     uploadReferenceImage(
@@ -437,15 +471,40 @@ object ComfyNativeClient {
                         baseUrl = baseUrl,
                         auth = auth,
                     )
-                setImageFilenameOnNode(
-                    workflow = workflow,
-                    nodeId = COMFY_STYLE_IMAGE_NODE_ID,
-                    filename = uploadedFilename,
-                )
+                val styleBoundByNodeId =
+                    setImageFilenameOnNode(
+                        workflow = workflow,
+                        nodeId = COMFY_STYLE_IMAGE_NODE_ID,
+                        filename = uploadedFilename,
+                    )
+                val styleBoundByTitle =
+                    if (styleBoundByNodeId) {
+                        false
+                    } else {
+                        setImageFilenameByExactTitle(
+                            workflow = workflow,
+                            title = COMFY_STYLE_IMAGE_TITLE,
+                            filename = uploadedFilename,
+                        )
+                    }
+                if (!styleBoundByNodeId && !styleBoundByTitle) {
+                    throw IllegalStateException("Failed to bind style reference image into workflow.")
+                }
                 setImageFilenameOnNode(
                     workflow = workflow,
                     nodeId = COMFY_COMPOSITION_IMAGE_NODE_ID,
                     filename = uploadedFilename,
+                )
+                emitDebug(
+                    debugEmitter,
+                    "style_reference_bound",
+                    JSONObject().apply {
+                        put("uploadedFilename", uploadedFilename)
+                        put("boundByNodeId", styleBoundByNodeId)
+                        put("boundByTitle", styleBoundByTitle)
+                        put("styleNodeId", COMFY_STYLE_IMAGE_NODE_ID)
+                        put("styleTitle", COMFY_STYLE_IMAGE_TITLE)
+                    },
                 )
             } catch (error: Exception) {
                 if (strictStyleReference || !shouldIgnoreReferenceImageError(error)) {
@@ -460,6 +519,10 @@ object ComfyNativeClient {
                 )
             }
         }
+        val resolvedModelName =
+            checkpointName?.trim().orEmpty().ifEmpty {
+                resolveCheckpointName(workflow)
+            }.ifEmpty { null }
 
         sanitizeWorkflowForApi(workflow)
         if (!settings.optBoolean("saveComfyOutputs", false)) {
@@ -537,7 +600,7 @@ object ComfyNativeClient {
             return ComfyRunResult(
                 imageUrls = if (localizedUrls.isNotEmpty()) localizedUrls else urls,
                 seed = normalizedSeed,
-                model = checkpointName,
+                model = resolvedModelName,
             )
         } catch (error: Exception) {
             emitDebug(
@@ -1065,17 +1128,66 @@ object ComfyNativeClient {
         }
     }
 
-    private fun setImageFilenameOnNode(workflow: JSONObject, nodeId: String, filename: String) {
-        if (nodeId.isBlank() || filename.isBlank()) return
-        val inputs = workflow.optJSONObject(nodeId)?.optJSONObject("inputs") ?: return
+    private fun setImageFilenameOnNode(workflow: JSONObject, nodeId: String, filename: String): Boolean {
+        if (nodeId.isBlank() || filename.isBlank()) return false
+        val inputs = workflow.optJSONObject(nodeId)?.optJSONObject("inputs") ?: return false
         inputs.put("image", filename)
+        return true
     }
 
-    private fun setSliderValue(workflow: JSONObject, nodeId: String, value: Double) {
-        if (nodeId.isBlank() || value.isNaN() || value.isInfinite()) return
-        val inputs = workflow.optJSONObject(nodeId)?.optJSONObject("inputs") ?: return
+    private fun setImageFilenameByExactTitle(workflow: JSONObject, title: String, filename: String): Boolean {
+        val normalizedTitle = title.trim().lowercase(Locale.ROOT)
+        if (normalizedTitle.isEmpty() || filename.isBlank()) return false
+        var applied = false
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val nodeId = keys.next()
+            val node = workflow.optJSONObject(nodeId) ?: continue
+            val nodeTitle =
+                node
+                    .optJSONObject("_meta")
+                    ?.optString("title", "")
+                    ?.trim()
+                    ?.lowercase(Locale.ROOT)
+                    .orEmpty()
+            if (nodeTitle != normalizedTitle) continue
+            val inputs = node.optJSONObject("inputs") ?: continue
+            inputs.put("image", filename)
+            applied = true
+        }
+        return applied
+    }
+
+    private fun setSliderValue(workflow: JSONObject, nodeId: String, value: Double): Boolean {
+        if (nodeId.isBlank() || value.isNaN() || value.isInfinite()) return false
+        val inputs = workflow.optJSONObject(nodeId)?.optJSONObject("inputs") ?: return false
         inputs.put("Xi", value)
         inputs.put("Xf", value)
+        return true
+    }
+
+    private fun setSliderValueByExactTitle(workflow: JSONObject, title: String, value: Double): Boolean {
+        val normalizedTitle = title.trim().lowercase(Locale.ROOT)
+        if (normalizedTitle.isEmpty() || value.isNaN() || value.isInfinite()) return false
+        var applied = false
+        val keys = workflow.keys()
+        while (keys.hasNext()) {
+            val nodeId = keys.next()
+            val node = workflow.optJSONObject(nodeId) ?: continue
+            val nodeTitle =
+                node
+                    .optJSONObject("_meta")
+                    ?.optString("title", "")
+                    ?.trim()
+                    ?.lowercase(Locale.ROOT)
+                    .orEmpty()
+            if (nodeTitle != normalizedTitle) continue
+            val inputs = node.optJSONObject("inputs") ?: continue
+            inputs.put("Xi", value)
+            inputs.put("Xf", value)
+            applied = true
+        }
+        return applied
     }
 
     private fun setBooleanByExactTitle(workflow: JSONObject, title: String, value: Boolean) {

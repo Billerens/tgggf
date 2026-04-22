@@ -10,6 +10,7 @@ import type {
   ImageGenerationMeta,
   Persona,
   PersonaEvolutionApplyMode,
+  PersonaEvolutionProfile,
   PersonaEvolutionState,
   PersonaMemory,
   PersonaRuntimeState,
@@ -20,7 +21,15 @@ import type {
 } from "../ui/types";
 import { dbApi } from "../db";
 import { DIARY_TAG_PREFIXES } from "../diary";
-import { summarizePersonaEvolutionPatchFields } from "../personaEvolution";
+import {
+  applyPersonaEvolutionPatch,
+  buildPersonaEvolutionPatchDeltaRows,
+  buildPersonaEvolutionProfileDeltaRows,
+  extractPersonaEvolutionBaselineProfile,
+  formatPersonaEvolutionFieldLabel,
+  selectAppliedPersonaEvolutionHistory,
+  summarizePersonaEvolutionPatchFields,
+} from "../personaEvolution";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
 import { splitAssistantContent } from "../messageContent";
 import { ImagePreviewModal } from "./ImagePreviewModal";
@@ -58,6 +67,22 @@ interface ChatDetailsModalProps {
     chatId: string,
     applyMode: PersonaEvolutionApplyMode,
   ) => void;
+  onAddPendingEvolution: (
+    chatId: string,
+    payload: {
+      reason: string;
+      patch: unknown;
+    },
+  ) => void;
+  onUpdatePendingEvolution: (
+    chatId: string,
+    proposalId: string,
+    payload: {
+      reason: string;
+      patch: unknown;
+    },
+  ) => void;
+  onDeletePendingEvolution: (chatId: string, proposalId: string) => void;
   onApprovePendingEvolution: (chatId: string, proposalId: string) => void;
   onRejectPendingEvolution: (chatId: string, proposalId: string) => void;
   onUndoLastAppliedEvolution: (chatId: string) => void;
@@ -275,25 +300,43 @@ function formatStateDelta(
   return parts.length > 0 ? parts.join(" | ") : "—";
 }
 
-function formatEvolutionPatchSummary(patch: PersonaEvolutionState["currentProfile"]) {
+function formatEvolutionPatchSummary(patch: PersonaEvolutionProfile) {
   const fields = summarizePersonaEvolutionPatchFields(patch, 12);
   if (fields.length === 0) return "patch";
-  return fields.join(", ");
+  return fields.map((field) => formatPersonaEvolutionFieldLabel(field)).join(" • ");
 }
 
-function selectAppliedEvolutionEvents(
-  history: PersonaEvolutionState["history"] | undefined,
-) {
-  if (!history || history.length === 0) return [] as PersonaEvolutionState["history"];
-  const undoneTargetIds = new Set(
-    history
-      .filter((event) => event.status === "undone")
-      .map((event) => event.targetEventId)
-      .filter((value): value is string => Boolean(value)),
-  );
-  return history.filter(
-    (event) => event.status === "applied" && !undoneTargetIds.has(event.id),
-  );
+function formatEvolutionPatchJson(patch: PersonaEvolutionProfile) {
+  return JSON.stringify(patch, null, 2);
+}
+
+function parseEvolutionPatchJson(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return {
+      patch: null as unknown,
+      error: "Patch JSON не может быть пустым.",
+    };
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {
+        patch: null as unknown,
+        error: "Patch JSON должен быть объектом.",
+      };
+    }
+    return {
+      patch: parsed,
+      error: "",
+    };
+  } catch (error) {
+    const message = (error as Error).message || "invalid_json";
+    return {
+      patch: null as unknown,
+      error: `Невалидный JSON: ${message}`,
+    };
+  }
 }
 
 const DIARY_ALLOWED_PREFIXES = new Set<string>(DIARY_TAG_PREFIXES);
@@ -406,6 +449,19 @@ interface EditableMemoryDraft {
   salience: number;
 }
 
+interface PendingEvolutionPresentation {
+  proposal: PersonaEvolutionState["pendingProposals"][number];
+  deltaRows: ReturnType<typeof buildPersonaEvolutionPatchDeltaRows>;
+}
+
+type EvolutionHistoryDeltaMode = "applied" | "proposal" | "undo";
+
+interface EvolutionHistoryPresentation {
+  event: PersonaEvolutionState["history"][number];
+  deltaRows: ReturnType<typeof buildPersonaEvolutionPatchDeltaRows>;
+  deltaMode: EvolutionHistoryDeltaMode;
+}
+
 const RUNTIME_MOOD_OPTIONS: PersonaRuntimeState["mood"][] = [
   "calm",
   "warm",
@@ -470,6 +526,14 @@ const evolutionApplyModeDropdownOptions: DropdownOption[] = [
   { value: "auto", label: "auto" },
 ];
 
+const DEFAULT_EVOLUTION_PATCH_TEMPLATE = `{
+  "advanced": {
+    "behavior": {
+      "initiative": 56
+    }
+  }
+}`;
+
 function toEditableRuntimeState(value: PersonaRuntimeState): EditableRuntimeState {
   return {
     mood: value.mood,
@@ -507,6 +571,9 @@ export function ChatDetailsModal({
   onToggleDiaryEnabled,
   onToggleEvolutionEnabled,
   onChangeEvolutionApplyMode,
+  onAddPendingEvolution,
+  onUpdatePendingEvolution,
+  onDeletePendingEvolution,
   onApprovePendingEvolution,
   onRejectPendingEvolution,
   onUndoLastAppliedEvolution,
@@ -536,8 +603,25 @@ export function ChatDetailsModal({
   const [manualMemoryKind, setManualMemoryKind] = useState<PersonaMemory["kind"]>("fact");
   const [manualMemorySalience, setManualMemorySalience] = useState(0.82);
   const [manualMemoryContent, setManualMemoryContent] = useState("");
+  const [manualEvolutionReason, setManualEvolutionReason] = useState("");
+  const [manualEvolutionPatchText, setManualEvolutionPatchText] = useState(
+    DEFAULT_EVOLUTION_PATCH_TEMPLATE,
+  );
+  const [manualEvolutionError, setManualEvolutionError] = useState<string | null>(
+    null,
+  );
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [memoryEditDraft, setMemoryEditDraft] = useState<EditableMemoryDraft | null>(
+    null,
+  );
+  const [editingEvolutionProposalId, setEditingEvolutionProposalId] = useState<
+    string | null
+  >(null);
+  const [evolutionEditReason, setEvolutionEditReason] = useState("");
+  const [evolutionEditPatchText, setEvolutionEditPatchText] = useState(
+    DEFAULT_EVOLUTION_PATCH_TEMPLATE,
+  );
+  const [evolutionEditError, setEvolutionEditError] = useState<string | null>(
     null,
   );
   const [useGlobalStyleStrength, setUseGlobalStyleStrength] = useState(
@@ -572,9 +656,102 @@ export function ChatDetailsModal({
     chat?.evolutionConfig?.applyMode === "auto" ? "auto" : "manual";
   const evolutionPending = evolutionState?.pendingProposals ?? [];
   const evolutionHistory = evolutionState?.history ?? [];
+  const evolutionSnapshotProfile = useMemo(() => {
+    if (evolutionState?.currentProfile) return evolutionState.currentProfile;
+    if (evolutionState?.baselineProfile) return evolutionState.baselineProfile;
+    if (persona) return extractPersonaEvolutionBaselineProfile(persona);
+    return undefined;
+  }, [evolutionState?.currentProfile, evolutionState?.baselineProfile, persona]);
+  const evolutionSnapshotLabel = evolutionState?.currentProfile
+    ? "currentProfile"
+    : evolutionState?.baselineProfile
+      ? "baselineProfile"
+      : persona
+        ? "persona baseline"
+        : "snapshot unavailable";
+  const pendingEvolutionPresentation = useMemo<PendingEvolutionPresentation[]>(
+    () =>
+      evolutionPending.map((proposal) => ({
+        proposal,
+        deltaRows: evolutionSnapshotProfile
+          ? buildPersonaEvolutionPatchDeltaRows(
+              evolutionSnapshotProfile,
+              proposal.patch,
+              12,
+            )
+          : [],
+      })),
+    [evolutionPending, evolutionSnapshotProfile],
+  );
   const appliedEvolutionHistory = useMemo(
-    () => selectAppliedEvolutionEvents(evolutionHistory),
+    () => selectAppliedPersonaEvolutionHistory(evolutionHistory),
     [evolutionHistory],
+  );
+  const evolutionHistoryPresentation = useMemo<EvolutionHistoryPresentation[]>(
+    () => {
+      if (!evolutionState) return [];
+      let activeApplied: Array<{
+        id: string;
+        patch: PersonaEvolutionProfile;
+      }> = [];
+      let currentProfile = evolutionState.baselineProfile;
+      const rows: EvolutionHistoryPresentation[] = [];
+
+      for (const event of evolutionState.history) {
+        const beforeProfile = currentProfile;
+        if (event.status === "applied") {
+          const afterProfile = applyPersonaEvolutionPatch(beforeProfile, event.patch);
+          rows.push({
+            event,
+            deltaMode: "applied",
+            deltaRows: buildPersonaEvolutionPatchDeltaRows(
+              beforeProfile,
+              event.patch,
+              12,
+            ),
+          });
+          activeApplied = [...activeApplied, { id: event.id, patch: event.patch }];
+          currentProfile = afterProfile;
+          continue;
+        }
+
+        if (event.status === "rejected") {
+          rows.push({
+            event,
+            deltaMode: "proposal",
+            deltaRows: buildPersonaEvolutionPatchDeltaRows(
+              beforeProfile,
+              event.patch,
+              12,
+            ),
+          });
+          continue;
+        }
+
+        const targetId = event.targetEventId?.trim();
+        if (targetId) {
+          activeApplied = activeApplied.filter((item) => item.id !== targetId);
+        }
+        const afterProfile = activeApplied.reduce(
+          (profile, activeEvent) =>
+            applyPersonaEvolutionPatch(profile, activeEvent.patch),
+          evolutionState.baselineProfile,
+        );
+        rows.push({
+          event,
+          deltaMode: "undo",
+          deltaRows: buildPersonaEvolutionProfileDeltaRows(
+            beforeProfile,
+            afterProfile,
+            12,
+          ),
+        });
+        currentProfile = afterProfile;
+      }
+
+      return rows;
+    },
+    [evolutionState],
   );
   const canUndoEvolution = Boolean(chat?.id) && appliedEvolutionHistory.length > 0;
   const memoryByLayer = useMemo(() => groupMemories(memories), [memories]);
@@ -631,6 +808,17 @@ export function ChatDetailsModal({
     !stateLocked &&
     Boolean(editingMemoryId) &&
     Boolean(memoryEditDraft?.content.trim().length);
+  const canAddManualEvolutionProposal =
+    Boolean(chat?.id) &&
+    !stateLocked &&
+    manualEvolutionReason.trim().length > 0 &&
+    manualEvolutionPatchText.trim().length > 0;
+  const canSaveEvolutionEdit =
+    Boolean(chat?.id) &&
+    !stateLocked &&
+    Boolean(editingEvolutionProposalId) &&
+    evolutionEditReason.trim().length > 0 &&
+    evolutionEditPatchText.trim().length > 0;
   const previewResolvedMeta = previewAttachment
     ? previewMeta ?? imageMetaByUrl[previewAttachment.src]
     : previewMeta;
@@ -652,6 +840,13 @@ export function ChatDetailsModal({
     setRuntimeDraft(runtimeState ? toEditableRuntimeState(runtimeState) : null);
     setEditingMemoryId(null);
     setMemoryEditDraft(null);
+    setEditingEvolutionProposalId(null);
+    setEvolutionEditReason("");
+    setEvolutionEditPatchText(DEFAULT_EVOLUTION_PATCH_TEMPLATE);
+    setEvolutionEditError(null);
+    setManualEvolutionReason("");
+    setManualEvolutionPatchText(DEFAULT_EVOLUTION_PATCH_TEMPLATE);
+    setManualEvolutionError(null);
   }, [chat?.id, runtimeState]);
 
   useEffect(() => {
@@ -858,6 +1053,75 @@ export function ChatDetailsModal({
     if (editingMemoryId === memoryId) {
       setEditingMemoryId(null);
       setMemoryEditDraft(null);
+    }
+  }
+
+  function handleAddPendingEvolutionProposal() {
+    if (!chat?.id || stateLocked) return;
+    const reason = manualEvolutionReason.trim();
+    if (!reason) {
+      setManualEvolutionError("Укажите reason для proposal.");
+      return;
+    }
+    const parsed = parseEvolutionPatchJson(manualEvolutionPatchText);
+    if (!parsed.patch) {
+      setManualEvolutionError(parsed.error || "Невалидный patch JSON.");
+      return;
+    }
+    onAddPendingEvolution(chat.id, {
+      reason,
+      patch: parsed.patch,
+    });
+    setManualEvolutionReason("");
+    setManualEvolutionPatchText(DEFAULT_EVOLUTION_PATCH_TEMPLATE);
+    setManualEvolutionError(null);
+  }
+
+  function startPendingEvolutionEdit(proposal: PersonaEvolutionState["pendingProposals"][number]) {
+    if (stateLocked) return;
+    setEditingEvolutionProposalId(proposal.id);
+    setEvolutionEditReason(proposal.reason || "");
+    setEvolutionEditPatchText(formatEvolutionPatchJson(proposal.patch));
+    setEvolutionEditError(null);
+  }
+
+  function handleCancelPendingEvolutionEdit() {
+    setEditingEvolutionProposalId(null);
+    setEvolutionEditReason("");
+    setEvolutionEditPatchText(DEFAULT_EVOLUTION_PATCH_TEMPLATE);
+    setEvolutionEditError(null);
+  }
+
+  function handleSavePendingEvolutionEdit() {
+    if (!chat?.id || stateLocked || !editingEvolutionProposalId) return;
+    const reason = evolutionEditReason.trim();
+    if (!reason) {
+      setEvolutionEditError("Укажите reason для proposal.");
+      return;
+    }
+    const parsed = parseEvolutionPatchJson(evolutionEditPatchText);
+    if (!parsed.patch) {
+      setEvolutionEditError(parsed.error || "Невалидный patch JSON.");
+      return;
+    }
+    onUpdatePendingEvolution(chat.id, editingEvolutionProposalId, {
+      reason,
+      patch: parsed.patch,
+    });
+    setEditingEvolutionProposalId(null);
+    setEvolutionEditReason("");
+    setEvolutionEditPatchText(DEFAULT_EVOLUTION_PATCH_TEMPLATE);
+    setEvolutionEditError(null);
+  }
+
+  function handleDeletePendingEvolutionProposal(proposalId: string) {
+    if (!chat?.id || stateLocked) return;
+    onDeletePendingEvolution(chat.id, proposalId);
+    if (editingEvolutionProposalId === proposalId) {
+      setEditingEvolutionProposalId(null);
+      setEvolutionEditReason("");
+      setEvolutionEditPatchText(DEFAULT_EVOLUTION_PATCH_TEMPLATE);
+      setEvolutionEditError(null);
     }
   }
 
@@ -1092,13 +1356,17 @@ export function ChatDetailsModal({
                     if (nextLocked) {
                       setEditingMemoryId(null);
                       setMemoryEditDraft(null);
+                      setEditingEvolutionProposalId(null);
+                      setEvolutionEditReason("");
+                      setEvolutionEditPatchText(DEFAULT_EVOLUTION_PATCH_TEMPLATE);
+                      setEvolutionEditError(null);
                     }
                   }}
                 />
                 Блокировать состояние
               </label>
               <p className="status-lock-hint">
-                Когда блокировка отключена, можно вручную менять runtime state и память.
+                Когда блокировка отключена, можно вручную менять runtime state, память и эволюцию.
               </p>
             </div>
 
@@ -1512,39 +1780,178 @@ export function ChatDetailsModal({
                 <div className="status-accordion-body">
                   <div className="status-subsection">
                     <p className="status-subtitle">Pending proposals</p>
-                    {evolutionPending.length === 0 ? (
+                    <div className="manual-memory-form">
+                      <h5>Добавить proposal эволюции вручную</h5>
+                      {stateLocked ? (
+                        <p className="status-lock-hint">
+                          Разблокируйте состояние, чтобы создавать или редактировать эволюцию.
+                        </p>
+                      ) : null}
+                      <label>
+                        reason
+                        <input
+                          type="text"
+                          value={manualEvolutionReason}
+                          disabled={stateLocked}
+                          placeholder="Почему нужна эволюция на этом шаге"
+                          onChange={(event) => {
+                            setManualEvolutionReason(event.target.value);
+                            if (manualEvolutionError) setManualEvolutionError(null);
+                          }}
+                        />
+                      </label>
+                      <label>
+                        patch (JSON)
+                        <textarea
+                          className="memory-textarea"
+                          rows={8}
+                          value={manualEvolutionPatchText}
+                          disabled={stateLocked}
+                          onChange={(event) => {
+                            setManualEvolutionPatchText(event.target.value);
+                            if (manualEvolutionError) setManualEvolutionError(null);
+                          }}
+                        />
+                      </label>
+                      {manualEvolutionError ? (
+                        <p className="status-lock-hint">{manualEvolutionError}</p>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={!canAddManualEvolutionProposal}
+                        onClick={handleAddPendingEvolutionProposal}
+                      >
+                        Добавить proposal
+                      </button>
+                    </div>
+                    {pendingEvolutionPresentation.length === 0 ? (
                       <p>—</p>
                     ) : (
                       <div className="memory-list">
-                        {evolutionPending.map((proposal) => (
+                        {pendingEvolutionPresentation.map(({ proposal, deltaRows }) => (
                           <article key={proposal.id} className="memory-item">
-                            <div className="memory-head">
-                              <strong>{formatDateTime(proposal.createdAt)}</strong>
-                              <span>{formatEvolutionPatchSummary(proposal.patch)}</span>
-                            </div>
-                            <p>{proposal.reason || "Без причины"}</p>
-                            <div className="memory-actions">
-                              <button
-                                type="button"
-                                className="primary"
-                                onClick={() => {
-                                  if (!chat?.id) return;
-                                  onApprovePendingEvolution(chat.id, proposal.id);
-                                }}
-                              >
-                                Принять
-                              </button>
-                              <button
-                                type="button"
-                                className="danger"
-                                onClick={() => {
-                                  if (!chat?.id) return;
-                                  onRejectPendingEvolution(chat.id, proposal.id);
-                                }}
-                              >
-                                Отклонить
-                              </button>
-                            </div>
+                            {editingEvolutionProposalId === proposal.id && !stateLocked ? (
+                              <>
+                                <div className="memory-head">
+                                  <strong>{formatDateTime(proposal.createdAt)}</strong>
+                                  <span>{formatEvolutionPatchSummary(proposal.patch)}</span>
+                                </div>
+                                <label>
+                                  reason
+                                  <input
+                                    type="text"
+                                    value={evolutionEditReason}
+                                    onChange={(event) => {
+                                      setEvolutionEditReason(event.target.value);
+                                      if (evolutionEditError) setEvolutionEditError(null);
+                                    }}
+                                  />
+                                </label>
+                                <label>
+                                  patch (JSON)
+                                  <textarea
+                                    className="memory-textarea"
+                                    rows={8}
+                                    value={evolutionEditPatchText}
+                                    onChange={(event) => {
+                                      setEvolutionEditPatchText(event.target.value);
+                                      if (evolutionEditError) setEvolutionEditError(null);
+                                    }}
+                                  />
+                                </label>
+                                {evolutionEditError ? (
+                                  <p className="status-lock-hint">{evolutionEditError}</p>
+                                ) : null}
+                                <div className="memory-actions">
+                                  <button
+                                    type="button"
+                                    className="primary"
+                                    disabled={!canSaveEvolutionEdit}
+                                    onClick={handleSavePendingEvolutionEdit}
+                                  >
+                                    Сохранить
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={handleCancelPendingEvolutionEdit}
+                                  >
+                                    Отмена
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="danger"
+                                    onClick={() => handleDeletePendingEvolutionProposal(proposal.id)}
+                                  >
+                                    Удалить
+                                  </button>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="memory-head">
+                                  <strong>{formatDateTime(proposal.createdAt)}</strong>
+                                  <span>{formatEvolutionPatchSummary(proposal.patch)}</span>
+                                </div>
+                                <p>{proposal.reason || "Без причины"}</p>
+                                <p className="status-caption">
+                                  Δ было -&gt; стало ({evolutionSnapshotLabel})
+                                </p>
+                                {deltaRows.length > 0 ? (
+                                  <ul className="status-list evolution-delta-list">
+                                    {deltaRows.map((row) => (
+                                      <li key={`${proposal.id}-delta-${row.field}`}>
+                                        <span title={row.field}>
+                                          {formatPersonaEvolutionFieldLabel(row.field)}
+                                        </span>
+                                        : {row.before} -&gt; {row.after}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="status-caption">Дельта: —</p>
+                                )}
+                                <div className="memory-actions">
+                                  <button
+                                    type="button"
+                                    className="primary"
+                                    onClick={() => {
+                                      if (!chat?.id) return;
+                                      onApprovePendingEvolution(chat.id, proposal.id);
+                                    }}
+                                  >
+                                    Принять
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="danger"
+                                    onClick={() => {
+                                      if (!chat?.id) return;
+                                      onRejectPendingEvolution(chat.id, proposal.id);
+                                    }}
+                                  >
+                                    Отклонить
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    disabled={stateLocked}
+                                    onClick={() => startPendingEvolutionEdit(proposal)}
+                                  >
+                                    Редактировать
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="danger"
+                                    disabled={stateLocked}
+                                    onClick={() => handleDeletePendingEvolutionProposal(proposal.id)}
+                                  >
+                                    Удалить
+                                  </button>
+                                </div>
+                              </>
+                            )}
                           </article>
                         ))}
                       </div>
@@ -1553,14 +1960,14 @@ export function ChatDetailsModal({
 
                   <div className="status-subsection">
                     <p className="status-subtitle">History</p>
-                    {evolutionHistory.length === 0 ? (
+                    {evolutionHistoryPresentation.length === 0 ? (
                       <p>—</p>
                     ) : (
                       <div className="memory-list">
-                        {[...evolutionHistory]
+                        {[...evolutionHistoryPresentation]
                           .slice()
                           .reverse()
-                          .map((event) => (
+                          .map(({ event, deltaRows, deltaMode }) => (
                             <article key={event.id} className="memory-item">
                               <div className="memory-head">
                                 <strong>{event.status}</strong>
@@ -1568,6 +1975,27 @@ export function ChatDetailsModal({
                               </div>
                               <p>{event.reason || "Без причины"}</p>
                               <time>{formatEvolutionPatchSummary(event.patch)}</time>
+                              <p className="status-caption">
+                                {deltaMode === "applied"
+                                  ? "Δ было -> стало (applied)"
+                                  : deltaMode === "undo"
+                                    ? "Δ было -> стало (undo)"
+                                    : "Δ было -> стало (proposal)"}
+                              </p>
+                              {deltaRows.length > 0 ? (
+                                <ul className="status-list evolution-delta-list">
+                                  {deltaRows.map((row) => (
+                                    <li key={`${event.id}-delta-${row.field}`}>
+                                      <span title={row.field}>
+                                        {formatPersonaEvolutionFieldLabel(row.field)}
+                                      </span>
+                                      : {row.before} -&gt; {row.after}
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <p className="status-caption">Дельта: —</p>
+                              )}
                             </article>
                           ))}
                       </div>

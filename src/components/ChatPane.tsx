@@ -18,6 +18,8 @@ import type {
   InfluenceProfile,
   ImageGenerationMeta,
   Persona,
+  PersonaEvolutionApplyMode,
+  PersonaEvolutionState,
   PersonaRuntimeState,
 } from "../types";
 import type {
@@ -28,6 +30,14 @@ import {
   extractRelationshipProposal,
   type PersonaControlPayload,
 } from "../personaDynamics";
+import {
+  buildPersonaEvolutionPatchDeltaRows,
+  extractPersonaEvolutionBaselineProfile,
+  formatPersonaEvolutionFieldLabel,
+  normalizePersonaEvolutionPatch,
+  selectAppliedPersonaEvolutionHistory,
+  summarizePersonaEvolutionPatchFields,
+} from "../personaEvolution";
 import { formatShortTime } from "../ui/format";
 import { splitAssistantContent } from "../messageContent";
 import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/enhancePromptDefaults";
@@ -45,6 +55,9 @@ interface ChatPaneProps {
   setMessageInput: (value: string) => void;
   isLoading: boolean;
   activePersonaState: PersonaRuntimeState | null;
+  activePersonaEvolutionState: PersonaEvolutionState | null;
+  evolutionEnabled: boolean;
+  evolutionApplyMode: PersonaEvolutionApplyMode;
   activeInfluenceProfile: InfluenceProfile | null;
   activeCurrentIntent: string | null;
   memoryCount: number;
@@ -75,6 +88,11 @@ interface ChatPaneProps {
     messageId: string,
     decision: "accepted" | "rejected",
   ) => void;
+  onApplyEvolutionFromMessage: (payload: {
+    messageId: string;
+    reason: string;
+    patch: unknown;
+  }) => Promise<void> | void;
   onSaveInfluenceProfile: (profile: InfluenceProfile) => void;
   onResetInfluenceProfile: () => void;
   onOpenSidebar: () => void;
@@ -107,6 +125,13 @@ function compactText(value: string | undefined, max = 140) {
   const oneLine = value.replace(/\s+/g, " ").trim();
   if (oneLine.length <= max) return oneLine;
   return `${oneLine.slice(0, max - 1)}…`;
+}
+
+function areEvolutionPatchesEqual(
+  left: unknown,
+  right: unknown,
+) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function buildStatusDetails(control: PersonaControlPayload | undefined) {
@@ -180,15 +205,20 @@ function buildStatusDetails(control: PersonaControlPayload | undefined) {
 
   if (control.evolution) {
     const evolution = control.evolution;
+    const reason = (evolution.reason || "").trim();
     const changed =
       evolution.patch && typeof evolution.patch === "object"
         ? Object.keys(evolution.patch).join(", ")
         : "";
-    lines.push(
-      `evolution: shouldEvolve=${evolution.shouldEvolve ? "true" : "false"}${
-        evolution.reason ? `, reason=${evolution.reason}` : ""
-      }${changed ? `, patch=${changed}` : ""}`,
-    );
+    const hasMeaningfulEvolution =
+      evolution.shouldEvolve === true || Boolean(reason) || Boolean(changed);
+    if (hasMeaningfulEvolution) {
+      lines.push(
+        `evolution: shouldEvolve=${evolution.shouldEvolve ? "true" : "false"}${
+          reason ? `, reason=${reason}` : ""
+        }${changed ? `, patch=${changed}` : ""}`,
+      );
+    }
   }
 
   return lines.join("\n");
@@ -204,6 +234,9 @@ export function ChatPane({
   setMessageInput,
   isLoading,
   activePersonaState,
+  activePersonaEvolutionState,
+  evolutionEnabled,
+  evolutionApplyMode,
   activeInfluenceProfile,
   activeCurrentIntent,
   memoryCount,
@@ -216,6 +249,7 @@ export function ChatPane({
   onSubmitMessage,
   onRegeneratePromptAtIndex,
   onResolveRelationshipProposal,
+  onApplyEvolutionFromMessage,
   onSaveInfluenceProfile,
   onResetInfluenceProfile,
   onOpenSidebar,
@@ -233,6 +267,9 @@ export function ChatPane({
   const [resolvedImageBySource, setResolvedImageBySource] = useState<
     Record<string, string>
   >({});
+  const [applyingEvolutionMessageId, setApplyingEvolutionMessageId] = useState<
+    string | null
+  >(null);
   const composerWrapperRef = useRef<HTMLDivElement | null>(null);
   const [activePersonaAvatarSrc, setActivePersonaAvatarSrc] = useState("");
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -436,6 +473,27 @@ export function ChatPane({
         ? `${activePersona.name} печатает...`
         : ""
     : "";
+  const evolutionDeltaBaseProfile = useMemo(() => {
+    if (activePersonaEvolutionState?.currentProfile) {
+      return activePersonaEvolutionState.currentProfile;
+    }
+    if (activePersona) {
+      return extractPersonaEvolutionBaselineProfile(activePersona);
+    }
+    return undefined;
+  }, [activePersonaEvolutionState?.currentProfile, activePersona]);
+  const evolutionDeltaBaseLabel = activePersonaEvolutionState?.currentProfile
+    ? "currentProfile snapshot"
+    : activePersona
+      ? "persona baseline snapshot"
+      : "snapshot unavailable";
+  const appliedEvolutionHistory = useMemo(
+    () =>
+      selectAppliedPersonaEvolutionHistory(
+        activePersonaEvolutionState?.history ?? [],
+      ),
+    [activePersonaEvolutionState?.history],
+  );
   const renderedMessages = useMemo(
     () =>
       messages.map((msg) => {
@@ -500,6 +558,44 @@ export function ChatPane({
           (relationshipProposalType || relationshipProposalStage)
             ? (msg.relationshipProposalStatus ?? "pending")
             : undefined;
+        const evolution = personaControlParsed?.evolution;
+        const evolutionPatch = normalizePersonaEvolutionPatch(evolution?.patch);
+        const evolutionReason = (evolution?.reason || "").trim();
+        const evolutionChangedFields = evolutionPatch
+          ? summarizePersonaEvolutionPatchFields(evolutionPatch, 12)
+          : [];
+        const evolutionPatchSummary = evolutionPatch
+          ? evolutionChangedFields
+              .map((field) => formatPersonaEvolutionFieldLabel(field))
+              .join(" • ")
+          : "";
+        const evolutionDeltaRows =
+          evolutionPatch && evolutionDeltaBaseProfile
+            ? buildPersonaEvolutionPatchDeltaRows(
+                evolutionDeltaBaseProfile,
+                evolutionPatch,
+                8,
+              )
+            : [];
+        const hasEvolutionSignal = Boolean(
+          evolutionPatch || evolution?.shouldEvolve === true,
+        );
+        const showEvolutionBlock = Boolean(
+          evolution && hasEvolutionSignal,
+        );
+        const canApplyEvolutionFromMessage =
+          showEvolutionBlock &&
+          evolutionEnabled &&
+          evolutionApplyMode === "manual" &&
+          evolution?.shouldEvolve === true &&
+          Boolean(evolutionPatch);
+        const evolutionAlreadyApplied = Boolean(
+          evolutionPatch &&
+            appliedEvolutionHistory.some((event) =>
+              areEvolutionPatchesEqual(event.patch, evolutionPatch),
+            ),
+        );
+        const applyEvolutionBusy = applyingEvolutionMessageId === msg.id;
         const relationshipProposalSummary = [
           relationshipProposalType ? `Тип: ${relationshipProposalType}` : "",
           relationshipProposalStage ? `Этап: ${relationshipProposalStage}` : "",
@@ -526,7 +622,8 @@ export function ChatPane({
           comfyPromptsToRender.length === 0 &&
           imageUrlsToRender.length === 0 &&
           !msg.imageGenerationPending &&
-          !statusDetails
+          !statusDetails &&
+          !showEvolutionBlock
         ) {
           return null;
         }
@@ -637,6 +734,67 @@ export function ChatPane({
                 <pre>{statusDetails}</pre>
               </section>
             ) : null}
+            {showEvolutionBlock ? (
+              <section
+                className="evolution-message-block"
+                aria-label="Эволюция персоны"
+              >
+                <div className="comfy-prompt-head">Эволюция</div>
+                <p>
+                  shouldEvolve:{" "}
+                  {evolution?.shouldEvolve === true
+                    ? "true"
+                    : evolution?.shouldEvolve === false
+                      ? "false"
+                      : "—"}
+                </p>
+                <p>reason: {evolutionReason || "—"}</p>
+                <p>patch: {evolutionPatchSummary || "—"}</p>
+                {evolutionDeltaRows.length > 0 ? (
+                  <>
+                    <p className="evolution-message-caption">
+                      Δ было -&gt; стало ({evolutionDeltaBaseLabel})
+                    </p>
+                    <ul className="evolution-delta-list-chat">
+                      {evolutionDeltaRows.map((row) => (
+                        <li key={`${msg.id}-evolution-delta-${row.field}`}>
+                          <span title={row.field}>
+                            {formatPersonaEvolutionFieldLabel(row.field)}
+                          </span>
+                          : {row.before} -&gt; {row.after}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {canApplyEvolutionFromMessage && !evolutionAlreadyApplied ? (
+                  <div className="evolution-message-actions">
+                    <button
+                      type="button"
+                      className="mini primary"
+                      disabled={isLoading || applyEvolutionBusy}
+                      onClick={async () => {
+                        if (!evolutionPatch) return;
+                        try {
+                          setApplyingEvolutionMessageId(msg.id);
+                          await onApplyEvolutionFromMessage({
+                            messageId: msg.id,
+                            reason: evolutionReason,
+                            patch: evolutionPatch,
+                          });
+                        } finally {
+                          setApplyingEvolutionMessageId((current) =>
+                            current === msg.id ? null : current,
+                          );
+                        }
+                      }}
+                    >
+                      {applyEvolutionBusy ? "Применяю..." : "Применить эволюцию"}
+                    </button>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             {relationshipProposalStatus ? (
               <section
                 className="relationship-proposal-block"
@@ -698,6 +856,13 @@ export function ChatPane({
       imageMetaByUrl,
       isLoading,
       messages,
+      applyingEvolutionMessageId,
+      appliedEvolutionHistory,
+      evolutionApplyMode,
+      evolutionEnabled,
+      evolutionDeltaBaseLabel,
+      evolutionDeltaBaseProfile,
+      onApplyEvolutionFromMessage,
       showStatusChangeDetails,
       showSystemImageBlock,
       resolvedImageBySource,

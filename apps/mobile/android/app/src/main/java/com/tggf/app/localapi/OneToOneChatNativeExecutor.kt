@@ -794,11 +794,14 @@ object OneToOneChatNativeExecutor {
 
         val personaName = persona.optString("name", "").trim()
         val requestedImageCount = if (comfyImageDescriptions.isNotEmpty()) comfyImageDescriptions.size else comfyPrompts.size
+        val checkpointName = persona.optString("imageCheckpoint", "").trim().ifEmpty { null }
         val personaStyleReferenceCandidates =
             listOf(
-                persona.optString("fullBodyUrl", "").trim(),
-                persona.optString("avatarUrl", "").trim(),
-            ).filter { value -> value.isNotBlank() }.distinct()
+                persona.optString("fullBodyImageId", "").trim().ifBlank { null }?.let { imageId -> "idb://$imageId" },
+                persona.optString("avatarImageId", "").trim().ifBlank { null }?.let { imageId -> "idb://$imageId" },
+                persona.optString("fullBodyUrl", "").trim().ifBlank { null },
+                persona.optString("avatarUrl", "").trim().ifBlank { null },
+            ).filterNotNull().distinct()
         val chatStyleStrength = resolveChatStyleStrength(chat, settings)
         val effectiveSettings =
             if (chatStyleStrength != null) {
@@ -947,18 +950,42 @@ object OneToOneChatNativeExecutor {
                 }
                 val runGeneration =
                     { styleReferenceImage: String?, strictStyleReference: Boolean ->
+                        val styleDebugEmitter: (String, JSONObject) -> Unit =
+                            styleEmitter@{ label, payload ->
+                                if (!label.startsWith("style_")) return@styleEmitter
+                                appendRuntimeEvent(
+                                    runtime = runtime,
+                                    scopeId = scope.chatId,
+                                    jobId = jobId,
+                                    stage = "image_progress",
+                                    level = if (label == "style_reference_ignored") "warn" else "info",
+                                    message = "Native style debug: $label",
+                                    details =
+                                        JSONObject().apply {
+                                            put("promptIndex", index)
+                                            put("strictStyleReference", strictStyleReference)
+                                            put(
+                                                "styleReferenceSourcePreview",
+                                                styleReferenceImage?.take(140) ?: "",
+                                            )
+                                            put("payload", JSONObject(payload.toString()))
+                                        },
+                                )
+                            }
                         ComfyNativeClient.runBaseGeneration(
                             ComfyNativeClient.BaseGenerationRequest(
                                 context = context,
                                 settings = effectiveSettings,
                                 prompt = prompt,
                                 seed = seed,
+                                checkpointName = checkpointName,
                                 styleReferenceImage = styleReferenceImage,
                                 strictStyleReference = strictStyleReference,
                                 worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
                                 workerScopeId = scope.chatId,
                                 workerQueueDetail = "image_queue",
                                 workerWaitDetail = "image_wait",
+                                debugEmitter = styleDebugEmitter,
                             ),
                         )
                     }
@@ -1030,6 +1057,7 @@ object OneToOneChatNativeExecutor {
                     JSONObject().apply {
                         put("seed", comfyResult.seed)
                         put("prompt", prompt)
+                        put("flow", "base")
                         comfyResult.model?.takeIf { it.isNotBlank() }?.let { model ->
                             put("model", model)
                         }
@@ -1852,6 +1880,71 @@ object OneToOneChatNativeExecutor {
         return normalized.ifBlank { null }
     }
 
+    private fun pickFirstNonNullValue(raw: JSONObject?, vararg keys: String): Any? {
+        if (raw == null) return null
+        for (key in keys) {
+            if (!raw.has(key)) continue
+            val candidate = raw.opt(key)
+            if (candidate == null || candidate == JSONObject.NULL) continue
+            return candidate
+        }
+        return null
+    }
+
+    private fun pickFirstObject(raw: JSONObject?, vararg keys: String): JSONObject? {
+        return parseOptionalJsonObject(pickFirstNonNullValue(raw, *keys))
+    }
+
+    private fun isMeaningfulEvolutionReason(value: String): Boolean {
+        val normalized = value.trim()
+        if (normalized.length < 8) return false
+        val compact = normalized.lowercase()
+        if (compact == "evolution_update" || compact == "update" || compact == "patch" || compact == "n/a") {
+            return false
+        }
+        val hasLettersOrDigits = normalized.any { character -> character.isLetterOrDigit() }
+        return hasLettersOrDigits
+    }
+
+    private fun collectPatchFieldPaths(
+        value: Any?,
+        prefix: String,
+        out: MutableList<String>,
+    ) {
+        if (value !is JSONObject) return
+        val keys = value.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val nested = value.opt(key)
+            val path = if (prefix.isBlank()) key else "$prefix.$key"
+            if (nested is JSONObject) {
+                collectPatchFieldPaths(nested, path, out)
+            } else if (nested != null && nested != JSONObject.NULL) {
+                out.add(path)
+            }
+        }
+    }
+
+    private fun summarizeEvolutionPatchFields(patch: JSONObject): String {
+        val paths = mutableListOf<String>()
+        collectPatchFieldPaths(patch, "", paths)
+        if (paths.isEmpty()) return "profile fields"
+        val unique = paths.distinct().sorted()
+        val preview = unique.take(4).joinToString(", ")
+        return if (unique.size > 4) "$preview +" + (unique.size - 4).toString() else preview
+    }
+
+    private fun resolveEvolutionReason(
+        reasonRaw: Any?,
+        patch: JSONObject,
+    ): String {
+        val normalized = normalizeTextPatchField(reasonRaw)
+        if (normalized != null && isMeaningfulEvolutionReason(normalized)) {
+            return normalized
+        }
+        return "Sustained conversation shift detected; updated ${summarizeEvolutionPatchFields(patch)}."
+    }
+
     private fun normalizeFiniteNumber(value: Any?): Double? {
         val number = value as? Number ?: return null
         val normalized = number.toDouble()
@@ -1862,22 +1955,22 @@ object OneToOneChatNativeExecutor {
         if (raw == null) return null
         val allowed =
             listOf(
-                "faceDescription",
-                "height",
-                "eyes",
-                "lips",
-                "hair",
-                "ageType",
-                "bodyType",
-                "markers",
-                "accessories",
-                "clothingStyle",
-                "skin",
+                "faceDescription" to arrayOf("faceDescription", "face_description"),
+                "height" to arrayOf("height"),
+                "eyes" to arrayOf("eyes"),
+                "lips" to arrayOf("lips"),
+                "hair" to arrayOf("hair"),
+                "ageType" to arrayOf("ageType", "age_type"),
+                "bodyType" to arrayOf("bodyType", "body_type"),
+                "markers" to arrayOf("markers"),
+                "accessories" to arrayOf("accessories"),
+                "clothingStyle" to arrayOf("clothingStyle", "clothing_style"),
+                "skin" to arrayOf("skin"),
             )
         val patch = JSONObject()
         allowed.forEach { field ->
-            normalizeTextPatchField(raw.opt(field))?.let { value ->
-                patch.put(field, value)
+            normalizeTextPatchField(pickFirstNonNullValue(raw, *field.second))?.let { value ->
+                patch.put(field.first, value)
             }
         }
         return if (patch.length() > 0) patch else null
@@ -1886,12 +1979,19 @@ object OneToOneChatNativeExecutor {
     private fun normalizeCoreEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        listOf("archetype", "backstory", "goals", "values", "boundaries", "expertise").forEach { field ->
-            normalizeTextPatchField(raw.opt(field))?.let { value ->
-                patch.put(field, value)
+        listOf(
+            "archetype" to arrayOf("archetype"),
+            "backstory" to arrayOf("backstory"),
+            "goals" to arrayOf("goals"),
+            "values" to arrayOf("values"),
+            "boundaries" to arrayOf("boundaries"),
+            "expertise" to arrayOf("expertise"),
+        ).forEach { field ->
+            normalizeTextPatchField(pickFirstNonNullValue(raw, *field.second))?.let { value ->
+                patch.put(field.first, value)
             }
         }
-        normalizeTextPatchField(raw.opt("selfGender"))?.lowercase()?.let { value ->
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "selfGender", "self_gender"))?.lowercase()?.let { value ->
             if (value == "auto" || value == "female" || value == "male" || value == "neutral") {
                 patch.put("selfGender", value)
             }
@@ -1902,15 +2002,19 @@ object OneToOneChatNativeExecutor {
     private fun normalizeVoiceEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        normalizeTextPatchField(raw.opt("tone"))?.let { patch.put("tone", it) }
-        normalizeTextPatchField(raw.opt("lexicalStyle"))?.let { patch.put("lexicalStyle", it) }
-        normalizeTextPatchField(raw.opt("sentenceLength"))?.lowercase()?.let { value ->
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "tone"))?.let { patch.put("tone", it) }
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "lexicalStyle", "lexical_style"))?.let { patch.put("lexicalStyle", it) }
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "sentenceLength", "sentence_length"))?.lowercase()?.let { value ->
             if (value == "short" || value == "balanced" || value == "long") {
                 patch.put("sentenceLength", value)
             }
         }
-        listOf("formality", "expressiveness", "emoji").forEach { field ->
-            normalizeFiniteNumber(raw.opt(field))?.let { value -> patch.put(field, value) }
+        listOf(
+            "formality" to arrayOf("formality"),
+            "expressiveness" to arrayOf("expressiveness"),
+            "emoji" to arrayOf("emoji"),
+        ).forEach { field ->
+            normalizeFiniteNumber(pickFirstNonNullValue(raw, *field.second))?.let { value -> patch.put(field.first, value) }
         }
         return if (patch.length() > 0) patch else null
     }
@@ -1918,8 +2022,15 @@ object OneToOneChatNativeExecutor {
     private fun normalizeBehaviorEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        listOf("initiative", "empathy", "directness", "curiosity", "challenge", "creativity").forEach { field ->
-            normalizeFiniteNumber(raw.opt(field))?.let { value -> patch.put(field, value) }
+        listOf(
+            "initiative" to arrayOf("initiative"),
+            "empathy" to arrayOf("empathy"),
+            "directness" to arrayOf("directness"),
+            "curiosity" to arrayOf("curiosity"),
+            "challenge" to arrayOf("challenge"),
+            "creativity" to arrayOf("creativity"),
+        ).forEach { field ->
+            normalizeFiniteNumber(pickFirstNonNullValue(raw, *field.second))?.let { value -> patch.put(field.first, value) }
         }
         return if (patch.length() > 0) patch else null
     }
@@ -1927,11 +2038,14 @@ object OneToOneChatNativeExecutor {
     private fun normalizeEmotionEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        normalizeTextPatchField(raw.opt("baselineMood"))?.let { patch.put("baselineMood", it) }
-        normalizeTextPatchField(raw.opt("positiveTriggers"))?.let { patch.put("positiveTriggers", it) }
-        normalizeTextPatchField(raw.opt("negativeTriggers"))?.let { patch.put("negativeTriggers", it) }
-        listOf("warmth", "stability").forEach { field ->
-            normalizeFiniteNumber(raw.opt(field))?.let { value -> patch.put(field, value) }
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "baselineMood", "baseline_mood"))?.let { patch.put("baselineMood", it) }
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "positiveTriggers", "positive_triggers"))?.let { patch.put("positiveTriggers", it) }
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "negativeTriggers", "negative_triggers"))?.let { patch.put("negativeTriggers", it) }
+        listOf(
+            "warmth" to arrayOf("warmth"),
+            "stability" to arrayOf("stability"),
+        ).forEach { field ->
+            normalizeFiniteNumber(pickFirstNonNullValue(raw, *field.second))?.let { value -> patch.put(field.first, value) }
         }
         return if (patch.length() > 0) patch else null
     }
@@ -1939,14 +2053,22 @@ object OneToOneChatNativeExecutor {
     private fun normalizeMemoryEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        listOf("rememberFacts", "rememberPreferences", "rememberGoals", "rememberEvents").forEach { field ->
-            val value = raw.opt(field)
+        listOf(
+            "rememberFacts" to arrayOf("rememberFacts", "remember_facts"),
+            "rememberPreferences" to arrayOf("rememberPreferences", "remember_preferences"),
+            "rememberGoals" to arrayOf("rememberGoals", "remember_goals"),
+            "rememberEvents" to arrayOf("rememberEvents", "remember_events"),
+        ).forEach { field ->
+            val value = pickFirstNonNullValue(raw, *field.second)
             if (value is Boolean) {
-                patch.put(field, value)
+                patch.put(field.first, value)
             }
         }
-        listOf("maxMemories", "decayDays").forEach { field ->
-            normalizeFiniteNumber(raw.opt(field))?.let { value -> patch.put(field, value) }
+        listOf(
+            "maxMemories" to arrayOf("maxMemories", "max_memories"),
+            "decayDays" to arrayOf("decayDays", "decay_days"),
+        ).forEach { field ->
+            normalizeFiniteNumber(pickFirstNonNullValue(raw, *field.second))?.let { value -> patch.put(field.first, value) }
         }
         return if (patch.length() > 0) patch else null
     }
@@ -1954,21 +2076,21 @@ object OneToOneChatNativeExecutor {
     private fun normalizeAdvancedEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        normalizeCoreEvolutionPatch(raw.optJSONObject("core"))?.let { patch.put("core", it) }
-        normalizeVoiceEvolutionPatch(raw.optJSONObject("voice"))?.let { patch.put("voice", it) }
-        normalizeBehaviorEvolutionPatch(raw.optJSONObject("behavior"))?.let { patch.put("behavior", it) }
-        normalizeEmotionEvolutionPatch(raw.optJSONObject("emotion"))?.let { patch.put("emotion", it) }
-        normalizeMemoryEvolutionPatch(raw.optJSONObject("memory"))?.let { patch.put("memory", it) }
+        normalizeCoreEvolutionPatch(pickFirstObject(raw, "core"))?.let { patch.put("core", it) }
+        normalizeVoiceEvolutionPatch(pickFirstObject(raw, "voice"))?.let { patch.put("voice", it) }
+        normalizeBehaviorEvolutionPatch(pickFirstObject(raw, "behavior"))?.let { patch.put("behavior", it) }
+        normalizeEmotionEvolutionPatch(pickFirstObject(raw, "emotion"))?.let { patch.put("emotion", it) }
+        normalizeMemoryEvolutionPatch(pickFirstObject(raw, "memory"))?.let { patch.put("memory", it) }
         return if (patch.length() > 0) patch else null
     }
 
     private fun normalizePersonaEvolutionPatch(raw: JSONObject?): JSONObject? {
         if (raw == null) return null
         val patch = JSONObject()
-        normalizeTextPatchField(raw.opt("personalityPrompt"))?.let { patch.put("personalityPrompt", it) }
-        normalizeTextPatchField(raw.opt("stylePrompt"))?.let { patch.put("stylePrompt", it) }
-        normalizeAppearanceEvolutionPatch(raw.optJSONObject("appearance"))?.let { patch.put("appearance", it) }
-        normalizeAdvancedEvolutionPatch(raw.optJSONObject("advanced"))?.let { patch.put("advanced", it) }
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "personalityPrompt", "personality_prompt"))?.let { patch.put("personalityPrompt", it) }
+        normalizeTextPatchField(pickFirstNonNullValue(raw, "stylePrompt", "style_prompt"))?.let { patch.put("stylePrompt", it) }
+        normalizeAppearanceEvolutionPatch(pickFirstObject(raw, "appearance"))?.let { patch.put("appearance", it) }
+        normalizeAdvancedEvolutionPatch(pickFirstObject(raw, "advanced"))?.let { patch.put("advanced", it) }
         return if (patch.length() > 0) patch else null
     }
 
@@ -2036,11 +2158,15 @@ object OneToOneChatNativeExecutor {
         }
         val patch =
             normalizePersonaEvolutionPatch(
-                parseOptionalJsonObject(evolution.opt("patch")),
+                parseOptionalJsonObject(
+                    pickFirstNonNullValue(evolution, "patch", "delta", "profile_patch", "profilePatch"),
+                ),
             ) ?: return EvolutionProcessingResult(state = JSONObject(state.toString()), appliedNow = false)
         val reason =
-            normalizeTextPatchField(evolution.opt("reason"))
-                ?: "evolution_update"
+            resolveEvolutionReason(
+                reasonRaw = pickFirstNonNullValue(evolution, "reason", "rationale", "why", "trigger"),
+                patch = patch,
+            )
         val nextState = JSONObject(state.toString())
         if (config.applyMode == "auto") {
             val nextProfile =

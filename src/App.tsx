@@ -221,6 +221,10 @@ export default function App() {
     setChatDiaryEnabled,
     setChatEvolutionEnabled,
     setChatEvolutionApplyMode,
+    addPendingEvolutionProposal,
+    updatePendingEvolutionProposal,
+    deletePendingEvolutionProposal,
+    applyEvolutionPatchNow,
     approvePendingEvolution,
     rejectPendingEvolution,
     undoLastAppliedEvolution,
@@ -1208,6 +1212,11 @@ export default function App() {
             setMessageInput={setMessageInput}
             isLoading={isLoading}
             activePersonaState={activePersonaState}
+            activePersonaEvolutionState={activePersonaEvolutionState}
+            evolutionEnabled={Boolean(activeChat?.evolutionConfig?.enabled)}
+            evolutionApplyMode={
+              activeChat?.evolutionConfig?.applyMode === "auto" ? "auto" : "manual"
+            }
             activeInfluenceProfile={activePersonaState?.influenceProfile ?? null}
             activeCurrentIntent={activePersonaState?.currentIntent ?? null}
             memoryCount={activeMemories.length}
@@ -1226,6 +1235,10 @@ export default function App() {
             }}
             onResolveRelationshipProposal={(messageId, decision) => {
               void resolveRelationshipProposal(messageId, decision);
+            }}
+            onApplyEvolutionFromMessage={async ({ reason, patch }) => {
+              if (!activeChatId) return;
+              await applyEvolutionPatchNow(activeChatId, { reason, patch });
             }}
             onSaveInfluenceProfile={(profile) => {
               void setActiveInfluenceProfile(profile);
@@ -1266,6 +1279,15 @@ export default function App() {
           }}
           onChangeEvolutionApplyMode={(chatId, applyMode) => {
             void setChatEvolutionApplyMode(chatId, applyMode);
+          }}
+          onAddPendingEvolution={(chatId, payload) => {
+            void addPendingEvolutionProposal(chatId, payload);
+          }}
+          onUpdatePendingEvolution={(chatId, proposalId, payload) => {
+            void updatePendingEvolutionProposal(chatId, proposalId, payload);
+          }}
+          onDeletePendingEvolution={(chatId, proposalId) => {
+            void deletePendingEvolutionProposal(chatId, proposalId);
           }}
           onApprovePendingEvolution={(chatId, proposalId) => {
             void approvePendingEvolution(chatId, proposalId);

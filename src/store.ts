@@ -131,6 +131,32 @@ interface AppState {
     chatId: string,
     applyMode: PersonaEvolutionApplyMode,
   ) => Promise<void>;
+  addPendingEvolutionProposal: (
+    chatId: string,
+    payload: {
+      reason: string;
+      patch: unknown;
+    },
+  ) => Promise<void>;
+  updatePendingEvolutionProposal: (
+    chatId: string,
+    proposalId: string,
+    payload: {
+      reason: string;
+      patch: unknown;
+    },
+  ) => Promise<void>;
+  deletePendingEvolutionProposal: (
+    chatId: string,
+    proposalId: string,
+  ) => Promise<void>;
+  applyEvolutionPatchNow: (
+    chatId: string,
+    payload: {
+      reason: string;
+      patch: unknown;
+    },
+  ) => Promise<void>;
   approvePendingEvolution: (chatId: string, proposalId: string) => Promise<void>;
   rejectPendingEvolution: (chatId: string, proposalId: string) => Promise<void>;
   undoLastAppliedEvolution: (chatId: string) => Promise<void>;
@@ -455,6 +481,67 @@ function createEvolutionHistoryItem(input: {
   } satisfies PersonaEvolutionHistoryItem;
 }
 
+function isMeaningfulEvolutionReason(reason: string) {
+  const normalized = reason.trim();
+  if (normalized.length < 8) return false;
+  const compact = normalized.toLowerCase();
+  if (
+    compact === "evolution_update" ||
+    compact === "update" ||
+    compact === "patch" ||
+    compact === "n/a"
+  ) {
+    return false;
+  }
+  return /[\p{L}\p{N}]/u.test(normalized);
+}
+
+function collectEvolutionPatchPaths(
+  value: unknown,
+  prefix: string,
+  out: string[],
+) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  for (const [key, nested] of Object.entries(value)) {
+    if (nested === undefined || nested === null) continue;
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (typeof nested === "object" && !Array.isArray(nested)) {
+      collectEvolutionPatchPaths(nested, path, out);
+      continue;
+    }
+    out.push(path);
+  }
+}
+
+function summarizeEvolutionPatchFields(patch: PersonaEvolutionProfile) {
+  const paths: string[] = [];
+  collectEvolutionPatchPaths(patch, "", paths);
+  if (paths.length === 0) return "profile fields";
+  const unique = [...new Set(paths)].sort();
+  const preview = unique.slice(0, 4).join(", ");
+  return unique.length > 4 ? `${preview} +${unique.length - 4}` : preview;
+}
+
+function resolveEvolutionReason(
+  reason: string | undefined,
+  patch: PersonaEvolutionProfile,
+) {
+  const normalized = (reason || "").trim();
+  if (normalized && isMeaningfulEvolutionReason(normalized)) {
+    return normalized;
+  }
+  return `Sustained conversation shift detected; updated ${summarizeEvolutionPatchFields(
+    patch,
+  )}.`;
+}
+
+function areEvolutionPatchesEqual(
+  left: PersonaEvolutionProfile,
+  right: PersonaEvolutionProfile,
+) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function applyEvolutionPatchWithHistory(
   state: PersonaEvolutionState,
   patch: PersonaEvolutionProfile,
@@ -464,7 +551,7 @@ function applyEvolutionPatchWithHistory(
 ): PersonaEvolutionState {
   const appliedEvent = createEvolutionHistoryItem({
     status: "applied",
-    reason: reason.trim() || "evolution_update",
+    reason: resolveEvolutionReason(reason, patch),
     patch,
     proposalId,
     timestamp,
@@ -505,7 +592,7 @@ function processPersonaControlEvolution(params: {
   if (!patch) {
     return { next: state, appliedNow: false };
   }
-  const reason = (evolution.reason || "").trim() || "evolution_update";
+  const reason = resolveEvolutionReason(evolution.reason, patch);
   if (config.applyMode === "auto") {
     return {
       next: applyEvolutionPatchWithHistory(state, patch, reason, timestamp),
@@ -1279,6 +1366,229 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  addPendingEvolutionProposal: async (chatId, payload) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      const patch = normalizePersonaEvolutionPatch(payload.patch);
+      if (!patch) {
+        throw new Error(
+          "Невалидный patch эволюции. Разрешены только поля personalityPrompt/stylePrompt/appearance/advanced.",
+        );
+      }
+      const timestamp = nowIso();
+      const reason = resolveEvolutionReason(payload.reason, patch);
+      const nextState: PersonaEvolutionState = {
+        ...evolutionState,
+        pendingProposals: [
+          ...evolutionState.pendingProposals,
+          {
+            id: crypto.randomUUID(),
+            createdAt: timestamp,
+            reason,
+            patch,
+          },
+        ],
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_pending_add");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  updatePendingEvolutionProposal: async (chatId, proposalId, payload) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      const target = evolutionState.pendingProposals.find(
+        (proposal) => proposal.id === proposalId,
+      );
+      if (!target) return;
+      const patch = normalizePersonaEvolutionPatch(payload.patch);
+      if (!patch) {
+        throw new Error(
+          "Невалидный patch эволюции. Разрешены только поля personalityPrompt/stylePrompt/appearance/advanced.",
+        );
+      }
+      const timestamp = nowIso();
+      const reason = resolveEvolutionReason(payload.reason, patch);
+      const nextState: PersonaEvolutionState = {
+        ...evolutionState,
+        pendingProposals: evolutionState.pendingProposals.map((proposal) =>
+          proposal.id === proposalId
+            ? {
+                ...proposal,
+                reason,
+                patch,
+              }
+            : proposal,
+        ),
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_pending_update");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  deletePendingEvolutionProposal: async (chatId, proposalId) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      if (!evolutionState.pendingProposals.some((item) => item.id === proposalId)) {
+        return;
+      }
+      const timestamp = nowIso();
+      const nextState: PersonaEvolutionState = {
+        ...evolutionState,
+        pendingProposals: evolutionState.pendingProposals.filter(
+          (item) => item.id !== proposalId,
+        ),
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_pending_delete");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
+  applyEvolutionPatchNow: async (chatId, payload) => {
+    const state = get();
+    const activeChat = state.chats.find((chat) => chat.id === chatId);
+    const activePersona = state.personas.find(
+      (persona) => persona.id === activeChat?.personaId,
+    );
+    if (!activeChat || !activePersona) return;
+    if (!activeChat.evolutionConfig?.enabled) return;
+    if ((activeChat.evolutionConfig?.applyMode ?? "manual") !== "manual") return;
+    try {
+      const loaded =
+        state.activePersonaEvolutionState?.chatId === chatId
+          ? state.activePersonaEvolutionState
+          : await dbApi.getPersonaEvolutionState(chatId);
+      const evolutionState = normalizePersonaEvolutionState(
+        loaded ?? undefined,
+        chatId,
+        activePersona,
+      );
+      const patch = normalizePersonaEvolutionPatch(payload.patch);
+      if (!patch) {
+        throw new Error(
+          "Невалидный patch эволюции. Разрешены только поля personalityPrompt/stylePrompt/appearance/advanced.",
+        );
+      }
+      const reason = resolveEvolutionReason(payload.reason, patch);
+      const timestamp = nowIso();
+
+      const matchingPending = evolutionState.pendingProposals.find(
+        (proposal) =>
+          proposal.reason === reason &&
+          areEvolutionPatchesEqual(proposal.patch, patch),
+      );
+
+      const appliedState = applyEvolutionPatchWithHistory(
+        evolutionState,
+        matchingPending?.patch ?? patch,
+        matchingPending?.reason ?? reason,
+        timestamp,
+        matchingPending?.id,
+      );
+
+      const nextState: PersonaEvolutionState = {
+        ...appliedState,
+        pendingProposals: matchingPending
+          ? evolutionState.pendingProposals.filter(
+              (proposal) => proposal.id !== matchingPending.id,
+            )
+          : evolutionState.pendingProposals,
+        updatedAt: timestamp,
+      };
+      await dbApi.savePersonaEvolutionState(nextState);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: activePersona.id,
+        });
+        await triggerBackgroundRuntime("one_to_one_evolution_approve");
+      }
+      if (state.activeChatId === chatId) {
+        set({ activePersonaEvolutionState: nextState });
+      }
+    } catch (error) {
+      set({ error: (error as Error).message });
+    }
+  },
+
   approvePendingEvolution: async (chatId, proposalId) => {
     const state = get();
     const activeChat = state.chats.find((chat) => chat.id === chatId);
@@ -1890,10 +2200,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   addManualMemory: async (input) => {
     const state = get();
     const activeChatId = state.activeChatId;
+    const activeChat = state.chats.find((chat) => chat.id === activeChatId);
     const activePersona = state.personas.find(
       (persona) => persona.id === state.activePersonaId,
     );
-    if (!activeChatId || !activePersona) return;
+    if (!activeChatId || !activeChat || !activePersona) return;
+
+    const loadedEvolutionState =
+      state.activePersonaEvolutionState?.chatId === activeChatId
+        ? state.activePersonaEvolutionState
+        : await dbApi.getPersonaEvolutionState(activeChatId);
+    const evolutionState = normalizePersonaEvolutionState(
+      loadedEvolutionState ?? undefined,
+      activeChatId,
+      activePersona,
+    );
+    const effectivePersona = getEffectivePersonaForChat(
+      activePersona,
+      activeChat,
+      evolutionState,
+    );
 
     const content = input.content.trim();
     if (!content) {
@@ -1945,8 +2271,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       const reconciled = reconcilePersistentMemories(
         existing,
         [manualMemory],
-        activePersona.advanced.memory.maxMemories,
-        activePersona.advanced.memory.decayDays,
+        effectivePersona.advanced.memory.maxMemories,
+        effectivePersona.advanced.memory.decayDays,
       );
       await dbApi.saveMemories(reconciled.kept);
       await dbApi.deleteMemories(reconciled.removedIds);
@@ -2148,7 +2474,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const memoryCard = buildLayeredMemoryContextCard(
         memoryPool,
         recentMessages,
-        activePersona.advanced.memory.decayDays,
+        effectivePersona.advanced.memory.decayDays,
       );
       const conversationSummary = buildConversationSummaryContext(activeChat);
 
@@ -2252,7 +2578,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             buildOneToOneParticipantCatalog(effectivePersona);
           let promptsForGeneration = [...promptBlocks];
           let parsedTypesForGeneration = promptsForGeneration.map((prompt) =>
-            parseImageDescriptionType(prompt, activePersona.name),
+            parseImageDescriptionType(prompt, effectivePersona.name),
           );
 
           try {
@@ -2273,7 +2599,7 @@ export const useAppStore = create<AppState>((set, get) => ({
               );
               const parsedTypesByDescription = imageDescriptionBlocks.map(
                 (description) =>
-                  parseImageDescriptionType(description, activePersona.name),
+                  parseImageDescriptionType(description, effectivePersona.name),
               );
               const promptsWithType = generatedPromptBatches.flatMap(
                 (batch, batchIndex) =>
@@ -2333,14 +2659,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           const comfyItems = promptsForGeneration.map((prompt, index) => {
             const parsedType =
               parsedTypesForGeneration[index] ??
-              parseImageDescriptionType(prompt, activePersona.name);
+              parseImageDescriptionType(prompt, effectivePersona.name);
             const styleReferenceImage = shouldAttachPersonaReference(parsedType)
               ? personaStyleReferenceImage
               : undefined;
             return {
               flow: "base" as const,
               prompt,
-              checkpointName: activePersona.imageCheckpoint || undefined,
+              checkpointName: effectivePersona.imageCheckpoint || undefined,
               seed: randomSeed(),
               styleReferenceImage,
               styleStrength: styleReferenceImage
@@ -2522,10 +2848,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   regenerateMessageComfyPromptAtIndex: async (messageId, promptIndex) => {
     const state = get();
     const activeChatId = state.activeChatId;
+    const activeChat = state.chats.find((chat) => chat.id === activeChatId);
     const activePersona = state.personas.find(
       (persona) => persona.id === state.activePersonaId,
     );
-    if (!activeChatId || !activePersona) return;
+    if (!activeChatId || !activeChat || !activePersona) return;
+
+    const loadedEvolutionState =
+      state.activePersonaEvolutionState?.chatId === activeChatId
+        ? state.activePersonaEvolutionState
+        : await dbApi.getPersonaEvolutionState(activeChatId);
+    const evolutionState = normalizePersonaEvolutionState(
+      loadedEvolutionState ?? undefined,
+      activeChatId,
+      activePersona,
+    );
+    const effectivePersona = getEffectivePersonaForChat(
+      activePersona,
+      activeChat,
+      evolutionState,
+    );
 
     const targetMessage = state.messages.find(
       (message) =>
@@ -2551,14 +2893,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       imageDescriptions[normalizedIndex] ||
       imageDescriptions[0] ||
       currentPrompt;
-    const participantCatalog = buildOneToOneParticipantCatalog(activePersona);
+    const participantCatalog = buildOneToOneParticipantCatalog(effectivePersona);
 
     set({ isLoading: true, error: null });
     try {
       let regeneratedPrompt = (
         await generateComfyPromptFromImageDescription(
           get().settings,
-          activePersona,
+          effectivePersona,
           sourceDescription,
           normalizedIndex + 1,
           { participantCatalog },
@@ -2573,7 +2915,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         regeneratedPrompt = (
           await generateComfyPromptFromImageDescription(
             get().settings,
-          activePersona,
+            effectivePersona,
           `${sourceDescription}\nНужна другая вариация композиции и света, сохранив смысл сцены.`,
           normalizedIndex + 101,
           { participantCatalog },
@@ -2592,11 +2934,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const sourceUrl = sourceImageUrls[normalizedIndex] ?? sourceImageUrls[0] ?? "";
       const parsedType = parseImageDescriptionType(
         sourceDescription,
-        activePersona.name,
+        effectivePersona.name,
       );
       const personaStyleReferenceImage =
-        activePersona.avatarUrl.trim() ||
-        activePersona.fullBodyUrl.trim() ||
+        effectivePersona.avatarUrl.trim() ||
+        effectivePersona.fullBodyUrl.trim() ||
         undefined;
       const styleReferenceImage = shouldAttachPersonaReference(parsedType)
         ? personaStyleReferenceImage
@@ -2609,7 +2951,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const item = {
         flow: "base" as const,
         prompt: regeneratedPrompt,
-        checkpointName: activePersona.imageCheckpoint || undefined,
+        checkpointName: effectivePersona.imageCheckpoint || undefined,
         seed: randomSeed(),
         styleReferenceImage,
         styleStrength: styleReferenceImage ? chatStyleStrength : undefined,

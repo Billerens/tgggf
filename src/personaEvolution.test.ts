@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   applyPersonaEvolutionPatch,
+  buildPersonaEvolutionPatchDeltaRows,
+  buildPersonaEvolutionProfileDeltaRows,
   formatPersonaEvolutionHistoryForPrompt,
   normalizePersonaEvolutionPatch,
   selectAppliedPersonaEvolutionHistory,
@@ -99,5 +101,71 @@ describe("personaEvolution", () => {
     expect(lines).toHaveLength(10);
     expect(lines.some((line) => line.includes("reason 10"))).toBe(false);
     expect(lines.at(-1)).toContain("reason 11");
+  });
+
+  it("builds patch delta rows with before and after values", () => {
+    const before: PersonaEvolutionProfile = {
+      stylePrompt: "soft and uncertain",
+      advanced: {
+        behavior: {
+          initiative: 42,
+        },
+      },
+    };
+    const patch: PersonaEvolutionProfile = {
+      stylePrompt: "warmer and steadier",
+      advanced: {
+        behavior: {
+          initiative: 56,
+        },
+      },
+    };
+
+    const rows = buildPersonaEvolutionPatchDeltaRows(before, patch, 10);
+    expect(rows).toEqual([
+      {
+        field: "stylePrompt",
+        before: "soft and uncertain",
+        after: "warmer and steadier",
+      },
+      {
+        field: "advanced.behavior.initiative",
+        before: "42",
+        after: "56",
+      },
+    ]);
+  });
+
+  it("builds profile delta rows for undo-like state changes", () => {
+    const before: PersonaEvolutionProfile = {
+      advanced: {
+        emotion: {
+          baselineMood: "warm",
+          stability: 64,
+        },
+      },
+    };
+    const after: PersonaEvolutionProfile = {
+      advanced: {
+        emotion: {
+          baselineMood: "calm",
+          stability: 54,
+        },
+      },
+    };
+
+    const rows = buildPersonaEvolutionProfileDeltaRows(before, after, 10);
+    expect(rows).toEqual([
+      {
+        field: "advanced.emotion.baselineMood",
+        before: "warm",
+        after: "calm",
+      },
+      {
+        field: "advanced.emotion.stability",
+        before: "64",
+        after: "54",
+      },
+    ]);
   });
 });
