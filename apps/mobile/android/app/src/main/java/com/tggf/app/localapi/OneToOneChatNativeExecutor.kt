@@ -76,6 +76,7 @@ object OneToOneChatNativeExecutor {
         val maxDelayMs: Long,
         val firstRunAfterInactivityMs: Long,
         val maxActionsPerIteration: Int,
+        val runImmediately: Boolean,
     )
 
     private data class ControlMemoryCandidate(
@@ -345,7 +346,25 @@ object OneToOneChatNativeExecutor {
             chatChanged = true
         }
 
-        if (nowMs < nextRunAtMs) {
+        if (scope.runImmediately) {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "proactive_force_run",
+                level = "info",
+                message = "Proactive run was forced immediately by desired-state toggle",
+                details =
+                    JSONObject().apply {
+                        put("nowMs", nowMs)
+                        put("nextRunAtMs", nextRunAtMs)
+                        put("lastActivityAtMs", lastActivityMs)
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+        }
+
+        if (nowMs < nextRunAtMs && !scope.runImmediately) {
             if (chatChanged) {
                 chat.put("proactivityConfig", serializeChatProactivityConfig(updatedConfig))
                 chats.put(chatIndex, chat)
@@ -1090,6 +1109,13 @@ object OneToOneChatNativeExecutor {
             )
             return
         }
+        consumeProactiveRunImmediatelyFlag(
+            runtime = runtime,
+            jobs = jobs,
+            job = job,
+            scope = scope,
+            payload = payload,
+        )
 
         appendRuntimeEvent(
             runtime = runtime,
@@ -1253,7 +1279,69 @@ object OneToOneChatNativeExecutor {
             firstRunAfterInactivityMs = firstRunAfterInactivityMinutes * 60_000L,
             maxActionsPerIteration =
                 max(1, payload.optInt("maxActionsPerTick", ONE_TO_ONE_PROACTIVE_MAX_ACTIONS_PER_ITERATION)),
+            runImmediately = payload.optBoolean("runImmediately", false),
         )
+    }
+
+    private fun consumeProactiveRunImmediatelyFlag(
+        runtime: BackgroundRuntimeRepository,
+        jobs: BackgroundJobRepository,
+        job: BackgroundJobRecord,
+        scope: ParsedProactiveScope,
+        payload: JSONObject,
+    ) {
+        if (!scope.runImmediately) return
+        try {
+            val sanitizedJobPayload =
+                JSONObject(payload.toString()).apply {
+                    remove("runImmediately")
+                }
+            jobs.ensureRecurringJob(
+                id = job.id,
+                type = job.type,
+                payloadJson = sanitizedJobPayload.toString(),
+                runAtMs = job.runAtMs,
+                maxAttempts = job.maxAttempts,
+            )
+
+            val desiredState = runtime.getDesiredState(ONE_TO_ONE_PROACTIVE_JOB_TYPE, scope.chatId)
+            if (desiredState != null) {
+                val desiredPayload = parseJsonObject(desiredState.payloadJson)
+                if (desiredPayload.optBoolean("runImmediately", false)) {
+                    desiredPayload.remove("runImmediately")
+                    runtime.upsertDesiredState(
+                        taskType = desiredState.taskType,
+                        scopeId = desiredState.scopeId,
+                        enabled = desiredState.enabled,
+                        payloadJson = desiredPayload.toString(),
+                    )
+                }
+            }
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "proactive_force_run_consumed",
+                level = "info",
+                message = "Consumed one-time proactive runImmediately flag",
+                details = null,
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+        } catch (error: Exception) {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "proactive_force_run_consume_failed",
+                level = "warn",
+                message = "Failed to consume one-time proactive runImmediately flag",
+                details =
+                    JSONObject().apply {
+                        put("error", error.message ?: "unknown_error")
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+        }
     }
 
     private fun executeClaimedJob(

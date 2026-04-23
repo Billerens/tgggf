@@ -413,6 +413,27 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (!initialized || !isAndroidRuntime) return;
+    const shouldLockOnLaunch =
+      settings.securityPinEnabled &&
+      settings.securityLockOnBackground &&
+      settings.securityPinHash.trim().length > 0 &&
+      settings.securityPinSalt.trim().length > 0;
+    if (!shouldLockOnLaunch) return;
+    setIsUiLocked(true);
+    setUnlockPinInput("");
+    setUnlockPinError(null);
+    setUnlockInProgress(false);
+  }, [
+    initialized,
+    isAndroidRuntime,
+    settings.securityLockOnBackground,
+    settings.securityPinEnabled,
+    settings.securityPinHash,
+    settings.securityPinSalt,
+  ]);
+
+  useEffect(() => {
     if (!isAndroidRuntime) return;
     const shouldLockOnHide =
       settings.securityPinEnabled &&

@@ -183,12 +183,14 @@ object BackgroundRuntimeEngine {
                 val minDelayMinutes = max(1L, payload.optLong("minDelayMinutes", 15L))
                 val maxDelayMinutes = max(minDelayMinutes, payload.optLong("maxDelayMinutes", 45L))
                 val maxActionsPerTick = max(1L, payload.optLong("maxActionsPerTick", 3L))
+                val runImmediately = payload.optBoolean("runImmediately", false)
                 JSONObject().apply {
                     put("chatId", state.scopeId)
                     put("firstRunAfterInactivityMinutes", firstRunAfterInactivityMinutes)
                     put("minDelayMinutes", minDelayMinutes)
                     put("maxDelayMinutes", maxDelayMinutes)
                     put("maxActionsPerTick", maxActionsPerTick)
+                    put("runImmediately", runImmediately)
                 }.toString()
             }
             else -> payload.toString()

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { ChatSession } from "../../types";
+import type { ChatMessage, ChatSession } from "../../types";
 import { dbApi } from "../../db";
 import { pushSystemLog } from "../system-logs/systemLogStore";
 import {
@@ -32,6 +32,7 @@ const ONE_TO_ONE_DELTA_SINCE_ID_CHAT_KEY = "tg_gf_one_to_one_delta_since_id_chat
 const ONE_TO_ONE_DELTA_SINCE_ID_PROACTIVE_KEY =
   "tg_gf_one_to_one_delta_since_id_proactive_v1";
 const ONE_TO_ONE_DELTA_POLL_MS = 1400;
+const ONE_TO_ONE_EMPTY_DELTA_FALLBACK_SYNC_COOLDOWN_MS = 4_000;
 const ONE_TO_ONE_PROACTIVITY_DESIRED_STATE_VERSION = 1;
 
 export const ONE_TO_ONE_DELTA_TASK_POLL_CONFIGS = [
@@ -140,6 +141,24 @@ function resolveTerminalFailureMessage(payload: unknown) {
   return "Native 1:1 job failed";
 }
 
+export function shouldClearLoadingAfterFallbackSync(params: {
+  preferredChatId: string | null;
+  activeChatId: string | null;
+  messages: Array<Pick<ChatMessage, "chatId" | "role" | "nativeStatus">>;
+}) {
+  const targetChatId = params.preferredChatId ?? params.activeChatId;
+  if (!targetChatId) return false;
+  const chatMessages = params.messages.filter(
+    (message) => message.chatId === targetChatId,
+  );
+  if (chatMessages.length === 0) return false;
+  const hasPendingUserMessage = chatMessages.some(
+    (message) => message.role === "user" && message.nativeStatus === "pending",
+  );
+  if (hasPendingUserMessage) return false;
+  return chatMessages[chatMessages.length - 1]?.role === "assistant";
+}
+
 export function useOneToOneBackgroundWorker({
   chats,
   activeChat,
@@ -150,19 +169,10 @@ export function useOneToOneBackgroundWorker({
   const chatsRef = useEffectRef(chats);
   const pollTimerRef = useRef<number | null>(null);
   const pollInFlightRef = useRef<boolean>(false);
+  const lastEmptyDeltaFallbackSyncAtMsRef = useRef<number>(0);
   const desiredStateSyncSignatureRef = useRef<string>("");
   const proactiveEnabledIdsRef = useRef<Set<string>>(new Set());
-  const visibleRef = useRef<boolean>(typeof document === "undefined" ? true : !document.hidden);
-
-  useEffect(() => {
-    const onVisibilityChange = () => {
-      visibleRef.current = !document.hidden;
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, []);
+  const proactivityDesiredStateInitializedRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (pollTimerRef.current !== null) {
@@ -173,6 +183,8 @@ export function useOneToOneBackgroundWorker({
     if (!isAndroidRuntime) {
       proactiveEnabledIdsRef.current = new Set();
       desiredStateSyncSignatureRef.current = "";
+      proactivityDesiredStateInitializedRef.current = false;
+      lastEmptyDeltaFallbackSyncAtMsRef.current = 0;
       return;
     }
 
@@ -189,7 +201,58 @@ export function useOneToOneBackgroundWorker({
         taskType,
         includeGlobal: true,
       });
-      if (response.items.length === 0) return;
+      if (response.items.length === 0) {
+        const shouldFallbackSyncFromDb =
+          taskType === ONE_TO_ONE_CHAT_JOB_TYPE &&
+          useAppStore.getState().isLoading &&
+          Date.now() - lastEmptyDeltaFallbackSyncAtMsRef.current >=
+            ONE_TO_ONE_EMPTY_DELTA_FALLBACK_SYNC_COOLDOWN_MS;
+        if (!shouldFallbackSyncFromDb) return;
+        lastEmptyDeltaFallbackSyncAtMsRef.current = Date.now();
+        try {
+          await syncOneToOneStateFromDb(preferredChatId);
+          const stateAfterSync = useAppStore.getState();
+          if (
+            shouldClearLoadingAfterFallbackSync({
+              preferredChatId,
+              activeChatId: stateAfterSync.activeChatId,
+              messages: stateAfterSync.messages,
+            })
+          ) {
+            useAppStore.setState({ isLoading: false });
+            pushSystemLog({
+              level: "info",
+              eventType: "one_to_one.native_delta_empty_fallback_sync_resolved",
+              message:
+                "Resolved pending typing state via DB fallback sync after empty delta poll",
+              details: {
+                reason,
+                taskType,
+                chatId: preferredChatId,
+                sinceId,
+              },
+            });
+          }
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error
+              ? error.message
+              : "native_one_to_one_empty_delta_fallback_sync_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "one_to_one.native_delta_empty_fallback_sync_failed",
+            message: "Failed to run DB fallback sync after empty 1:1 delta poll",
+            details: {
+              reason,
+              taskType,
+              chatId: preferredChatId,
+              sinceId,
+              error: errorMessage,
+            },
+          });
+        }
+        return;
+      }
 
       const statePatches: Array<{
         scopeId: string;
@@ -199,6 +262,7 @@ export function useOneToOneBackgroundWorker({
       let maxAppliedId = sinceId;
       let shouldClearLoading = false;
       let terminalError: string | null = null;
+      let patchedMessagesCount = 0;
 
       for (const item of response.items) {
         if (item.id > maxAppliedId) {
@@ -209,6 +273,7 @@ export function useOneToOneBackgroundWorker({
             pendingAssetIds.add(assetId);
           }
           const patchedMessages = normalizeStoreRows(item.payload.stores, "messages");
+          patchedMessagesCount += patchedMessages.length;
           statePatches.push({
             scopeId: item.scopeId,
             stores: item.payload.stores,
@@ -258,10 +323,29 @@ export function useOneToOneBackgroundWorker({
         await applyOneToOneStatePatch(
           patch.stores,
           preferredChatId,
-          syncOneToOneStateFromDb,
         );
         if (!preferredChatId || patch.scopeId === preferredChatId) {
           shouldClearLoading = true;
+        }
+      }
+
+      if (statePatches.length > 0) {
+        try {
+          await syncOneToOneStateFromDb(preferredChatId);
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : "native_one_to_one_sync_from_db_failed";
+          pushSystemLog({
+            level: "warn",
+            eventType: "one_to_one.native_sync_from_db_failed",
+            message: "Failed to sync one-to-one state from DB after native patch apply",
+            details: {
+              reason,
+              taskType,
+              chatId: preferredChatId,
+              error: errorMessage,
+            },
+          });
         }
       }
 
@@ -271,6 +355,23 @@ export function useOneToOneBackgroundWorker({
           taskType,
         });
         setStoredSinceId(sinceIdStorageKey, maxAppliedId);
+      }
+
+      if (statePatches.length > 0) {
+        pushSystemLog({
+          level: "info",
+          eventType: "one_to_one.native_delta_applied",
+          message:
+            `Applied ${statePatches.length} state patch(es), messages=${patchedMessagesCount}`,
+          details: {
+            reason,
+            taskType,
+            sinceId,
+            ackedUpToId: maxAppliedId,
+            statePatchCount: statePatches.length,
+            patchedMessagesCount,
+          },
+        });
       }
 
       if (shouldClearLoading) {
@@ -287,7 +388,6 @@ export function useOneToOneBackgroundWorker({
 
     const pullOneToOneDeltaIntoWeb = async (reason: string) => {
       if (pollInFlightRef.current) return;
-      if (!visibleRef.current) return;
       pollInFlightRef.current = true;
       try {
         for (const config of ONE_TO_ONE_DELTA_TASK_POLL_CONFIGS) {
@@ -310,6 +410,7 @@ export function useOneToOneBackgroundWorker({
             error: errorMessage,
           },
         });
+        useAppStore.setState({ isLoading: false });
       } finally {
         pollInFlightRef.current = false;
       }
@@ -322,7 +423,11 @@ export function useOneToOneBackgroundWorker({
       const enabledIds = new Set(enabledChats.map((chat) => chat.id));
       const sortedEnabled = Array.from(enabledIds).sort((a, b) => a.localeCompare(b));
       const signature = sortedEnabled.join("|");
-      if (desiredStateSyncSignatureRef.current === signature) {
+      const isInitialSync = !proactivityDesiredStateInitializedRef.current;
+      if (
+        desiredStateSyncSignatureRef.current === signature &&
+        proactivityDesiredStateInitializedRef.current
+      ) {
         return;
       }
 
@@ -340,6 +445,7 @@ export function useOneToOneBackgroundWorker({
       }
 
       for (const chat of enabledChats) {
+        const runImmediately = !isInitialSync && !previousEnabled.has(chat.id);
         await syncOneToOneContextToNative({
           chatId: chat.id,
           personaId: chat.personaId,
@@ -355,6 +461,7 @@ export function useOneToOneBackgroundWorker({
             minDelayMinutes: ONE_TO_ONE_PROACTIVE_DEFAULT_MIN_DELAY_MINUTES,
             maxDelayMinutes: ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_DELAY_MINUTES,
             maxActionsPerTick: 3,
+            runImmediately,
           },
         }).catch((error) => {
           const errorMessage =
@@ -373,15 +480,18 @@ export function useOneToOneBackgroundWorker({
 
       proactiveEnabledIdsRef.current = enabledIds;
       desiredStateSyncSignatureRef.current = signature;
+      proactivityDesiredStateInitializedRef.current = true;
       await triggerBackgroundRuntime("one_to_one_proactivity_desired_state").catch(() => {});
     };
 
-    void syncProactivityDesiredState().finally(() => {
-      void pullOneToOneDeltaIntoWeb("effect_enter");
-      pollTimerRef.current = window.setInterval(() => {
-        if (!visibleRef.current) return;
-        void pullOneToOneDeltaIntoWeb("poll");
-      }, ONE_TO_ONE_DELTA_POLL_MS);
+    void pullOneToOneDeltaIntoWeb("effect_enter");
+
+    pollTimerRef.current = window.setInterval(() => {
+      void pullOneToOneDeltaIntoWeb("poll");
+    }, ONE_TO_ONE_DELTA_POLL_MS);
+
+    void syncProactivityDesiredState().then(() => {
+      void pullOneToOneDeltaIntoWeb("post_desired_state_sync");
     });
 
     return () => {

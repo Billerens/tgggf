@@ -2901,8 +2901,6 @@ select:focus,
   }
   .settings-log-devtools {
     grid-template-columns: 1fr;
-    min-height: auto;
-    max-height: none;
   }
   .settings-log-master {
     border-right: none;

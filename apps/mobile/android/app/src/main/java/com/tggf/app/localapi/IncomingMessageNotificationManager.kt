@@ -8,18 +8,26 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ShortcutManager
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.Shader
 import android.os.Build
 import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import androidx.core.content.LocusIdCompat
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
 import com.tggf.app.MainActivity
 import org.json.JSONArray
 import org.json.JSONObject
@@ -27,6 +35,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.min
 
 object IncomingMessageNotificationManager {
     private const val CHANNEL_ID = "incoming_messages"
@@ -135,7 +144,17 @@ object IncomingMessageNotificationManager {
         ensureNotificationChannel(appContext)
         val manager = NotificationManagerCompat.from(appContext)
         val timestampMs = System.currentTimeMillis()
-        val sender = Person.Builder().setName(senderName.ifBlank { "Персона" }).build()
+        val conversationNotificationId = stableNotificationId(conversationKey)
+        val shortcutId = buildConversationShortcutId(conversationKey)
+        val avatarBitmap =
+            resolveAvatarBitmap(repository, avatarRef, senderName)?.let { bitmap ->
+                toCircularNotificationAvatar(bitmap)
+            }
+        val senderBuilder = Person.Builder().setName(senderName.ifBlank { "Персона" })
+        avatarBitmap?.let { bitmap ->
+            senderBuilder.setIcon(IconCompat.createWithBitmap(bitmap))
+        }
+        val sender = senderBuilder.build()
         val me = Person.Builder().setName("Вы").build()
         val style =
             NotificationCompat.MessagingStyle(me)
@@ -161,6 +180,19 @@ object IncomingMessageNotificationManager {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
 
+        publishConversationShortcut(
+            context = appContext,
+            shortcutId = shortcutId,
+            title = conversationTitle.ifBlank { senderName.ifBlank { "Диалог" } },
+            sender = sender,
+            avatarBitmap = avatarBitmap,
+            launchIntent = Intent(launchIntent).apply {
+                removeExtra("messageId")
+            },
+        )
+
+        val shouldGroup = shouldUseGroupedStack(appContext, conversationNotificationId)
+
         val builder =
             NotificationCompat.Builder(appContext, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_notify_chat)
@@ -172,11 +204,17 @@ object IncomingMessageNotificationManager {
                 .setShowWhen(true)
                 .setWhen(timestampMs)
                 .setContentIntent(pendingIntent)
-                .setGroup(GROUP_KEY)
+                .setShortcutId(shortcutId)
+                .setLocusId(LocusIdCompat(shortcutId))
+                .addPerson(sender)
                 .setStyle(style)
 
-        resolveAvatarBitmap(repository, avatarRef, senderName)?.let { avatarBitmap ->
-            builder.setLargeIcon(avatarBitmap)
+        if (shouldGroup) {
+            builder.setGroup(GROUP_KEY)
+        }
+
+        avatarBitmap?.let { bitmap ->
+            builder.setLargeIcon(bitmap)
         }
 
         val summaryBuilder =
@@ -194,8 +232,12 @@ object IncomingMessageNotificationManager {
                 )
 
         try {
-            manager.notify(stableNotificationId(conversationKey), builder.build())
-            manager.notify(SUMMARY_NOTIFICATION_ID, summaryBuilder.build())
+            manager.notify(conversationNotificationId, builder.build())
+            if (shouldGroup) {
+                manager.notify(SUMMARY_NOTIFICATION_ID, summaryBuilder.build())
+            } else {
+                manager.cancel(SUMMARY_NOTIFICATION_ID)
+            }
         } catch (_: SecurityException) {
             // Permission could be revoked while the job is running.
         }
@@ -258,6 +300,64 @@ object IncomingMessageNotificationManager {
         val raw = key.hashCode()
         val normalized = if (raw == Int.MIN_VALUE) Int.MAX_VALUE else abs(raw)
         return if (normalized == 0) 1 else normalized
+    }
+
+    private fun buildConversationShortcutId(conversationKey: String): String {
+        return "incoming_${stableNotificationId(conversationKey)}"
+    }
+
+    private fun shouldUseGroupedStack(context: Context, currentConversationNotificationId: Int): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return true
+        return try {
+            val activeConversationNotificationIds = mutableSetOf<Int>()
+            val active = manager.activeNotifications
+            for (statusBarNotification in active) {
+                val id = statusBarNotification.id
+                if (id == SUMMARY_NOTIFICATION_ID) continue
+                val notification = statusBarNotification.notification ?: continue
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    if (notification.channelId != CHANNEL_ID) continue
+                }
+                activeConversationNotificationIds.add(id)
+            }
+            activeConversationNotificationIds.add(currentConversationNotificationId)
+            activeConversationNotificationIds.size > 1
+        } catch (_: SecurityException) {
+            true
+        } catch (_: Exception) {
+            true
+        }
+    }
+
+    private fun publishConversationShortcut(
+        context: Context,
+        shortcutId: String,
+        title: String,
+        sender: Person,
+        avatarBitmap: Bitmap?,
+        launchIntent: Intent,
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1) return
+        val shortcutManager = context.getSystemService(ShortcutManager::class.java) ?: return
+        if (!shortcutManager.isRequestPinShortcutSupported && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            // Dynamic shortcuts can still exist on API 25+, but some OEMs disable them.
+            // Skip silently; notification will still work without shortcut metadata.
+        }
+        runCatching {
+            val builder =
+                ShortcutInfoCompat.Builder(context, shortcutId)
+                    .setShortLabel(title.ifBlank { "Диалог" }.take(40))
+                    .setIntent(launchIntent)
+                    .setLongLived(true)
+                    .setPerson(sender)
+            avatarBitmap?.let { bitmap ->
+                builder.setIcon(IconCompat.createWithBitmap(bitmap))
+            }
+            ShortcutManagerCompat.pushDynamicShortcut(context, builder.build())
+        }
     }
 
     private fun isDuplicateMessage(context: Context, messageId: String): Boolean {
@@ -378,5 +478,37 @@ object IncomingMessageNotificationManager {
         val y = size / 2f - bounds.exactCenterY()
         canvas.drawText(letter, size / 2f, y, textPaint)
         return bitmap
+    }
+
+    private fun toCircularNotificationAvatar(source: Bitmap): Bitmap {
+        val safeWidth = if (source.width > 0) source.width else 1
+        val safeHeight = if (source.height > 0) source.height else 1
+        val shortSide = min(safeWidth, safeHeight)
+        if (shortSide <= 1) return source
+
+        val targetSize = 192
+        val scale = targetSize.toFloat() / shortSide.toFloat()
+        val dx = (targetSize - safeWidth * scale) / 2f
+        val dy = (targetSize - safeHeight * scale) / 2f
+
+        val shaderMatrix =
+            Matrix().apply {
+                setScale(scale, scale)
+                postTranslate(dx, dy)
+            }
+
+        val shader =
+            BitmapShader(source, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+                setLocalMatrix(shaderMatrix)
+            }
+
+        val output = Bitmap.createBitmap(targetSize, targetSize, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        val paint =
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                this.shader = shader
+            }
+        canvas.drawCircle(targetSize / 2f, targetSize / 2f, targetSize / 2f, paint)
+        return output
     }
 }

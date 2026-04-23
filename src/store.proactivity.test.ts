@@ -6,15 +6,18 @@ const {
   mockSyncOneToOneContextToNative,
   mockRequestNativeProactivitySimulation,
   mockTriggerBackgroundRuntime,
+  mockEnsureRecurringBackgroundJob,
   runtimeRef,
 } = vi.hoisted(() => ({
   mockDbApi: {
     saveChat: vi.fn(),
     getChats: vi.fn(),
+    saveMessage: vi.fn(),
   },
   mockSyncOneToOneContextToNative: vi.fn(),
   mockRequestNativeProactivitySimulation: vi.fn(),
   mockTriggerBackgroundRuntime: vi.fn(),
+  mockEnsureRecurringBackgroundJob: vi.fn(),
   runtimeRef: { mode: "android" as "android" | "web" },
 }));
 
@@ -36,6 +39,10 @@ vi.mock("./features/mobile/oneToOneNativeRuntime", () => ({
 
 vi.mock("./features/mobile/backgroundDelta", () => ({
   triggerBackgroundRuntime: mockTriggerBackgroundRuntime,
+}));
+
+vi.mock("./features/mobile/backgroundJobs", () => ({
+  ensureRecurringBackgroundJob: mockEnsureRecurringBackgroundJob,
 }));
 
 import { useAppStore } from "./store";
@@ -156,5 +163,63 @@ describe("store.testSimulateProactivity", () => {
     expect(result).toBeNull();
     expect(mockSyncOneToOneContextToNative).not.toHaveBeenCalled();
     expect(mockRequestNativeProactivitySimulation).not.toHaveBeenCalled();
+  });
+});
+
+describe("store.sendMessage (android)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    runtimeRef.mode = "android";
+    const baseChat = createBaseChat();
+    useAppStore.setState({
+      personas: [
+        {
+          id: "persona-1",
+          name: "Persona",
+        } as any,
+      ],
+      chats: [baseChat],
+      messages: [],
+      activePersonaId: "persona-1",
+      activeChatId: baseChat.id,
+      isLoading: false,
+      error: null,
+    });
+    mockDbApi.getChats.mockResolvedValue([baseChat]);
+  });
+
+  it("does not overwrite freshly synced assistant messages with stale nextMessages", async () => {
+    mockTriggerBackgroundRuntime.mockImplementationOnce(async () => {
+      const current = useAppStore.getState().messages;
+      const currentChats = useAppStore.getState().chats;
+      useAppStore.setState({
+        messages: [
+          ...current,
+          {
+            id: "assistant-1",
+            chatId: "chat-1",
+            role: "assistant",
+            content: "native reply",
+            createdAt: "2026-01-01T00:00:01.000Z",
+          } as any,
+        ],
+        chats: currentChats.map((chat) =>
+          chat.id === "chat-1"
+            ? ({
+                ...chat,
+                conversationSummary: "summary from native delta",
+              } as any)
+            : chat,
+        ),
+      });
+    });
+
+    await useAppStore.getState().sendMessage("hello");
+
+    const messages = useAppStore.getState().messages;
+    const chat = useAppStore.getState().chats.find((item) => item.id === "chat-1");
+    expect(messages.some((message) => message.role === "assistant")).toBe(true);
+    expect(messages.some((message) => message.role === "user")).toBe(true);
+    expect((chat as any)?.conversationSummary).toBe("summary from native delta");
   });
 });
