@@ -138,6 +138,35 @@ function toUniqueIds(values: string[]) {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+function sanitizeSettingsSecurityPinFields(settings: AppSettings): AppSettings {
+  return {
+    ...settings,
+    securityPinEnabled: false,
+    securityPinHash: "",
+    securityPinSalt: "",
+    securityLockOnBackground: false,
+  };
+}
+
+function sanitizeRawSnapshotSettingsEntries(rows: unknown[]) {
+  return rows.map((row) => {
+    const typedRow =
+      row && typeof row === "object" ? (row as Record<string, unknown>) : null;
+    if (!typedRow) return row;
+    if ("value" in typedRow && typedRow.value && typeof typedRow.value === "object") {
+      return {
+        ...typedRow,
+        value: sanitizeSettingsSecurityPinFields(
+          typedRow.value as unknown as AppSettings,
+        ) as unknown,
+      };
+    }
+    return sanitizeSettingsSecurityPinFields(
+      typedRow as unknown as AppSettings,
+    ) as unknown;
+  });
+}
+
 function parseImageAssetId(value: string) {
   const normalized = value.trim();
   if (!normalized.startsWith("idb://")) return "";
@@ -588,7 +617,10 @@ export async function buildBackupPayload({
   }
 
   const data: BackupDataBundle = {
-    settings: includeSettings ? settings : undefined,
+    settings:
+      includeSettings && settings
+        ? sanitizeSettingsSecurityPinFields(settings)
+        : undefined,
     personas: uniqueByKey(personas, (persona) => persona.id),
     chats: uniqueByKey(chats, (chat) => chat.id),
     diaryEntries: uniqueByKey(diaryEntries, (entry) => entry.id),
@@ -664,6 +696,11 @@ export async function exportRawBackupFile(
   format: Extract<BackupExportFormat, "raw_json" | "raw_zip">,
 ): Promise<PreparedBackupFile> {
   const stores = await dbApi.exportRawSnapshot();
+  if (Array.isArray(stores.settings)) {
+    stores.settings = sanitizeRawSnapshotSettingsEntries(
+      stores.settings,
+    ) as typeof stores.settings;
+  }
   const payload: RawSnapshotBackupPayload = {
     kind: "idb_raw_snapshot",
     schemaVersion: RAW_BACKUP_SCHEMA_VERSION,
@@ -730,6 +767,9 @@ export async function parseBackupFile(file: File): Promise<ParsedBackupPayload> 
     for (const [storeName, value] of Object.entries(storesRaw)) {
       stores[storeName] = Array.isArray(value) ? value : [];
     }
+    if (Array.isArray(stores.settings)) {
+      stores.settings = sanitizeRawSnapshotSettingsEntries(stores.settings);
+    }
     return {
       kind: "idb_raw_snapshot",
       schemaVersion: RAW_BACKUP_SCHEMA_VERSION,
@@ -755,7 +795,7 @@ export async function parseBackupFile(file: File): Promise<ParsedBackupPayload> 
 
   const settings =
     dataObject.settings && typeof dataObject.settings === "object"
-      ? (dataObject.settings as AppSettings)
+      ? sanitizeSettingsSecurityPinFields(dataObject.settings as AppSettings)
       : undefined;
 
   const normalizedData: BackupDataBundle = {

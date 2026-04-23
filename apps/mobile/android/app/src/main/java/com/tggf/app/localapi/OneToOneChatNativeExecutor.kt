@@ -504,7 +504,11 @@ object OneToOneChatNativeExecutor {
             )
 
             normalizedActions.forEach { action ->
-                val actionType = normalizeProactiveActionType(action.optString("type", action.optString("action", "")))
+                val executionAction = prepareProactiveActionForExecution(action, plan?.reason)
+                val actionType =
+                    normalizeProactiveActionType(
+                        executionAction.optString("type", executionAction.optString("action", "")),
+                    )
                 if (actionType == "reflection") {
                     if (remainingDiaryEntriesBudget <= 0) {
                         appendRuntimeEvent(
@@ -526,7 +530,7 @@ object OneToOneChatNativeExecutor {
                     }
                     val focusTags =
                         selectReflectionFocusTags(
-                            action = action,
+                            action = executionAction,
                             existingTags = existingTags,
                             maxTags = REFLECTION_FOCUS_TAGS_LIMIT,
                         )
@@ -541,7 +545,7 @@ object OneToOneChatNativeExecutor {
                         NativeLlmClient.requestOneToOneProactiveReflection(
                             settings = settings,
                             persona = effectivePersona,
-                            action = action,
+                            action = executionAction,
                             recentMessages = recentMessages,
                             runtimeState = existingState,
                             memoryCard = memoryCard,
@@ -601,7 +605,7 @@ object OneToOneChatNativeExecutor {
                     NativeLlmClient.requestOneToOneProactiveSpeech(
                         settings = settings,
                         persona = effectivePersona,
-                        action = action,
+                        action = executionAction,
                         recentMessages = recentMessages,
                         runtimeState = existingState,
                         memoryCard = memoryCard,
@@ -785,6 +789,39 @@ object OneToOneChatNativeExecutor {
         return JSONArray().apply {
             selected.forEach { row -> put(JSONObject(row.toString())) }
         }
+    }
+
+    private fun extractProactiveActionSuggestedContent(action: JSONObject): String {
+        val directKeys = listOf("content", "text", "message", "draft", "suggestedContent", "suggestedText")
+        for (key in directKeys) {
+            val value = action.optString(key, "").trim()
+            if (value.isNotBlank()) return value
+        }
+        val nestedKeys = listOf("payload", "data", "meta")
+        for (nestedKey in nestedKeys) {
+            val nested = action.optJSONObject(nestedKey) ?: continue
+            for (key in directKeys) {
+                val value = nested.optString(key, "").trim()
+                if (value.isNotBlank()) return value
+            }
+        }
+        return ""
+    }
+
+    private fun prepareProactiveActionForExecution(
+        action: JSONObject,
+        fallbackReason: String?,
+    ): JSONObject {
+        val merged = JSONObject(action.toString())
+        val normalizedFallbackReason = fallbackReason?.trim().orEmpty()
+        if (merged.optString("reason", "").trim().isBlank() && normalizedFallbackReason.isNotBlank()) {
+            merged.put("reason", normalizedFallbackReason)
+        }
+        val suggestedContent = extractProactiveActionSuggestedContent(merged)
+        if (suggestedContent.isNotBlank() && merged.optString("content", "").trim().isBlank()) {
+            merged.put("content", suggestedContent)
+        }
+        return merged
     }
 
     private fun normalizeProactiveActionType(raw: String): String {
@@ -2534,15 +2571,18 @@ object OneToOneChatNativeExecutor {
 
             if (shouldRunActions) {
                 normalizedActions.forEachIndexed { index, action ->
+                    val executionAction = prepareProactiveActionForExecution(action, plan.reason)
                     val actionType =
-                        normalizeProactiveActionType(action.optString("type", action.optString("action", "")))
+                        normalizeProactiveActionType(
+                            executionAction.optString("type", executionAction.optString("action", "")),
+                        )
                     val stageId = "action_${index + 1}"
                     val stageTitle = "Действие #${index + 1} ($actionType)"
 
                     if (actionType == "reflection") {
                         val focusTags =
                             selectReflectionFocusTags(
-                                action = action,
+                                action = executionAction,
                                 existingTags = existingTags,
                                 maxTags = REFLECTION_FOCUS_TAGS_LIMIT,
                             )
@@ -2557,7 +2597,7 @@ object OneToOneChatNativeExecutor {
                             NativeLlmClient.requestOneToOneProactiveReflection(
                                 settings = settings,
                                 persona = effectivePersona,
-                                action = action,
+                                action = executionAction,
                                 recentMessages = recentMessages,
                                 runtimeState = existingState,
                                 memoryCard = memoryCard,
@@ -2577,7 +2617,7 @@ object OneToOneChatNativeExecutor {
                                 details =
                                     JSONObject().apply {
                                         put("type", actionType)
-                                        put("action", JSONObject(action.toString()))
+                                        put("action", JSONObject(executionAction.toString()))
                                         put("error", "reflection_response_empty")
                                         put("focusTags", JSONArray(focusTags))
                                         put("relatedDiaryEntriesCount", relatedDiaryEntries.length())
@@ -2589,7 +2629,7 @@ object OneToOneChatNativeExecutor {
                         val reflectionDetails =
                             JSONObject().apply {
                                 put("type", actionType)
-                                put("action", JSONObject(action.toString()))
+                                put("action", JSONObject(executionAction.toString()))
                                 put("focusTags", JSONArray(focusTags))
                                 put("relatedDiaryEntriesCount", relatedDiaryEntries.length())
                                 put("shouldWriteDiary", reflection.shouldWriteDiary)
@@ -2652,7 +2692,7 @@ object OneToOneChatNativeExecutor {
                         NativeLlmClient.requestOneToOneProactiveSpeech(
                             settings = settings,
                             persona = effectivePersona,
-                            action = action,
+                            action = executionAction,
                             recentMessages = recentMessages,
                             runtimeState = existingState,
                             memoryCard = memoryCard,
@@ -2668,7 +2708,7 @@ object OneToOneChatNativeExecutor {
                             details =
                                 JSONObject().apply {
                                     put("type", actionType)
-                                    put("action", JSONObject(action.toString()))
+                                    put("action", JSONObject(executionAction.toString()))
                                     put("error", "speech_response_empty")
                                 },
                         )
@@ -2712,7 +2752,7 @@ object OneToOneChatNativeExecutor {
                         details =
                             JSONObject().apply {
                                 put("type", actionType)
-                                put("action", JSONObject(action.toString()))
+                                put("action", JSONObject(executionAction.toString()))
                                 put("assistantMessage", JSONObject(assistantMessage.toString()))
                                 put("requestedImageCount", requestedImageCount)
                                 if (requestedImageCount > 0 || actionType == "photo") {

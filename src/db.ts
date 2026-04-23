@@ -768,6 +768,17 @@ function normalizeSettings(
   if (!allowedGenders.includes(merged.userGender)) {
     merged.userGender = DEFAULT_SETTINGS.userGender;
   }
+  merged.securityPinHash = toTrimmedString(merged.securityPinHash);
+  merged.securityPinSalt = toTrimmedString(merged.securityPinSalt);
+  merged.securityPinEnabled = Boolean(merged.securityPinEnabled);
+  merged.securityLockOnBackground = Boolean(merged.securityLockOnBackground);
+  const hasPinMaterial =
+    merged.securityPinHash.length > 0 && merged.securityPinSalt.length > 0;
+  if (!merged.securityPinEnabled || !hasPinMaterial) {
+    merged.securityPinEnabled = false;
+    merged.securityPinHash = "";
+    merged.securityPinSalt = "";
+  }
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
   if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelAll)) {
@@ -1079,6 +1090,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   userName: "Пользователь",
   userGender: "unspecified",
+  securityPinEnabled: false,
+  securityPinHash: "",
+  securityPinSalt: "",
+  securityLockOnBackground: true,
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
   enhanceDetailLevelAll: "medium",

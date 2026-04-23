@@ -18,7 +18,6 @@ import androidx.core.content.ContextCompat
 import com.tggf.app.MainActivity
 import com.tggf.app.R
 import org.json.JSONObject
-import kotlin.math.max
 
 class ForegroundSyncService : Service() {
     companion object {
@@ -526,45 +525,26 @@ class ForegroundSyncService : Service() {
 
     private fun buildNotificationStatusSummary(nowMs: Long, metrics: NotificationMetrics): String {
         val snapshots = getWorkerStatusSnapshots()
-            if (snapshots.isEmpty()) {
-                if (
-                    metrics.totalPendingCount == 0 &&
-                        metrics.totalLeasedCount == 0 &&
-                        metrics.topicDoneCount == 0 &&
-                        metrics.groupDoneCount == 0 &&
-                        metrics.oneToOneDoneCount == 0
-                ) {
-                    return ""
-                }
-                return "GEN d${metrics.topicDoneCount}/e${metrics.topicFailedCount} | " +
-                    "GRP d${metrics.groupDoneCount}/e${metrics.groupFailedCount} | " +
-                    "1:1 d${metrics.oneToOneDoneCount}/e${metrics.oneToOneFailedCount} | " +
-                    "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
-            }
-        val topicLine = formatWorkerSummaryLine(
-            label = "GEN",
+        val topicState = formatWorkerState(
             snapshot = snapshots.find { it.worker == WORKER_TOPIC_GENERATION },
             nowMs = nowMs,
-            doneCount = metrics.topicDoneCount,
-            failedCount = metrics.topicFailedCount,
         )
-            val groupLine = formatWorkerSummaryLine(
-                label = "GRP",
-                snapshot = snapshots.find { it.worker == WORKER_GROUP_ITERATION },
-                nowMs = nowMs,
-                doneCount = metrics.groupDoneCount,
-                failedCount = metrics.groupFailedCount,
-            )
-            val oneToOneLine = formatWorkerSummaryLine(
-                label = "1:1",
-                snapshot = snapshots.find { it.worker == WORKER_ONE_TO_ONE_CHAT },
-                nowMs = nowMs,
-                doneCount = metrics.oneToOneDoneCount,
-                failedCount = metrics.oneToOneFailedCount,
-            )
-            val queueLine = "Q p${metrics.totalPendingCount} l${metrics.totalLeasedCount}"
-            return listOf(topicLine, groupLine, oneToOneLine, queueLine).joinToString(" | ").trim()
-        }
+        val groupState = formatWorkerState(
+            snapshot = snapshots.find { it.worker == WORKER_GROUP_ITERATION },
+            nowMs = nowMs,
+        )
+        val oneToOneState = formatWorkerState(
+            snapshot = snapshots.find { it.worker == WORKER_ONE_TO_ONE_CHAT },
+            nowMs = nowMs,
+        )
+        val queueTotal = metrics.totalPendingCount + metrics.totalLeasedCount
+        return listOf(
+            "🎨 Генератор: $topicState (${metrics.topicDoneCount} ок, ${metrics.topicFailedCount} err)",
+            "👥 Группы: $groupState (${metrics.groupDoneCount} ок, ${metrics.groupFailedCount} err)",
+            "💬 1:1: $oneToOneState (${metrics.oneToOneDoneCount} ок, ${metrics.oneToOneFailedCount} err)",
+            "⏳ Очередь: $queueTotal",
+        ).joinToString(" • ")
+    }
 
     private fun buildNotificationStatusDetails(nowMs: Long, metrics: NotificationMetrics): String {
         val snapshots = getWorkerStatusSnapshots()
@@ -573,7 +553,8 @@ class ForegroundSyncService : Service() {
         val oneToOneSnapshot = snapshots.find { it.worker == WORKER_ONE_TO_ONE_CHAT }
         val topicLine =
             buildWorkerDetailsLine(
-                label = "Generator",
+                icon = "🎨",
+                label = "Генератор",
                 snapshot = topicSnapshot,
                 nowMs = nowMs,
                 doneCount = metrics.topicDoneCount,
@@ -584,7 +565,8 @@ class ForegroundSyncService : Service() {
             )
         val groupLine =
             buildWorkerDetailsLine(
-                label = "Group Chat",
+                icon = "👥",
+                label = "Группы",
                 snapshot = groupSnapshot,
                 nowMs = nowMs,
                 doneCount = metrics.groupDoneCount,
@@ -595,7 +577,8 @@ class ForegroundSyncService : Service() {
             )
         val oneToOneLine =
             buildWorkerDetailsLine(
-                label = "1:1 Chat",
+                icon = "💬",
+                label = "1:1 чат",
                 snapshot = oneToOneSnapshot,
                 nowMs = nowMs,
                 doneCount = metrics.oneToOneDoneCount,
@@ -605,25 +588,12 @@ class ForegroundSyncService : Service() {
                 leasedCount = metrics.oneToOneLeasedCount,
             )
         val totalsLine =
-            "Queue totals: pending=${metrics.totalPendingCount}, leased=${metrics.totalLeasedCount}"
+            "⏳ Очередь — ожидают: ${metrics.totalPendingCount}, выполняются: ${metrics.totalLeasedCount}"
         return listOf(topicLine, groupLine, oneToOneLine, totalsLine).joinToString("\n")
     }
 
-    private fun formatWorkerSummaryLine(
-        label: String,
-        snapshot: WorkerStatusSnapshot?,
-        nowMs: Long,
-        doneCount: Int,
-        failedCount: Int,
-    ): String {
-        if (snapshot == null) return "$label n/a d$doneCount/e$failedCount"
-        val ageSec = max(0L, (nowMs - snapshot.heartbeatAtMs) / 1_000L)
-        val stale = isWorkerSnapshotStale(snapshot, nowMs)
-        val state = formatWorkerState(snapshot, stale)
-        return "$label $state ${ageSec}s d$doneCount/e$failedCount"
-    }
-
     private fun buildWorkerDetailsLine(
+        icon: String,
         label: String,
         snapshot: WorkerStatusSnapshot?,
         nowMs: Long,
@@ -634,27 +604,22 @@ class ForegroundSyncService : Service() {
         leasedCount: Int,
     ): String {
         if (snapshot == null) {
-            return "$label: state=n/a, done=$doneCount, failed=$failedCount, enabled=$enabledCount, " +
-                "queue(p=$pendingCount,l=$leasedCount)"
+            return "$icon $label — нет данных. Выполнено: $doneCount, ошибок: $failedCount, " +
+                "активных: $enabledCount, очередь: $pendingCount/${leasedCount}"
         }
-        val ageSec = max(0L, (nowMs - snapshot.heartbeatAtMs) / 1_000L)
-        val stale = isWorkerSnapshotStale(snapshot, nowMs)
-        val staleTag = if (stale) "stale" else "live"
-        val state = formatWorkerState(snapshot, stale)
-        val scope = snapshot.scopeId.ifBlank { "-" }
-        val detail = snapshot.detail.ifBlank { "-" }
-        val error = snapshot.lastError.ifBlank { "-" }
-        return "$label: state=$state [$staleTag ${ageSec}s], done=$doneCount, failed=$failedCount, " +
-            "enabled=$enabledCount, queue(p=$pendingCount,l=$leasedCount), scope=$scope, detail=$detail, error=$error"
+        val state = formatWorkerState(snapshot, nowMs)
+        return "$icon $label — $state. Выполнено: $doneCount, ошибок: $failedCount, " +
+            "активных: $enabledCount, очередь: $pendingCount/${leasedCount}"
     }
 
-    private fun formatWorkerState(snapshot: WorkerStatusSnapshot, stale: Boolean): String {
-        if (stale) return "stale"
+    private fun formatWorkerState(snapshot: WorkerStatusSnapshot?, nowMs: Long): String {
+        if (snapshot == null) return "нет данных"
+        if (isWorkerSnapshotStale(snapshot, nowMs)) return "нет сигнала"
         return when (snapshot.state.lowercase()) {
-            "running" -> "running"
-            "blocked" -> "blocked"
-            "error" -> "error"
-            "idle" -> "idle"
+            "running" -> "активно"
+            "blocked" -> "пауза"
+            "error" -> "ошибка"
+            "idle" -> "ожидание"
             else -> snapshot.state
         }
     }

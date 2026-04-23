@@ -725,6 +725,10 @@ object NativeLlmClient {
         val actionType = action.optString("type", action.optString("action", "")).trim().lowercase()
         val actionIntent = action.optString("intent", "").trim()
         val actionReason = action.optString("reason", "").trim()
+        val actionSuggestedContent =
+            extractProactiveActionSuggestedContent(action).let { value ->
+                if (value.length <= 1800) value else "${value.take(1799).trimEnd()}…"
+            }
         val systemPrompt =
             buildOneToOneProactiveSpeechSystemPrompt(
                 settings = settings,
@@ -740,6 +744,8 @@ object NativeLlmClient {
                 appendLine("Action type: $actionType")
                 appendLine("Action intent: ${if (actionIntent.isBlank()) "-" else actionIntent}")
                 appendLine("Action reason: ${if (actionReason.isBlank()) "-" else actionReason}")
+                appendLine("Planner suggested content draft:")
+                appendLine(if (actionSuggestedContent.isBlank()) "-" else actionSuggestedContent)
                 appendLine(userLocalTimeContext)
                 appendLine()
                 appendLine("Recent messages context:")
@@ -855,6 +861,10 @@ object NativeLlmClient {
                 .take(3)
         val actionIntent = action.optString("intent", "").trim()
         val actionReason = action.optString("reason", "").trim()
+        val actionSuggestedContent =
+            extractProactiveActionSuggestedContent(action).let { value ->
+                if (value.length <= 1400) value else "${value.take(1399).trimEnd()}…"
+            }
         val influencePromptContext = formatInfluenceProfileForPrompt(runtimeState)
         val memoryContext = formatMemoryContextWithUsage(collectMemoriesFromCard(memoryCard))
         val relatedDiaryContext = formatRecentDiaryEntriesForPrompt(relatedDiaryEntries, 8)
@@ -877,6 +887,7 @@ object NativeLlmClient {
                         "Дополнительно верни reason (коротко, почему писать/не писать дневник сейчас).",
                         "Если переданы relatedDiaryEntriesByFocusTags, используй их как память предыдущих размышлений по теме.",
                         "Новая запись должна развивать или уточнять предыдущие размышления по focusTags, а не дублировать их дословно.",
+                        "Если передан Planner suggested content draft, используй его как контекст направления мысли, но не копируй дословно.",
                     ),
                 extraUserSections =
                     listOf(
@@ -886,6 +897,8 @@ object NativeLlmClient {
                                 appendLine("reason: ${if (actionReason.isBlank()) "-" else actionReason}")
                                 appendLine(userLocalTimeContext)
                             }.trim(),
+                        "Planner suggested content draft" to
+                            if (actionSuggestedContent.isBlank()) "-" else actionSuggestedContent,
                         "Runtime hints" to influencePromptContext,
                         "Memory context" to memoryContext,
                         "focusTags" to JSONArray(normalizedFocusTags).toString(),
@@ -2956,12 +2969,44 @@ object NativeLlmClient {
                 "Сохраняй естественный тон и непротиворечивость с недавним контекстом.",
                 "Используй локальное время пользователя как контекст уместности реплики.",
                 "Нормальный выбор для message: короткий дружелюбный check-in без перегруза и без «больших» тем, напоминание о чем-то или исполнение чего-то запланированного (а может - и внезапного, неожиданного).",
+                "Если в action передан Planner suggested content draft, используй его как опорный черновик: сохраняй намерение и смысл, адаптируя формулировки под голос персонажа.",
                 "В КАЖДОМ ответе обязательно заполняй persona_control (или personaControl).",
                 "Для state_delta используй только дельты и соблюдай лимиты из базового контракта.",
                 "Для evolution используй реалистичные небольшие патчи или shouldEvolve=false при отсутствии сигнала.",
                 "",
             ) + actionStrictBlock
         return "$basePrompt\n\n${proactiveOverlay.joinToString("\n")}"
+    }
+
+    private fun extractProactiveActionSuggestedContent(action: JSONObject): String {
+        val direct =
+            readFirstNonBlankEntry(
+                action,
+                "content",
+                "text",
+                "message",
+                "draft",
+                "suggestedContent",
+                "suggestedText",
+            )?.value?.trim().orEmpty()
+        if (direct.isNotBlank()) return direct
+
+        val nestedKeys = listOf("payload", "data", "meta")
+        for (key in nestedKeys) {
+            val nested = parseOptionalJsonObjectFromAny(action.opt(key)) ?: continue
+            val nestedValue =
+                readFirstNonBlankEntry(
+                    nested,
+                    "content",
+                    "text",
+                    "message",
+                    "draft",
+                    "suggestedContent",
+                    "suggestedText",
+                )?.value?.trim().orEmpty()
+            if (nestedValue.isNotBlank()) return nestedValue
+        }
+        return ""
     }
 
     private fun buildOneToOneUserPrompt(

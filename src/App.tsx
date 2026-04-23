@@ -76,7 +76,8 @@ import {
   useSystemLogStore,
 } from "./features/system-logs/systemLogStore";
 import { getRuntimeContext } from "./platform/runtimeContext";
-import type { ChatSession, LlmProvider } from "./types";
+import type { AppSettings, ChatSession, LlmProvider } from "./types";
+import { verifySecurityPin } from "./features/security/pinSecurity";
 
 type ToolCapabilityMatrixStatus =
   | "idle"
@@ -317,6 +318,10 @@ export default function App() {
   const [messageInput, setMessageInput] = useState("");
   const [groupMessageInput, setGroupMessageInput] = useState("");
   const [settingsDraft, setSettingsDraft] = useState(settings);
+  const [isUiLocked, setIsUiLocked] = useState(false);
+  const [unlockPinInput, setUnlockPinInput] = useState("");
+  const [unlockPinError, setUnlockPinError] = useState<string | null>(null);
+  const [unlockInProgress, setUnlockInProgress] = useState(false);
   const [toolCapabilityByTask, setToolCapabilityByTask] = useState<
     Partial<Record<ModelRoutingTask, ToolCapabilityRowState>>
   >({});
@@ -381,6 +386,56 @@ export default function App() {
   useEffect(() => {
     setSettingsDraft(settings);
   }, [settings]);
+
+  useEffect(() => {
+    const pinActive =
+      isAndroidRuntime &&
+      settings.securityPinEnabled &&
+      settings.securityLockOnBackground &&
+      settings.securityPinHash.trim().length > 0 &&
+      settings.securityPinSalt.trim().length > 0;
+    if (!pinActive) {
+      setIsUiLocked(false);
+      setUnlockPinInput("");
+      setUnlockPinError(null);
+      setUnlockInProgress(false);
+    }
+  }, [
+    isAndroidRuntime,
+    settings.securityLockOnBackground,
+    settings.securityPinEnabled,
+    settings.securityPinHash,
+    settings.securityPinSalt,
+  ]);
+
+  useEffect(() => {
+    if (!isAndroidRuntime) return;
+    const shouldLockOnHide =
+      settings.securityPinEnabled &&
+      settings.securityLockOnBackground &&
+      settings.securityPinHash.trim().length > 0 &&
+      settings.securityPinSalt.trim().length > 0;
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        if (shouldLockOnHide) {
+          setIsUiLocked(true);
+          setUnlockPinInput("");
+          setUnlockPinError(null);
+          setUnlockInProgress(false);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [
+    isAndroidRuntime,
+    settings.securityLockOnBackground,
+    settings.securityPinEnabled,
+    settings.securityPinHash,
+    settings.securityPinSalt,
+  ]);
 
   useEffect(() => {
     if (!isAndroidRuntime) return;
@@ -727,10 +782,41 @@ export default function App() {
     setShowPersonaModal(false);
   };
 
-  const onSettingsSubmit = async (event: FormEvent) => {
+  const onSettingsSubmit = async (
+    event: FormEvent,
+    nextSettings?: AppSettings,
+  ) => {
     event.preventDefault();
-    await saveSettings(settingsDraft);
+    const settingsToSave = nextSettings ?? settingsDraft;
+    await saveSettings(settingsToSave);
     setShowSettingsModal(false);
+  };
+
+  const onUnlockUiSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!isUiLocked || unlockInProgress) return;
+    setUnlockPinError(null);
+    setUnlockInProgress(true);
+    try {
+      const canUnlock = await verifySecurityPin(
+        unlockPinInput,
+        settings.securityPinSalt,
+        settings.securityPinHash,
+      );
+      if (!canUnlock) {
+        setUnlockPinError("Неверный PIN-код.");
+        return;
+      }
+      setIsUiLocked(false);
+      setUnlockPinInput("");
+      setUnlockPinError(null);
+    } catch (error) {
+      setUnlockPinError(
+        error instanceof Error ? error.message : "Не удалось проверить PIN.",
+      );
+    } finally {
+      setUnlockInProgress(false);
+    }
   };
 
   const onMessageSubmit = async (event: FormEvent) => {
@@ -1579,6 +1665,34 @@ export default function App() {
           }}
         />
       </div>
+      {isUiLocked ? (
+        <div className="security-lock-overlay" role="dialog" aria-modal="true">
+          <div className="security-lock-panel">
+            <h3>Приложение заблокировано</h3>
+            <p>Введите PIN-код, чтобы продолжить.</p>
+            <form onSubmit={(event) => void onUnlockUiSubmit(event)}>
+              <input
+                type="password"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="current-password"
+                value={unlockPinInput}
+                onChange={(event) =>
+                  setUnlockPinInput(event.target.value.replace(/\D+/g, ""))
+                }
+                placeholder="PIN 4-8 цифр"
+                disabled={unlockInProgress}
+              />
+              {unlockPinError ? (
+                <small className="security-lock-error">{unlockPinError}</small>
+              ) : null}
+              <button type="submit" disabled={unlockInProgress}>
+                {unlockInProgress ? "Проверяем..." : "Разблокировать"}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

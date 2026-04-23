@@ -611,6 +611,10 @@ export interface AppSettings {
   comfyAuth: EndpointAuthConfig;
   userName: string;
   userGender: UserGender;
+  securityPinEnabled: boolean;
+  securityPinHash: string;
+  securityPinSalt: string;
+  securityLockOnBackground: boolean;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
   enhanceDetailLevelAll: EnhanceDetailLevel;
