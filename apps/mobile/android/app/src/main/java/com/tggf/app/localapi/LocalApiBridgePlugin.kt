@@ -2003,6 +2003,36 @@ class LocalApiBridgePlugin : Plugin() {
             return
         }
 
+        if (method == "PUT" && path == "/api/background-runtime/proactivity/simulate") {
+            val body = call.getObject("body")
+            val chatId = body?.optString("chatId", "")?.trim().orEmpty()
+            if (chatId.isEmpty()) {
+                respond(
+                    call,
+                    400,
+                    JSObject().apply {
+                        put("ok", false)
+                        put("error", "chatId is required")
+                    },
+                )
+                return
+            }
+            val report =
+                OneToOneChatNativeExecutor.simulateProactivityFlow(
+                    repository = repository,
+                    chatId = chatId,
+                )
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    put("report", report)
+                },
+            )
+            return
+        }
+
         if (method == "PUT" && path == "/api/background-runtime/context") {
             val body = call.getObject("body")
             if (body == null) {

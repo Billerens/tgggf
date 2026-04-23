@@ -1878,6 +1878,78 @@ button.danger:hover:not(:disabled) {
   align-items: center;
   gap: 10px;
 }
+.proactivity-sim-actions {
+  margin-top: 10px;
+}
+.proactivity-simulation-report {
+  margin-top: 10px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.02);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+.proactivity-simulation-report p {
+  margin: 0;
+  font-size: 12px;
+}
+.proactivity-simulation-stages {
+  display: grid;
+  gap: 8px;
+}
+.proactivity-simulation-stage {
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+}
+.proactivity-simulation-stage-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.proactivity-simulation-stage-head strong {
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.proactivity-simulation-badge {
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.proactivity-simulation-badge.ok {
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.45);
+}
+.proactivity-simulation-badge.skip {
+  color: #93c5fd;
+  border-color: rgba(147, 197, 253, 0.45);
+}
+.proactivity-simulation-badge.warn {
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.45);
+}
+.proactivity-simulation-badge.error {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.45);
+}
+.proactivity-simulation-json {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+  background: rgba(15, 23, 42, 0.35);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-x: auto;
+  white-space: pre;
+}
 .diary-toggle-card .status-lock-hint {
   margin-top: 8px;
   margin-bottom: 0;

@@ -11,6 +11,7 @@ import kotlin.math.max
 object BackgroundRuntimeEngine {
     private const val TASK_TOPIC_GENERATION = "topic_generation"
     private const val TASK_GROUP_ITERATION = "group_iteration"
+    private const val TASK_ONE_TO_ONE_PROACTIVE = "one_to_one_proactive"
     private const val DEFAULT_TOPIC_DELAY_MS = 2_000L
     private const val DEFAULT_GROUP_INTERVAL_MS = 4_200L
     private const val EVENT_PRUNE_TICK_INTERVAL = 30L
@@ -176,6 +177,20 @@ object BackgroundRuntimeEngine {
                     put("intervalMs", intervalMs)
                 }.toString()
             }
+            TASK_ONE_TO_ONE_PROACTIVE -> {
+                val firstRunAfterInactivityMinutes =
+                    max(1L, payload.optLong("firstRunAfterInactivityMinutes", 15L))
+                val minDelayMinutes = max(1L, payload.optLong("minDelayMinutes", 15L))
+                val maxDelayMinutes = max(minDelayMinutes, payload.optLong("maxDelayMinutes", 45L))
+                val maxActionsPerTick = max(1L, payload.optLong("maxActionsPerTick", 3L))
+                JSONObject().apply {
+                    put("chatId", state.scopeId)
+                    put("firstRunAfterInactivityMinutes", firstRunAfterInactivityMinutes)
+                    put("minDelayMinutes", minDelayMinutes)
+                    put("maxDelayMinutes", maxDelayMinutes)
+                    put("maxActionsPerTick", maxActionsPerTick)
+                }.toString()
+            }
             else -> payload.toString()
         }
     }
@@ -201,7 +216,9 @@ object BackgroundRuntimeEngine {
     }
 
     private fun isManagedTaskType(taskType: String): Boolean {
-        return taskType == TASK_TOPIC_GENERATION || taskType == TASK_GROUP_ITERATION
+        return taskType == TASK_TOPIC_GENERATION ||
+            taskType == TASK_GROUP_ITERATION ||
+            taskType == TASK_ONE_TO_ONE_PROACTIVE
     }
 
     private fun buildStateKey(taskType: String, scopeId: String): String {

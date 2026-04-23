@@ -219,6 +219,7 @@ export default function App() {
     renameChat,
     setChatStyleStrength,
     setChatDiaryEnabled,
+    setChatProactivityEnabled,
     setChatEvolutionEnabled,
     setChatEvolutionApplyMode,
     addPendingEvolutionProposal,
@@ -232,6 +233,7 @@ export default function App() {
     updateDiaryEntryTags,
     deleteDiaryEntry,
     testGenerateDiaryEntry,
+    testSimulateProactivity,
     runDiarySchedulerTick,
     setActiveInfluenceProfile,
     updateActivePersonaState,
@@ -498,6 +500,7 @@ export default function App() {
     [groupRooms, activeGroupRoomId],
   );
   useOneToOneBackgroundWorker({
+    chats,
     activeChat,
     isAndroidRuntime,
     syncOneToOneStateFromDb,
@@ -1270,6 +1273,7 @@ export default function App() {
           runtimeState={activePersonaState}
           evolutionState={activePersonaEvolutionState}
           settings={settings}
+          isAndroidRuntime={isAndroidRuntime}
           imageActionBusy={imageActionBusy}
           onEnhanceImage={enhanceSharedImage}
           onRegenerateImage={regenerateSharedImage}
@@ -1278,6 +1282,9 @@ export default function App() {
           }}
           onToggleDiaryEnabled={(chatId, enabled) => {
             void setChatDiaryEnabled(chatId, enabled);
+          }}
+          onToggleProactivityEnabled={(chatId, enabled) => {
+            void setChatProactivityEnabled(chatId, enabled);
           }}
           onToggleEvolutionEnabled={(chatId, enabled) => {
             void setChatEvolutionEnabled(chatId, enabled);
@@ -1310,6 +1317,9 @@ export default function App() {
             void deleteDiaryEntry(chatId, diaryEntryId);
           }}
           onTestDiaryGeneration={(chatId) => testGenerateDiaryEntry(chatId)}
+          onTestProactivitySimulation={(chatId) =>
+            testSimulateProactivity(chatId)
+          }
           onUpdateRuntimeState={(chatId, patch) => {
             if (chatId !== activeChatId) return;
             void updateActivePersonaState(patch);

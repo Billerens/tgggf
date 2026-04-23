@@ -7,6 +7,7 @@ import type {
   AuthMode,
   ChatMessage,
   ChatDiaryConfig,
+  ChatProactivityConfig,
   ChatSession,
   DiaryEntry,
   DiaryMoment,
@@ -798,6 +799,23 @@ function normalizeChatDiaryConfig(config: unknown): ChatDiaryConfig {
   };
 }
 
+function normalizeChatProactivityConfig(config: unknown): ChatProactivityConfig {
+  const source =
+    config && typeof config === "object"
+      ? (config as Record<string, unknown>)
+      : {};
+  const normalizeMs = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    return Math.max(0, Math.floor(value));
+  };
+  return {
+    enabled: Boolean(source.enabled),
+    lastActivityAtMs: normalizeMs(source.lastActivityAtMs),
+    nextRunAtMs: normalizeMs(source.nextRunAtMs),
+    lastProactiveAtMs: normalizeMs(source.lastProactiveAtMs),
+  };
+}
+
 function normalizeDiaryTags(input: unknown, maxItems = 64): DiaryTag[] {
   if (!Array.isArray(input)) return [];
   const result: DiaryTag[] = [];
@@ -925,6 +943,7 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
     delete next.summaryTokenBudget;
   }
   next.diaryConfig = normalizeChatDiaryConfig(next.diaryConfig);
+  next.proactivityConfig = normalizeChatProactivityConfig(next.proactivityConfig);
   next.evolutionConfig = normalizeChatEvolutionConfig(next.evolutionConfig);
   return next;
 }
@@ -2149,6 +2168,11 @@ export const dbApi = {
       .map((name) => String(name))
       .sort((a, b) => a.localeCompare(b));
   },
+};
+
+export const __dbTestUtils = {
+  normalizeChatProactivityConfig,
+  normalizeChatSession,
 };
 
 export { DEFAULT_SETTINGS };

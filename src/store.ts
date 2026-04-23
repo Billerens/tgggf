@@ -81,7 +81,9 @@ import {
 import { triggerBackgroundRuntime } from "./features/mobile/backgroundDelta";
 import {
   requestNativeDiaryPreview,
+  requestNativeProactivitySimulation,
   syncOneToOneContextToNative,
+  type NativeProactivitySimulationReport,
 } from "./features/mobile/oneToOneNativeRuntime";
 
 type PersonaInput = Omit<
@@ -128,6 +130,7 @@ interface AppState {
   renameChat: (chatId: string, title: string) => Promise<void>;
   setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
   setChatDiaryEnabled: (chatId: string, enabled: boolean) => Promise<void>;
+  setChatProactivityEnabled: (chatId: string, enabled: boolean) => Promise<void>;
   setChatEvolutionEnabled: (chatId: string, enabled: boolean) => Promise<void>;
   setChatEvolutionApplyMode: (
     chatId: string,
@@ -176,6 +179,9 @@ interface AppState {
   ) => Promise<void>;
   deleteDiaryEntry: (chatId: string, diaryEntryId: string) => Promise<void>;
   testGenerateDiaryEntry: (chatId: string) => Promise<DiaryEntry[]>;
+  testSimulateProactivity: (
+    chatId: string,
+  ) => Promise<NativeProactivitySimulationReport | null>;
   runDiarySchedulerTick: () => Promise<void>;
   setActiveInfluenceProfile: (
     profile: Partial<InfluenceProfile> | null,
@@ -1157,6 +1163,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         diaryConfig: {
           enabled: false,
         },
+        proactivityConfig: {
+          enabled: false,
+        },
         evolutionConfig: {
           enabled: false,
           applyMode: "manual",
@@ -1335,6 +1344,42 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         chats,
         activeDiaryEntries,
+        activeChatId: chatId,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  setChatProactivityEnabled: async (chatId, enabled) => {
+    set({ isLoading: true, error: null });
+    try {
+      const currentChat = get().chats.find((chat) => chat.id === chatId);
+      if (!currentChat) {
+        set({ isLoading: false });
+        return;
+      }
+      const nextProactivityConfig = {
+        ...(currentChat.proactivityConfig ?? { enabled: false }),
+        enabled,
+      };
+      const updatedChat: ChatSession = {
+        ...currentChat,
+        proactivityConfig: nextProactivityConfig,
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveChat(updatedChat);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: updatedChat.personaId,
+        });
+        await triggerBackgroundRuntime("one_to_one_proactivity_toggle");
+      }
+      const chats = await dbApi.getChats(updatedChat.personaId);
+      set({
+        chats,
         activeChatId: chatId,
         isLoading: false,
       });
@@ -2023,6 +2068,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       set({ error: (error as Error).message });
       return [];
+    }
+  },
+
+  testSimulateProactivity: async (chatId) => {
+    try {
+      const state = get();
+      const chat = state.chats.find((candidate) => candidate.id === chatId);
+      if (!chat) return null;
+      if (getRuntimeContext().mode !== "android") return null;
+
+      await syncOneToOneContextToNative({
+        chatId,
+        personaId: chat.personaId,
+      });
+      return requestNativeProactivitySimulation(chatId);
+    } catch (error) {
+      set({ error: (error as Error).message });
+      return null;
     }
   },
 

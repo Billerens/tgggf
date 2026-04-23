@@ -93,6 +93,13 @@ export interface ChatDiaryConfig {
   lastSourceMessageAtMs?: number;
 }
 
+export interface ChatProactivityConfig {
+  enabled: boolean;
+  lastActivityAtMs?: number;
+  nextRunAtMs?: number;
+  lastProactiveAtMs?: number;
+}
+
 export interface DiarySourceRange {
   fromMessageId?: string;
   toMessageId?: string;
@@ -254,6 +261,7 @@ export interface ChatSession {
   personaId: string;
   title: string;
   diaryConfig?: ChatDiaryConfig;
+  proactivityConfig?: ChatProactivityConfig;
   evolutionConfig?: ChatEvolutionConfig;
   lastResponseId?: string;
   chatStyleStrength?: number;

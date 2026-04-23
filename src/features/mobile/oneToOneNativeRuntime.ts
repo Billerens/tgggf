@@ -33,6 +33,27 @@ interface CapacitorLikeScope {
   };
 }
 
+export type NativeProactivitySimulationStageStatus =
+  | "ok"
+  | "skip"
+  | "warn"
+  | "error";
+
+export interface NativeProactivitySimulationStage {
+  id: string;
+  title: string;
+  status: NativeProactivitySimulationStageStatus;
+  details?: Record<string, unknown>;
+}
+
+export interface NativeProactivitySimulationReport {
+  chatId: string;
+  personaId: string;
+  simulatedAt: string;
+  stages: NativeProactivitySimulationStage[];
+  summary?: Record<string, unknown>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -84,6 +105,67 @@ export async function requestNativeDiaryPreview(
         typeof entry.personaId === "string" &&
         typeof entry.markdown === "string",
     ) as unknown as DiaryEntry[];
+}
+
+export async function requestNativeProactivitySimulation(
+  chatId: string,
+): Promise<NativeProactivitySimulationReport | null> {
+  const normalizedChatId = chatId.trim();
+  if (!normalizedChatId) return null;
+  const scope = globalThis as unknown as CapacitorLikeScope;
+  const plugin = resolveLocalApiPlugin(scope);
+  if (!plugin) return null;
+
+  const response = await plugin.request({
+    method: "PUT",
+    path: "/api/background-runtime/proactivity/simulate",
+    body: {
+      chatId: normalizedChatId,
+    },
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`native_proactivity_simulation_http_${response.status}`);
+  }
+  if (!isRecord(response.body)) return null;
+  const reportRaw = response.body.report;
+  if (!isRecord(reportRaw)) return null;
+  const stagesRaw = Array.isArray(reportRaw.stages) ? reportRaw.stages : [];
+  const stages = stagesRaw
+    .filter((stage): stage is Record<string, unknown> => isRecord(stage))
+    .map((stage) => {
+      const statusRaw =
+        typeof stage.status === "string" ? stage.status.trim().toLowerCase() : "";
+      const status: NativeProactivitySimulationStageStatus =
+        statusRaw === "ok" ||
+        statusRaw === "skip" ||
+        statusRaw === "warn" ||
+        statusRaw === "error"
+          ? statusRaw
+          : "warn";
+      return {
+        id: typeof stage.id === "string" ? stage.id : "unknown_stage",
+        title: typeof stage.title === "string" ? stage.title : "Unknown stage",
+        status,
+        details: isRecord(stage.details)
+          ? (stage.details as Record<string, unknown>)
+          : undefined,
+      } satisfies NativeProactivitySimulationStage;
+    });
+
+  return {
+    chatId:
+      typeof reportRaw.chatId === "string" ? reportRaw.chatId : normalizedChatId,
+    personaId:
+      typeof reportRaw.personaId === "string" ? reportRaw.personaId : "",
+    simulatedAt:
+      typeof reportRaw.simulatedAt === "string"
+        ? reportRaw.simulatedAt
+        : new Date().toISOString(),
+    stages,
+    summary: isRecord(reportRaw.summary)
+      ? (reportRaw.summary as Record<string, unknown>)
+      : undefined,
+  } satisfies NativeProactivitySimulationReport;
 }
 
 function parseIdbImageAssetId(value: string | undefined | null) {

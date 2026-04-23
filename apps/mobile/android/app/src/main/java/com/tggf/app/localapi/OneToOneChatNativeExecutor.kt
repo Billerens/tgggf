@@ -4,18 +4,33 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 import kotlin.math.roundToInt
+import kotlin.random.Random
 
 object OneToOneChatNativeExecutor {
     private const val ONE_TO_ONE_CHAT_JOB_TYPE = "one_to_one_chat"
     private const val ONE_TO_ONE_CHAT_JOB_PREFIX = "one_to_one_chat:"
+    private const val ONE_TO_ONE_PROACTIVE_JOB_TYPE = "one_to_one_proactive"
+    private const val ONE_TO_ONE_PROACTIVE_JOB_PREFIX = "one_to_one_proactive:"
     private const val ONE_TO_ONE_CHAT_LEASE_MS = 120_000L
+    private const val ONE_TO_ONE_PROACTIVE_LEASE_MS = 120_000L
     private const val ONE_TO_ONE_CHAT_DEFAULT_RETRY_DELAY_MS = 6_500L
     private const val ONE_TO_ONE_CHAT_DEFAULT_MAX_ATTEMPTS = 3
+    private const val ONE_TO_ONE_PROACTIVE_DEFAULT_RETRY_DELAY_MS = 10_000L
+    private const val ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_ATTEMPTS = 0
+    private const val ONE_TO_ONE_PROACTIVE_GLOBAL_SCOPE_LIMIT_PER_TICK = 2
+    private const val ONE_TO_ONE_PROACTIVE_FIRST_INACTIVITY_MS = 15 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_MIN_DELAY_MS = 15 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_MAX_DELAY_MS = 45 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_MAX_ACTIONS_PER_ITERATION = 3
+    private const val ONE_TO_ONE_PROACTIVE_MAX_DIARY_ENTRIES_PER_ITERATION = 1
+    private const val ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT = 3
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
     private const val RECENT_CONTEXT_MESSAGE_LIMIT = 6
     private const val SUMMARY_DEFAULT_TOKEN_BUDGET = 16000
@@ -32,6 +47,8 @@ object OneToOneChatNativeExecutor {
     private const val DIARY_MAX_TAGS = 256
     private const val DIARY_GENERATION_MAX_ENTRIES = 64
     private const val DIARY_EXISTING_TAGS_LIMIT = 200
+    private const val REFLECTION_FOCUS_TAGS_LIMIT = 3
+    private const val REFLECTION_RELATED_DIARY_ENTRIES_LIMIT = 8
 
     private val inFlight = AtomicBoolean(false)
     private val executor = Executors.newSingleThreadExecutor { runnable ->
@@ -48,6 +65,17 @@ object OneToOneChatNativeExecutor {
         val personaId: String,
         val retryDelayMs: Long,
         val payloadMaxAttempts: Int,
+    )
+
+    private data class ParsedProactiveScope(
+        val chatId: String,
+        val personaId: String,
+        val retryDelayMs: Long,
+        val payloadMaxAttempts: Int,
+        val minDelayMs: Long,
+        val maxDelayMs: Long,
+        val firstRunAfterInactivityMs: Long,
+        val maxActionsPerIteration: Int,
     )
 
     private data class ControlMemoryCandidate(
@@ -78,6 +106,13 @@ object OneToOneChatNativeExecutor {
     private data class ChatEvolutionConfig(
         val enabled: Boolean,
         val applyMode: String,
+    )
+
+    private data class ChatProactivityConfig(
+        val enabled: Boolean,
+        val lastActivityAtMs: Long,
+        val nextRunAtMs: Long,
+        val lastProactiveAtMs: Long,
     )
 
     private data class EvolutionProcessingResult(
@@ -139,21 +174,36 @@ object OneToOneChatNativeExecutor {
         val runtime = BackgroundRuntimeRepository(context)
         val repository = LocalRepository(context)
         try {
-            val claimed =
+            val claimedChatJobs =
                 jobs.claimDueJobs(
                     limit = 1,
                     leaseMs = ONE_TO_ONE_CHAT_LEASE_MS,
                     type = ONE_TO_ONE_CHAT_JOB_TYPE,
                 )
+            val claimedProactiveJobs =
+                jobs.claimDueJobs(
+                    limit = ONE_TO_ONE_PROACTIVE_GLOBAL_SCOPE_LIMIT_PER_TICK,
+                    leaseMs = ONE_TO_ONE_PROACTIVE_LEASE_MS,
+                    type = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+                )
 
-            if (claimed.isEmpty()) {
+            if (claimedChatJobs.isEmpty() && claimedProactiveJobs.isEmpty()) {
                 maybeGenerateDiaryEntries(context, repository, runtime)
                 emitAwaitingState(context, jobs)
                 return
             }
 
-            for (job in claimed) {
+            for (job in claimedChatJobs) {
                 processClaimedJob(
+                    context = context,
+                    repository = repository,
+                    runtime = runtime,
+                    jobs = jobs,
+                    job = job,
+                )
+            }
+            for (job in claimedProactiveJobs) {
+                processClaimedProactiveJob(
                     context = context,
                     repository = repository,
                     runtime = runtime,
@@ -176,11 +226,17 @@ object OneToOneChatNativeExecutor {
             jobs.countJobs(
                 status = BackgroundJobRepository.STATUS_PENDING,
                 type = ONE_TO_ONE_CHAT_JOB_TYPE,
+            ) + jobs.countJobs(
+                status = BackgroundJobRepository.STATUS_PENDING,
+                type = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
             )
         val leasedCount =
             jobs.countJobs(
                 status = BackgroundJobRepository.STATUS_LEASED,
                 type = ONE_TO_ONE_CHAT_JOB_TYPE,
+            ) + jobs.countJobs(
+                status = BackgroundJobRepository.STATUS_LEASED,
+                type = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
             )
         if (pendingCount > 0 || leasedCount > 0) {
             ForegroundSyncService.updateWorkerStatus(
@@ -205,6 +261,604 @@ object OneToOneChatNativeExecutor {
             claimed = false,
             lastError = "",
         )
+    }
+
+    private fun executeClaimedProactiveJob(
+        context: Context,
+        repository: LocalRepository,
+        runtime: BackgroundRuntimeRepository,
+        job: BackgroundJobRecord,
+        scope: ParsedProactiveScope,
+    ): Long {
+        val nowMs = System.currentTimeMillis()
+        val settings = parseJsonObject(repository.readSettingsJson())
+        val personas = readStoreArray(repository, "personas")
+        val chats = readStoreArray(repository, "chats")
+        val messages = readStoreArray(repository, "messages")
+        val diaryEntries = readStoreArray(repository, "diaryEntries")
+        val personaEvolutionStates = readStoreArray(repository, "personaEvolutionStates")
+        val personaStates = readStoreArray(repository, "personaStates")
+        val memories = readStoreArray(repository, "memories")
+
+        val chatIndex = findObjectIndexById(chats, scope.chatId)
+        if (chatIndex < 0) {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "context_missing",
+                level = "warn",
+                message = "Chat context is missing in native store for proactive job",
+                details = JSONObject().put("chatId", scope.chatId),
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            throw ContextMissingException("chat_missing")
+        }
+        val chat = chats.optJSONObject(chatIndex) ?: JSONObject()
+        val proactivityConfig = normalizeChatProactivityConfig(chat.optJSONObject("proactivityConfig"))
+        if (!proactivityConfig.enabled) {
+            val nextRunAt = nowMs + scope.maxDelayMs
+            val updatedConfig =
+                proactivityConfig.copy(
+                    nextRunAtMs = nextRunAt,
+                )
+            chat.put("proactivityConfig", serializeChatProactivityConfig(updatedConfig))
+            chats.put(chatIndex, chat)
+            repository.writeStoreJson("chats", chats.toString())
+            appendStatePatch(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stores = JSONObject().put("chats", JSONArray().put(JSONObject(chat.toString()))),
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            return nextRunAt
+        }
+
+        val timeline = buildChatMessageTimeline(messages, scope.chatId).toMutableList()
+        val lastActivityMs =
+            timeline.lastOrNull()?.let { message ->
+                parseIsoMs(message.optString("createdAt", "").trim())
+            } ?: 0L
+        val firstRunAfterActivityAtMs = lastActivityMs + scope.firstRunAfterInactivityMs
+        var nextRunAtMs = proactivityConfig.nextRunAtMs
+        var updatedConfig = proactivityConfig
+        var chatChanged = false
+
+        if (lastActivityMs > 0L && proactivityConfig.lastActivityAtMs != lastActivityMs) {
+            updatedConfig =
+                updatedConfig.copy(
+                    lastActivityAtMs = lastActivityMs,
+                    nextRunAtMs = firstRunAfterActivityAtMs,
+                )
+            nextRunAtMs = updatedConfig.nextRunAtMs
+            chatChanged = true
+        }
+        if (nextRunAtMs <= 0L) {
+            nextRunAtMs =
+                if (lastActivityMs > 0L) {
+                    firstRunAfterActivityAtMs
+                } else {
+                    nowMs + scope.minDelayMs
+                }
+            updatedConfig = updatedConfig.copy(nextRunAtMs = nextRunAtMs)
+            chatChanged = true
+        }
+
+        if (nowMs < nextRunAtMs) {
+            if (chatChanged) {
+                chat.put("proactivityConfig", serializeChatProactivityConfig(updatedConfig))
+                chats.put(chatIndex, chat)
+                repository.writeStoreJson("chats", chats.toString())
+                appendStatePatch(
+                    runtime = runtime,
+                    scopeId = scope.chatId,
+                    jobId = job.id,
+                    stores = JSONObject().put("chats", JSONArray().put(JSONObject(chat.toString()))),
+                    taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+                )
+            }
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "proactive_waiting",
+                level = "info",
+                message = "Proactive scope is not due yet",
+                details =
+                    JSONObject().apply {
+                        put("nowMs", nowMs)
+                        put("nextRunAtMs", nextRunAtMs)
+                        put("lastActivityAtMs", lastActivityMs)
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            return nextRunAtMs
+        }
+
+        val personaId =
+            scope.personaId.ifBlank {
+                chat.optString("personaId", "").trim()
+            }
+        val persona = findObjectById(personas, personaId)
+        if (persona == null) {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "context_missing",
+                level = "warn",
+                message = "Persona is missing in native store for proactive job",
+                details = JSONObject().put("personaId", personaId),
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            throw ContextMissingException("persona_missing")
+        }
+
+        val evolutionConfig = normalizeChatEvolutionConfig(chat.optJSONObject("evolutionConfig"))
+        var evolutionState =
+            normalizePersonaEvolutionState(
+                state = findPersonaEvolutionStateForChat(personaEvolutionStates, scope.chatId),
+                chatId = scope.chatId,
+                persona = persona,
+            )
+        var effectivePersona =
+            if (evolutionConfig.enabled) {
+                applyPersonaEvolutionProfile(persona, evolutionState.optJSONObject("currentProfile"))
+            } else {
+                JSONObject(persona.toString())
+            }
+        val existingState =
+            findPersonaStateForChat(personaStates, scope.chatId)
+                ?: createInitialPersonaState(effectivePersona, scope.chatId)
+        upsertByChatId(personaStates, existingState, "chatId")
+        val recentMessages = buildRecentMessagesForPrompt(messages, scope.chatId)
+        val memoryPool = readChatMemories(memories, scope.chatId)
+        val memoryCard = buildMemoryCard(memoryPool, recentMessages, resolvePersonaMemoryDecayDays(effectivePersona))
+        val conversationSummary = buildConversationSummaryContext(chat)
+        val existingTags = buildDiaryExistingTagsCatalog(diaryEntries, scope.chatId, nowMs)
+        val recentDiaryEntries = collectRecentDiaryEntriesForPlanner(diaryEntries, scope.chatId, 16)
+        val pendingProactiveDiaryEntries =
+            runtime.countPendingDiaryEntriesInDelta(
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+                scopeId = scope.chatId,
+            )
+        val evolutionHistoryForPrompt = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10)
+        val userLocalTimeContext = formatCurrentUserLocalTimeContext()
+
+        val plan =
+            NativeLlmClient.requestOneToOneProactivePlan(
+                settings = settings,
+                persona = effectivePersona,
+                recentMessages = recentMessages,
+                runtimeState = existingState,
+                memoryCard = memoryCard,
+                conversationSummary = conversationSummary,
+                diaryEntries = recentDiaryEntries,
+                pendingProactiveDiaryEntries = pendingProactiveDiaryEntries,
+                pendingProactiveDiarySoftLimit = ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT,
+                userLocalTimeContext = userLocalTimeContext,
+                evolutionHistoryApplied = evolutionHistoryForPrompt,
+            )
+        val normalizedActions =
+            (plan?.actions ?: emptyList())
+                .take(scope.maxActionsPerIteration.coerceAtLeast(1))
+        val shouldRunActions =
+            plan != null &&
+                plan.status.equals("run", ignoreCase = true) &&
+                normalizedActions.isNotEmpty()
+
+        val patchedMessages = JSONArray()
+        val patchedDiaryEntries = JSONArray()
+        val generatedAssetIds = mutableListOf<String>()
+        var evolutionStateChanged = false
+        var remainingDiaryEntriesBudget =
+            if (pendingProactiveDiaryEntries >= ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT) {
+                0
+            } else {
+                ONE_TO_ONE_PROACTIVE_MAX_DIARY_ENTRIES_PER_ITERATION
+            }
+
+        val applyEvolutionFromControl: (JSONObject?) -> Unit = apply@{ control ->
+            if (control == null || !evolutionConfig.enabled) return@apply
+            val nextTimestamp = nowIsoUtc()
+            val result =
+                processPersonaControlEvolution(
+                    control = control,
+                    config = evolutionConfig,
+                    state = evolutionState,
+                    timestamp = nextTimestamp,
+                )
+            if (result.state.toString() != evolutionState.toString()) {
+                evolutionState = result.state
+                evolutionStateChanged = true
+                effectivePersona =
+                    if (evolutionConfig.enabled) {
+                        applyPersonaEvolutionProfile(persona, evolutionState.optJSONObject("currentProfile"))
+                    } else {
+                        JSONObject(persona.toString())
+                    }
+            }
+        }
+
+        if (shouldRunActions) {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "proactive_plan_ready",
+                level = "info",
+                message = "Proactive plan received",
+                details =
+                    JSONObject().apply {
+                        put("status", plan?.status ?: "")
+                        put("actionCount", normalizedActions.size)
+                        put("reason", plan?.reason ?: "")
+                        put("nextDelayMinutes", plan?.nextDelayMinutes ?: JSONObject.NULL)
+                        put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
+                        put("pendingProactiveDiarySoftLimit", ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT)
+                        put("remainingDiaryEntriesBudget", remainingDiaryEntriesBudget)
+                        plan?.llmDebug?.let { debug -> putLlmCallDebugDetails(this, debug) }
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+
+            normalizedActions.forEach { action ->
+                val actionType = normalizeProactiveActionType(action.optString("type", action.optString("action", "")))
+                if (actionType == "reflection") {
+                    if (remainingDiaryEntriesBudget <= 0) {
+                        appendRuntimeEvent(
+                            runtime = runtime,
+                            scopeId = scope.chatId,
+                            jobId = job.id,
+                            stage = "proactive_reflection_skipped_backlog",
+                            level = "info",
+                            message = "Reflection skipped due to proactive diary backlog/budget limits",
+                            details =
+                                JSONObject().apply {
+                                    put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
+                                    put("pendingProactiveDiarySoftLimit", ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT)
+                                    put("remainingDiaryEntriesBudget", remainingDiaryEntriesBudget)
+                                },
+                            taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+                        )
+                        return@forEach
+                    }
+                    val focusTags =
+                        selectReflectionFocusTags(
+                            action = action,
+                            existingTags = existingTags,
+                            maxTags = REFLECTION_FOCUS_TAGS_LIMIT,
+                        )
+                    val relatedDiaryEntries =
+                        collectDiaryEntriesByFocusTags(
+                            diaryEntries = diaryEntries,
+                            chatId = scope.chatId,
+                            focusTags = focusTags,
+                            limit = REFLECTION_RELATED_DIARY_ENTRIES_LIMIT,
+                        )
+                    val reflection =
+                        NativeLlmClient.requestOneToOneProactiveReflection(
+                            settings = settings,
+                            persona = effectivePersona,
+                            action = action,
+                            recentMessages = recentMessages,
+                            runtimeState = existingState,
+                            memoryCard = memoryCard,
+                            conversationSummary = conversationSummary,
+                            existingTags = existingTags,
+                            focusTags = focusTags,
+                            relatedDiaryEntries = relatedDiaryEntries,
+                            userLocalTimeContext = userLocalTimeContext,
+                            evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
+                        )
+                    if (reflection != null) {
+                        val sourceMessages =
+                            if (timeline.size <= DIARY_RECENT_MESSAGE_LIMIT) {
+                                timeline
+                            } else {
+                                timeline.takeLast(DIARY_RECENT_MESSAGE_LIMIT)
+                            }
+                        if (reflection.shouldWriteDiary && reflection.entries.isNotEmpty() && sourceMessages.isNotEmpty()) {
+                            val generatedEntries =
+                                materializeDiaryEntriesFromDraft(
+                                    chatId = scope.chatId,
+                                    personaId = personaId,
+                                    sourceMessages = sourceMessages,
+                                    draft =
+                                        NativeOneToOneDiaryDraft(
+                                            shouldWrite = true,
+                                            entries = reflection.entries,
+                                        ),
+                                    nowMs = nowMs,
+                                )
+                            if (generatedEntries.length() > 0) {
+                                val allowedEntries = minOf(generatedEntries.length(), remainingDiaryEntriesBudget)
+                                for (index in 0 until allowedEntries) {
+                                    val entry = generatedEntries.optJSONObject(index) ?: continue
+                                    diaryEntries.put(entry)
+                                    patchedDiaryEntries.put(JSONObject(entry.toString()))
+                                }
+                                remainingDiaryEntriesBudget =
+                                    max(0, remainingDiaryEntriesBudget - allowedEntries)
+                                val diaryConfig = ensureDiaryConfig(chat)
+                                val sourceLastAtMs =
+                                    sourceMessages.lastOrNull()?.let { message ->
+                                        parseIsoMs(message.optString("createdAt", "").trim())
+                                    } ?: diaryConfig.optLong("lastSourceMessageAtMs", 0L)
+                                diaryConfig.put("lastCheckedAtMs", nowMs)
+                                diaryConfig.put("lastGeneratedAtMs", nowMs)
+                                diaryConfig.put("lastSourceMessageAtMs", sourceLastAtMs)
+                                chat.put("diaryConfig", diaryConfig)
+                                chatChanged = true
+                            }
+                        }
+                    }
+                    return@forEach
+                }
+
+                val speech =
+                    NativeLlmClient.requestOneToOneProactiveSpeech(
+                        settings = settings,
+                        persona = effectivePersona,
+                        action = action,
+                        recentMessages = recentMessages,
+                        runtimeState = existingState,
+                        memoryCard = memoryCard,
+                        conversationSummary = conversationSummary,
+                        userLocalTimeContext = userLocalTimeContext,
+                        evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
+                    ) ?: return@forEach
+
+                var assistantMessage = buildProactiveAssistantMessage(scope.chatId, speech)
+                val promptBlocks =
+                    parseStringList(assistantMessage.optJSONArray("comfyPrompts"))
+                        .ifEmpty {
+                            assistantMessage
+                                .optString("comfyPrompt", "")
+                                .trim()
+                                .ifEmpty { null }
+                                ?.let { listOf(it) } ?: emptyList()
+                        }
+                val imageDescriptionBlocks =
+                    parseStringList(assistantMessage.optJSONArray("comfyImageDescriptions"))
+                        .ifEmpty {
+                            assistantMessage
+                                .optString("comfyImageDescription", "")
+                                .trim()
+                                .ifEmpty { null }
+                                ?.let { listOf(it) } ?: emptyList()
+                        }
+                val requestedImageCount =
+                    if (imageDescriptionBlocks.isNotEmpty()) {
+                        imageDescriptionBlocks.size
+                    } else {
+                        promptBlocks.size
+                    }
+                if (requestedImageCount > 0) {
+                    assistantMessage.put("imageGenerationPending", true)
+                    assistantMessage.put("imageGenerationExpected", requestedImageCount)
+                    assistantMessage.put("imageGenerationCompleted", 0)
+                }
+                messages.put(assistantMessage)
+
+                if (requestedImageCount > 0 || actionType == "photo") {
+                    val pseudoScope =
+                        ParsedJobScope(
+                            chatId = scope.chatId,
+                            userMessageId = assistantMessage.optString("id", "").trim(),
+                            personaId = personaId,
+                            retryDelayMs = scope.retryDelayMs,
+                            payloadMaxAttempts = scope.payloadMaxAttempts,
+                        )
+                    val withImages =
+                        maybeGenerateMessageImages(
+                            context = context,
+                            repository = repository,
+                            runtime = runtime,
+                            jobId = job.id,
+                            scope = pseudoScope,
+                            settings = settings,
+                            chat = chat,
+                            persona = effectivePersona,
+                            evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
+                            baseAssistantMessage = assistantMessage,
+                        )
+                    assistantMessage = withImages.message
+                    withImages.generatedAssets.forEach { asset ->
+                        asset.optString("id", "").trim().ifEmpty { null }?.let { assetId ->
+                            generatedAssetIds.add(assetId)
+                        }
+                    }
+                }
+
+                if (!replaceMessageById(messages, assistantMessage)) {
+                    messages.put(assistantMessage)
+                }
+                patchedMessages.put(JSONObject(assistantMessage.toString()))
+                timeline.add(JSONObject(assistantMessage.toString()))
+                applyEvolutionFromControl(speech.personaControl)
+            }
+        } else {
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "proactive_plan_skipped",
+                level = "info",
+                message = "Proactive plan decided to skip actions",
+                details =
+                    JSONObject().apply {
+                        put("status", plan?.status ?: "none")
+                        put("reason", plan?.reason ?: "no_plan")
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+        }
+
+        if (evolutionStateChanged) {
+            upsertByChatId(personaEvolutionStates, evolutionState, "chatId")
+        }
+
+        val nextDelayMs = resolveProactiveNextDelayMs(scope, plan?.nextDelayMinutes)
+        val nextRunAt = nowMs + nextDelayMs
+        updatedConfig =
+            updatedConfig.copy(
+                lastActivityAtMs = if (lastActivityMs > 0L) lastActivityMs else updatedConfig.lastActivityAtMs,
+                nextRunAtMs = nextRunAt,
+                lastProactiveAtMs = nowMs,
+            )
+        chat.put("proactivityConfig", serializeChatProactivityConfig(updatedConfig))
+        if (chatChanged || patchedMessages.length() > 0 || patchedDiaryEntries.length() > 0 || evolutionStateChanged) {
+            chat.put("updatedAt", nowIsoUtc())
+            chats.put(chatIndex, chat)
+        }
+
+        repository.writeStoreJson("chats", chats.toString())
+        if (patchedMessages.length() > 0) {
+            repository.writeStoreJson("messages", messages.toString())
+        }
+        if (patchedDiaryEntries.length() > 0) {
+            repository.writeStoreJson("diaryEntries", diaryEntries.toString())
+        }
+        if (evolutionStateChanged) {
+            repository.writeStoreJson("personaEvolutionStates", personaEvolutionStates.toString())
+        }
+
+        val stores =
+            JSONObject().apply {
+                put("chats", JSONArray().put(JSONObject(chat.toString())))
+                if (patchedMessages.length() > 0) {
+                    put("messages", patchedMessages)
+                }
+                if (patchedDiaryEntries.length() > 0) {
+                    put("diaryEntries", patchedDiaryEntries)
+                }
+                if (evolutionStateChanged) {
+                    put("personaEvolutionStates", JSONArray().put(JSONObject(evolutionState.toString())))
+                }
+            }
+        appendStatePatch(
+            runtime = runtime,
+            scopeId = scope.chatId,
+            jobId = job.id,
+            stores = stores,
+            assetIds = generatedAssetIds,
+            taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+        )
+
+        appendRuntimeEvent(
+            runtime = runtime,
+            scopeId = scope.chatId,
+            jobId = job.id,
+            stage = "proactive_actions_completed",
+            level = "info",
+            message = "Proactive actions processed",
+            details =
+                JSONObject().apply {
+                    put("executedMessageCount", patchedMessages.length())
+                    put("executedDiaryCount", patchedDiaryEntries.length())
+                    put("evolutionStateChanged", evolutionStateChanged)
+                    put("nextRunAtMs", nextRunAt)
+                    put("nextDelayMs", nextDelayMs)
+                    put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
+                    put("remainingDiaryEntriesBudgetAfterRun", remainingDiaryEntriesBudget)
+                },
+            taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+        )
+        return nextRunAt
+    }
+
+    private fun collectRecentDiaryEntriesForPlanner(
+        diaryEntries: JSONArray,
+        chatId: String,
+        limit: Int,
+    ): JSONArray {
+        if (limit <= 0) return JSONArray()
+        val rows = mutableListOf<JSONObject>()
+        for (index in 0 until diaryEntries.length()) {
+            val row = diaryEntries.optJSONObject(index) ?: continue
+            if (row.optString("chatId", "").trim() != chatId) continue
+            rows.add(row)
+        }
+        val selected = if (rows.size <= limit) rows else rows.takeLast(limit)
+        return JSONArray().apply {
+            selected.forEach { row -> put(JSONObject(row.toString())) }
+        }
+    }
+
+    private fun normalizeProactiveActionType(raw: String): String {
+        val normalized = raw.trim().lowercase()
+        return when (normalized) {
+            "reflect", "reflection", "silent_reflection", "silent", "journal", "diary" -> "reflection"
+            "photo", "image", "send_photo", "send_image" -> "photo"
+            else -> "message"
+        }
+    }
+
+    private fun resolveProactiveNextDelayMs(
+        scope: ParsedProactiveScope,
+        nextDelayMinutes: Int?,
+    ): Long {
+        if (nextDelayMinutes != null && nextDelayMinutes > 0) {
+            val rawMs = nextDelayMinutes.toLong() * 60_000L
+            return rawMs.coerceIn(scope.minDelayMs, scope.maxDelayMs)
+        }
+        return pickRandomDelayMs(scope.minDelayMs, scope.maxDelayMs)
+    }
+
+    private fun pickRandomDelayMs(minDelayMs: Long, maxDelayMs: Long): Long {
+        val minValue = max(1_000L, minDelayMs)
+        val maxValue = max(minValue, maxDelayMs)
+        if (minValue == maxValue) return minValue
+        return Random.nextLong(from = minValue, until = maxValue + 1L)
+    }
+
+    private fun buildProactiveAssistantMessage(
+        chatId: String,
+        llmResult: NativeOneToOneTurnResponse,
+    ): JSONObject {
+        val relationshipProposal = extractRelationshipProposal(llmResult.personaControl)
+        val visibleText =
+            llmResult.content.trim().ifBlank {
+                if (
+                    llmResult.comfyPrompts.isNotEmpty() ||
+                        llmResult.comfyImageDescriptions.isNotEmpty() ||
+                        llmResult.personaControl != null
+                ) {
+                    "Хочу поделиться мыслью."
+                } else {
+                    "Думаю о тебе и хотела написать."
+                }
+            }
+        return JSONObject().apply {
+            put("id", UUID.randomUUID().toString())
+            put("chatId", chatId)
+            put("role", "assistant")
+            put("content", visibleText)
+            if (!llmResult.comfyPrompt.isNullOrBlank()) {
+                put("comfyPrompt", llmResult.comfyPrompt)
+            }
+            if (llmResult.comfyPrompts.isNotEmpty()) {
+                put("comfyPrompts", JSONArray(llmResult.comfyPrompts))
+            }
+            if (!llmResult.comfyImageDescription.isNullOrBlank()) {
+                put("comfyImageDescription", llmResult.comfyImageDescription)
+            }
+            if (llmResult.comfyImageDescriptions.isNotEmpty()) {
+                put("comfyImageDescriptions", JSONArray(llmResult.comfyImageDescriptions))
+            }
+            if (llmResult.personaControl != null) {
+                put("personaControlRaw", llmResult.personaControl.toString())
+            }
+            relationshipProposal?.type?.let { type -> put("relationshipProposalType", type) }
+            relationshipProposal?.stage?.let { stage -> put("relationshipProposalStage", stage) }
+            if (relationshipProposal != null) {
+                put("relationshipProposalStatus", "pending")
+            }
+            put("imageGenerationPending", false)
+            put("createdAt", nowIsoUtc())
+        }
     }
 
     private fun processClaimedJob(
@@ -362,6 +1016,140 @@ object OneToOneChatNativeExecutor {
         }
     }
 
+    private fun processClaimedProactiveJob(
+        context: Context,
+        repository: LocalRepository,
+        runtime: BackgroundRuntimeRepository,
+        jobs: BackgroundJobRepository,
+        job: BackgroundJobRecord,
+    ) {
+        val payload = parseJsonObject(job.payloadJson)
+        val scope = parseProactiveScope(job.id, payload)
+        if (scope.chatId.isBlank()) {
+            jobs.cancelJob(job.id)
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = "unknown",
+                jobId = job.id,
+                stage = "job_failed_terminal",
+                level = "error",
+                message = "Failed to resolve chat scope for one-to-one proactive job",
+                details =
+                    JSONObject().apply {
+                        put("jobId", job.id)
+                        put("payload", payload)
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            return
+        }
+
+        appendRuntimeEvent(
+            runtime = runtime,
+            scopeId = scope.chatId,
+            jobId = job.id,
+            stage = "job_claimed",
+            level = "info",
+            message = "One-to-one proactive job claimed",
+            details =
+                JSONObject().apply {
+                    put("chatId", scope.chatId)
+                    put("attempt", job.attempts + 1)
+                    put("maxAttempts", scope.payloadMaxAttempts)
+                },
+            taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+        )
+        ForegroundSyncService.updateWorkerStatus(
+            context = context,
+            worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+            state = "running",
+            scopeId = scope.chatId,
+            detail = "proactive_started",
+            progress = false,
+            claimed = true,
+            lastError = "",
+        )
+
+        try {
+            val nextRunAtMs =
+                executeClaimedProactiveJob(
+                    context = context,
+                    repository = repository,
+                    runtime = runtime,
+                    job = job,
+                    scope = scope,
+                )
+            jobs.rescheduleJob(
+                id = job.id,
+                runAtMs = nextRunAtMs,
+                incrementAttempts = false,
+                lastError = null,
+            )
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "job_completed",
+                level = "info",
+                message = "One-to-one proactive job completed",
+                details =
+                    JSONObject().apply {
+                        put("nextRunAtMs", nextRunAtMs)
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+                state = "idle",
+                scopeId = scope.chatId,
+                detail = "proactive_completed",
+                progress = true,
+                claimed = false,
+                lastError = "",
+            )
+        } catch (error: Exception) {
+            val errorMessage = error.message?.trim().orEmpty().ifBlank { "one_to_one_proactive_failed" }
+            val runAtMs =
+                System.currentTimeMillis() +
+                    if (error is ContextMissingException) {
+                        CONTEXT_SYNC_RETRY_DELAY_MS
+                    } else {
+                        max(1_000L, scope.retryDelayMs)
+                    }
+            jobs.rescheduleJob(
+                id = job.id,
+                runAtMs = runAtMs,
+                incrementAttempts = false,
+                lastError = errorMessage,
+            )
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "job_failed_retry",
+                level = "warn",
+                message = "One-to-one proactive job failed and scheduled for retry",
+                details =
+                    JSONObject().apply {
+                        put("error", errorMessage)
+                        put("retryDelayMs", runAtMs - System.currentTimeMillis())
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            ForegroundSyncService.updateWorkerStatus(
+                context = context,
+                worker = ForegroundSyncService.WORKER_ONE_TO_ONE_CHAT,
+                state = "error",
+                scopeId = scope.chatId,
+                detail = "proactive_failed_retry",
+                progress = false,
+                claimed = true,
+                lastError = errorMessage,
+            )
+        }
+    }
+
     private fun parseJobScope(jobId: String, payload: JSONObject): ParsedJobScope {
         val payloadChatId = payload.optString("chatId", "").trim()
         val payloadUserMessageId = payload.optString("userMessageId", "").trim()
@@ -386,6 +1174,38 @@ object OneToOneChatNativeExecutor {
             personaId = payloadPersonaId,
             retryDelayMs = payload.optLong("retryDelayMs", ONE_TO_ONE_CHAT_DEFAULT_RETRY_DELAY_MS),
             payloadMaxAttempts = payload.optInt("maxAttempts", ONE_TO_ONE_CHAT_DEFAULT_MAX_ATTEMPTS),
+        )
+    }
+
+    private fun parseProactiveScope(jobId: String, payload: JSONObject): ParsedProactiveScope {
+        val payloadChatId = payload.optString("chatId", "").trim()
+        val payloadPersonaId = payload.optString("personaId", "").trim()
+        var chatId = payloadChatId
+        if (chatId.isBlank() && jobId.startsWith(ONE_TO_ONE_PROACTIVE_JOB_PREFIX)) {
+            chatId = jobId.removePrefix(ONE_TO_ONE_PROACTIVE_JOB_PREFIX).trim()
+        }
+        val firstRunAfterInactivityMinutes =
+            max(
+                1L,
+                payload.optLong(
+                    "firstRunAfterInactivityMinutes",
+                    ONE_TO_ONE_PROACTIVE_FIRST_INACTIVITY_MS / 60_000L,
+                ),
+            )
+        val minDelayMinutes =
+            max(1L, payload.optLong("minDelayMinutes", ONE_TO_ONE_PROACTIVE_MIN_DELAY_MS / 60_000L))
+        val maxDelayMinutes =
+            max(minDelayMinutes, payload.optLong("maxDelayMinutes", ONE_TO_ONE_PROACTIVE_MAX_DELAY_MS / 60_000L))
+        return ParsedProactiveScope(
+            chatId = chatId,
+            personaId = payloadPersonaId,
+            retryDelayMs = payload.optLong("retryDelayMs", ONE_TO_ONE_PROACTIVE_DEFAULT_RETRY_DELAY_MS),
+            payloadMaxAttempts = payload.optInt("maxAttempts", ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_ATTEMPTS),
+            minDelayMs = minDelayMinutes * 60_000L,
+            maxDelayMs = maxDelayMinutes * 60_000L,
+            firstRunAfterInactivityMs = firstRunAfterInactivityMinutes * 60_000L,
+            maxActionsPerIteration =
+                max(1, payload.optInt("maxActionsPerTick", ONE_TO_ONE_PROACTIVE_MAX_ACTIONS_PER_ITERATION)),
         )
     }
 
@@ -1416,6 +2236,560 @@ object OneToOneChatNativeExecutor {
         )
     }
 
+    @JvmStatic
+    fun simulateProactivityFlow(
+        repository: LocalRepository,
+        chatId: String,
+    ): JSONObject {
+        val normalizedChatId = chatId.trim()
+        val simulatedAt = nowIsoUtc()
+        val stages = JSONArray()
+        var personaId = ""
+        val summary =
+            JSONObject().apply {
+                put("dryRun", true)
+            }
+
+        fun appendStage(
+            id: String,
+            title: String,
+            status: String,
+            details: JSONObject? = null,
+        ) {
+            stages.put(
+                JSONObject().apply {
+                    put("id", id)
+                    put("title", title)
+                    put("status", status)
+                    if (details != null) {
+                        put("details", details)
+                    }
+                },
+            )
+        }
+
+        fun buildReport(): JSONObject {
+            return JSONObject().apply {
+                put("chatId", normalizedChatId)
+                put("personaId", personaId)
+                put("simulatedAt", simulatedAt)
+                put("stages", stages)
+                put("summary", summary)
+            }
+        }
+
+        if (normalizedChatId.isBlank()) {
+            appendStage(
+                id = "input_validation",
+                title = "Проверка входных данных",
+                status = "error",
+                details = JSONObject().put("error", "chatId is required"),
+            )
+            summary.put("result", "failed")
+            summary.put("reason", "chat_id_missing")
+            return buildReport()
+        }
+
+        try {
+            val nowMs = System.currentTimeMillis()
+            val settings = parseJsonObject(repository.readSettingsJson())
+            val personas = readStoreArray(repository, "personas")
+            val chats = readStoreArray(repository, "chats")
+            val messages = readStoreArray(repository, "messages")
+            val diaryEntries = readStoreArray(repository, "diaryEntries")
+            val personaEvolutionStates = readStoreArray(repository, "personaEvolutionStates")
+            val personaStates = readStoreArray(repository, "personaStates")
+            val memories = readStoreArray(repository, "memories")
+            appendStage(
+                id = "context_loaded",
+                title = "Загрузка runtime-контекста",
+                status = "ok",
+                details =
+                    JSONObject().apply {
+                        put("personasCount", personas.length())
+                        put("chatsCount", chats.length())
+                        put("messagesCount", messages.length())
+                        put("diaryEntriesCount", diaryEntries.length())
+                        put("personaStatesCount", personaStates.length())
+                        put("personaEvolutionStatesCount", personaEvolutionStates.length())
+                        put("memoriesCount", memories.length())
+                    },
+            )
+
+            val chat = findObjectById(chats, normalizedChatId)
+            if (chat == null) {
+                appendStage(
+                    id = "chat_lookup",
+                    title = "Поиск чата",
+                    status = "error",
+                    details = JSONObject().put("error", "chat_not_found"),
+                )
+                summary.put("result", "failed")
+                summary.put("reason", "chat_not_found")
+                return buildReport()
+            }
+            appendStage(
+                id = "chat_lookup",
+                title = "Поиск чата",
+                status = "ok",
+                details =
+                    JSONObject().apply {
+                        put("chatId", normalizedChatId)
+                        put("title", chat.optString("title", ""))
+                    },
+            )
+
+            personaId = chat.optString("personaId", "").trim()
+            if (personaId.isBlank()) {
+                appendStage(
+                    id = "persona_lookup",
+                    title = "Поиск персоны",
+                    status = "error",
+                    details = JSONObject().put("error", "persona_id_missing_in_chat"),
+                )
+                summary.put("result", "failed")
+                summary.put("reason", "persona_id_missing")
+                return buildReport()
+            }
+            val persona = findObjectById(personas, personaId)
+            if (persona == null) {
+                appendStage(
+                    id = "persona_lookup",
+                    title = "Поиск персоны",
+                    status = "error",
+                    details = JSONObject().put("error", "persona_not_found").put("personaId", personaId),
+                )
+                summary.put("result", "failed")
+                summary.put("reason", "persona_not_found")
+                return buildReport()
+            }
+            appendStage(
+                id = "persona_lookup",
+                title = "Поиск персоны",
+                status = "ok",
+                details =
+                    JSONObject().apply {
+                        put("personaId", personaId)
+                        put("personaName", persona.optString("name", ""))
+                    },
+            )
+
+            val scope =
+                parseProactiveScope(
+                    "$ONE_TO_ONE_PROACTIVE_JOB_PREFIX$normalizedChatId",
+                    JSONObject().put("chatId", normalizedChatId),
+                )
+            val proactivityConfig = normalizeChatProactivityConfig(chat.optJSONObject("proactivityConfig"))
+            val timeline = buildChatMessageTimeline(messages, normalizedChatId).toMutableList()
+            val lastActivityMs =
+                timeline.lastOrNull()?.let { message ->
+                    parseIsoMs(message.optString("createdAt", "").trim())
+                } ?: 0L
+            val firstRunAtMs = lastActivityMs + scope.firstRunAfterInactivityMs
+            val computedNextRunAtMs =
+                when {
+                    proactivityConfig.nextRunAtMs > 0L -> proactivityConfig.nextRunAtMs
+                    lastActivityMs > 0L -> firstRunAtMs
+                    else -> nowMs + scope.minDelayMs
+                }
+            val dueBySchedule = nowMs >= computedNextRunAtMs
+            val gateBypassReason =
+                when {
+                    !proactivityConfig.enabled -> "proactivity_disabled_but_forced_for_simulation"
+                    !dueBySchedule -> "not_due_yet_but_forced_for_simulation"
+                    else -> "none"
+                }
+            appendStage(
+                id = "schedule_gate",
+                title = "Проверка расписания и неактивности",
+                status = if (gateBypassReason == "none") "ok" else "warn",
+                details =
+                    JSONObject().apply {
+                        put("enabled", proactivityConfig.enabled)
+                        put("nowMs", nowMs)
+                        put("lastActivityAtMs", lastActivityMs)
+                        put("configuredNextRunAtMs", proactivityConfig.nextRunAtMs)
+                        put("computedNextRunAtMs", computedNextRunAtMs)
+                        put("dueBySchedule", dueBySchedule)
+                        put("bypassReason", gateBypassReason)
+                        put("forceRunInSimulation", true)
+                    },
+            )
+
+            val evolutionConfig = normalizeChatEvolutionConfig(chat.optJSONObject("evolutionConfig"))
+            var evolutionState =
+                normalizePersonaEvolutionState(
+                    state = findPersonaEvolutionStateForChat(personaEvolutionStates, normalizedChatId),
+                    chatId = normalizedChatId,
+                    persona = persona,
+                )
+            var effectivePersona =
+                if (evolutionConfig.enabled) {
+                    applyPersonaEvolutionProfile(persona, evolutionState.optJSONObject("currentProfile"))
+                } else {
+                    JSONObject(persona.toString())
+                }
+            val existingState =
+                findPersonaStateForChat(personaStates, normalizedChatId)
+                    ?: createInitialPersonaState(effectivePersona, normalizedChatId)
+            val recentMessages = buildRecentMessagesForPrompt(messages, normalizedChatId)
+            val memoryPool = readChatMemories(memories, normalizedChatId)
+            val memoryCard =
+                buildMemoryCard(
+                    memoryPool,
+                    recentMessages,
+                    resolvePersonaMemoryDecayDays(effectivePersona),
+                )
+            val conversationSummary = buildConversationSummaryContext(chat)
+            val existingTags = buildDiaryExistingTagsCatalog(diaryEntries, normalizedChatId, nowMs)
+            val recentDiaryEntries = collectRecentDiaryEntriesForPlanner(diaryEntries, normalizedChatId, 16)
+            val pendingProactiveDiaryEntries = 0
+            val userLocalTimeContext = formatCurrentUserLocalTimeContext()
+            appendStage(
+                id = "planner_context",
+                title = "Подготовка контекста planner",
+                status = "ok",
+                details =
+                    JSONObject().apply {
+                        put("recentMessagesCount", recentMessages.length())
+                        put("memoryCardLayers", memoryCard.length())
+                        put("recentDiaryEntriesCount", recentDiaryEntries.length())
+                        put("existingTagsCount", existingTags.size)
+                        put("timelineCount", timeline.size)
+                        put("userLocalTimeContext", userLocalTimeContext)
+                        put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
+                        put("pendingProactiveDiarySoftLimit", ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT)
+                    },
+            )
+
+            val plan =
+                NativeLlmClient.requestOneToOneProactivePlan(
+                    settings = settings,
+                    persona = effectivePersona,
+                    recentMessages = recentMessages,
+                    runtimeState = existingState,
+                    memoryCard = memoryCard,
+                    conversationSummary = conversationSummary,
+                    diaryEntries = recentDiaryEntries,
+                    pendingProactiveDiaryEntries = pendingProactiveDiaryEntries,
+                    pendingProactiveDiarySoftLimit = ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT,
+                    userLocalTimeContext = userLocalTimeContext,
+                    evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
+                )
+            if (plan == null) {
+                appendStage(
+                    id = "planner_call",
+                    title = "Вызов planner",
+                    status = "error",
+                    details = JSONObject().put("error", "planner_response_empty"),
+                )
+                summary.put("result", "failed")
+                summary.put("reason", "planner_response_empty")
+                return buildReport()
+            }
+
+            val normalizedActions = (plan.actions).take(scope.maxActionsPerIteration.coerceAtLeast(1))
+            val shouldRunActions =
+                plan.status.equals("run", ignoreCase = true) &&
+                    normalizedActions.isNotEmpty()
+            appendStage(
+                id = "planner_call",
+                title = "Решение planner",
+                status = if (shouldRunActions) "ok" else "skip",
+                details =
+                    JSONObject().apply {
+                        put("status", plan.status)
+                        put("reason", plan.reason)
+                        put("nextDelayMinutes", plan.nextDelayMinutes ?: JSONObject.NULL)
+                        put("actions", JSONArray().apply { normalizedActions.forEach { put(JSONObject(it.toString())) } })
+                        putLlmCallDebugDetails(this, plan.llmDebug)
+                    },
+            )
+
+            val simulatedMessages = JSONArray()
+            val simulatedDiaryEntries = JSONArray()
+            var evolutionStateChanged = false
+
+            val applyEvolutionFromControl: (JSONObject?) -> Unit = apply@{ control ->
+                if (control == null || !evolutionConfig.enabled) return@apply
+                val nextTimestamp = nowIsoUtc()
+                val result =
+                    processPersonaControlEvolution(
+                        control = control,
+                        config = evolutionConfig,
+                        state = evolutionState,
+                        timestamp = nextTimestamp,
+                    )
+                if (result.state.toString() != evolutionState.toString()) {
+                    evolutionState = result.state
+                    evolutionStateChanged = true
+                    effectivePersona =
+                        if (evolutionConfig.enabled) {
+                            applyPersonaEvolutionProfile(persona, evolutionState.optJSONObject("currentProfile"))
+                        } else {
+                            JSONObject(persona.toString())
+                        }
+                }
+            }
+
+            if (shouldRunActions) {
+                normalizedActions.forEachIndexed { index, action ->
+                    val actionType =
+                        normalizeProactiveActionType(action.optString("type", action.optString("action", "")))
+                    val stageId = "action_${index + 1}"
+                    val stageTitle = "Действие #${index + 1} ($actionType)"
+
+                    if (actionType == "reflection") {
+                        val focusTags =
+                            selectReflectionFocusTags(
+                                action = action,
+                                existingTags = existingTags,
+                                maxTags = REFLECTION_FOCUS_TAGS_LIMIT,
+                            )
+                        val relatedDiaryEntries =
+                            collectDiaryEntriesByFocusTags(
+                                diaryEntries = diaryEntries,
+                                chatId = normalizedChatId,
+                                focusTags = focusTags,
+                                limit = REFLECTION_RELATED_DIARY_ENTRIES_LIMIT,
+                            )
+                        val reflection =
+                            NativeLlmClient.requestOneToOneProactiveReflection(
+                                settings = settings,
+                                persona = effectivePersona,
+                                action = action,
+                                recentMessages = recentMessages,
+                                runtimeState = existingState,
+                                memoryCard = memoryCard,
+                                conversationSummary = conversationSummary,
+                                existingTags = existingTags,
+                                focusTags = focusTags,
+                                relatedDiaryEntries = relatedDiaryEntries,
+                                userLocalTimeContext = userLocalTimeContext,
+                                evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
+                            )
+
+                        if (reflection == null) {
+                            appendStage(
+                                id = stageId,
+                                title = stageTitle,
+                                status = "warn",
+                                details =
+                                    JSONObject().apply {
+                                        put("type", actionType)
+                                        put("action", JSONObject(action.toString()))
+                                        put("error", "reflection_response_empty")
+                                        put("focusTags", JSONArray(focusTags))
+                                        put("relatedDiaryEntriesCount", relatedDiaryEntries.length())
+                                    },
+                            )
+                            return@forEachIndexed
+                        }
+
+                        val reflectionDetails =
+                            JSONObject().apply {
+                                put("type", actionType)
+                                put("action", JSONObject(action.toString()))
+                                put("focusTags", JSONArray(focusTags))
+                                put("relatedDiaryEntriesCount", relatedDiaryEntries.length())
+                                put("shouldWriteDiary", reflection.shouldWriteDiary)
+                                put("reason", reflection.reason ?: "")
+                                put("draftEntryCount", reflection.entries.size)
+                                put(
+                                    "draftEntries",
+                                    JSONArray().apply {
+                                        reflection.entries.forEach { entry ->
+                                            put(
+                                                JSONObject().apply {
+                                                    put("markdown", entry.markdown)
+                                                    put("tags", JSONArray(entry.tags))
+                                                },
+                                            )
+                                        }
+                                    },
+                                )
+                                putLlmCallDebugDetails(this, reflection.llmDebug)
+                            }
+
+                        val sourceMessages =
+                            if (timeline.size <= DIARY_RECENT_MESSAGE_LIMIT) {
+                                timeline
+                            } else {
+                                timeline.takeLast(DIARY_RECENT_MESSAGE_LIMIT)
+                            }
+                        if (reflection.shouldWriteDiary && reflection.entries.isNotEmpty() && sourceMessages.isNotEmpty()) {
+                            val generatedEntries =
+                                materializeDiaryEntriesFromDraft(
+                                    chatId = normalizedChatId,
+                                    personaId = personaId,
+                                    sourceMessages = sourceMessages,
+                                    draft =
+                                        NativeOneToOneDiaryDraft(
+                                            shouldWrite = true,
+                                            entries = reflection.entries,
+                                        ),
+                                    nowMs = nowMs,
+                                )
+                            for (entryIndex in 0 until generatedEntries.length()) {
+                                val entry = generatedEntries.optJSONObject(entryIndex) ?: continue
+                                simulatedDiaryEntries.put(JSONObject(entry.toString()))
+                            }
+                            reflectionDetails.put("simulatedDiaryEntryCount", generatedEntries.length())
+                        } else {
+                            reflectionDetails.put("simulatedDiaryEntryCount", 0)
+                        }
+
+                        appendStage(
+                            id = stageId,
+                            title = stageTitle,
+                            status = "ok",
+                            details = reflectionDetails,
+                        )
+                        return@forEachIndexed
+                    }
+
+                    val speech =
+                        NativeLlmClient.requestOneToOneProactiveSpeech(
+                            settings = settings,
+                            persona = effectivePersona,
+                            action = action,
+                            recentMessages = recentMessages,
+                            runtimeState = existingState,
+                            memoryCard = memoryCard,
+                            conversationSummary = conversationSummary,
+                            userLocalTimeContext = userLocalTimeContext,
+                            evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
+                        )
+                    if (speech == null) {
+                        appendStage(
+                            id = stageId,
+                            title = stageTitle,
+                            status = "warn",
+                            details =
+                                JSONObject().apply {
+                                    put("type", actionType)
+                                    put("action", JSONObject(action.toString()))
+                                    put("error", "speech_response_empty")
+                                },
+                        )
+                        return@forEachIndexed
+                    }
+
+                    val assistantMessage = buildProactiveAssistantMessage(normalizedChatId, speech)
+                    val promptBlocks =
+                        parseStringList(assistantMessage.optJSONArray("comfyPrompts"))
+                            .ifEmpty {
+                                assistantMessage
+                                    .optString("comfyPrompt", "")
+                                    .trim()
+                                    .ifEmpty { null }
+                                    ?.let { listOf(it) } ?: emptyList()
+                            }
+                    val imageDescriptionBlocks =
+                        parseStringList(assistantMessage.optJSONArray("comfyImageDescriptions"))
+                            .ifEmpty {
+                                assistantMessage
+                                    .optString("comfyImageDescription", "")
+                                    .trim()
+                                    .ifEmpty { null }
+                                    ?.let { listOf(it) } ?: emptyList()
+                            }
+                    val requestedImageCount =
+                        if (imageDescriptionBlocks.isNotEmpty()) {
+                            imageDescriptionBlocks.size
+                        } else {
+                            promptBlocks.size
+                        }
+
+                    simulatedMessages.put(JSONObject(assistantMessage.toString()))
+                    timeline.add(JSONObject(assistantMessage.toString()))
+                    applyEvolutionFromControl(speech.personaControl)
+
+                    appendStage(
+                        id = stageId,
+                        title = stageTitle,
+                        status = "ok",
+                        details =
+                            JSONObject().apply {
+                                put("type", actionType)
+                                put("action", JSONObject(action.toString()))
+                                put("assistantMessage", JSONObject(assistantMessage.toString()))
+                                put("requestedImageCount", requestedImageCount)
+                                if (requestedImageCount > 0 || actionType == "photo") {
+                                    put("imageGeneration", "skipped_dry_run")
+                                    put("imageGenerationReason", "no_side_effects_in_simulation")
+                                }
+                                putLlmCallDebugDetails(this, speech.llmDebug)
+                            },
+                    )
+                }
+            } else {
+                appendStage(
+                    id = "actions_execution",
+                    title = "Исполнение действий",
+                    status = "skip",
+                    details =
+                        JSONObject().apply {
+                            put("reason", "planner_decided_skip_or_no_actions")
+                            put("status", plan.status)
+                            put("actionCount", normalizedActions.size)
+                        },
+                )
+            }
+
+            val resolvedNextDelayMs = resolveProactiveNextDelayMs(scope, plan.nextDelayMinutes)
+            val resolvedNextRunAtMs = nowMs + resolvedNextDelayMs
+            val rawNextDelayMs =
+                if (plan.nextDelayMinutes != null && plan.nextDelayMinutes > 0) {
+                    plan.nextDelayMinutes.toLong() * 60_000L
+                } else {
+                    null
+                }
+            appendStage(
+                id = "schedule_preview",
+                title = "Расчет следующего запуска",
+                status = "ok",
+                details =
+                    JSONObject().apply {
+                        put("nextDelayMinutesRaw", plan.nextDelayMinutes ?: JSONObject.NULL)
+                        put("nextDelayMsRaw", rawNextDelayMs ?: JSONObject.NULL)
+                        put("nextDelayMsResolved", resolvedNextDelayMs)
+                        put("nextRunAtMsResolved", resolvedNextRunAtMs)
+                        put("usedDefaultDelay", plan.nextDelayMinutes == null || plan.nextDelayMinutes <= 0)
+                        put("delayClamped", rawNextDelayMs != null && rawNextDelayMs != resolvedNextDelayMs)
+                    },
+            )
+
+            summary.put("result", "ok")
+            summary.put("planStatus", plan.status)
+            summary.put("planReason", plan.reason)
+            summary.put("actionCandidatesCount", normalizedActions.size)
+            summary.put("simulatedMessagesCount", simulatedMessages.length())
+            summary.put("simulatedDiaryEntriesCount", simulatedDiaryEntries.length())
+            summary.put("evolutionStateChanged", evolutionStateChanged)
+            summary.put("nextDelayMsResolved", resolvedNextDelayMs)
+            summary.put("nextRunAtMsResolved", resolvedNextRunAtMs)
+            summary.put("messages", simulatedMessages)
+            summary.put("diaryEntries", simulatedDiaryEntries)
+            summary.put("finalEvolutionState", JSONObject(evolutionState.toString()))
+        } catch (error: Exception) {
+            appendStage(
+                id = "simulation_error",
+                title = "Ошибка симуляции",
+                status = "error",
+                details =
+                    JSONObject().apply {
+                        put("error", error.message ?: "proactivity_simulation_failed")
+                        put("exception", error::class.java.simpleName)
+                    },
+            )
+            summary.put("result", "failed")
+            summary.put("reason", error.message ?: "proactivity_simulation_failed")
+        }
+
+        return buildReport()
+    }
+
     private fun maybeGenerateDiaryEntries(
         context: Context,
         repository: LocalRepository,
@@ -1643,6 +3017,201 @@ object OneToOneChatNativeExecutor {
             .map { it.first }
     }
 
+    private fun normalizeDiaryTagKey(tag: String): String {
+        return tag.trim().lowercase()
+    }
+
+    private fun normalizeReflectionTagCandidate(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isBlank()) return null
+        val compact = trimmed.replace(Regex("\\s+"), " ")
+        val prefix = compact.substringBefore(":", "").trim().lowercase()
+        val value = compact.substringAfter(":", "").trim()
+        if (compact.contains(":") && prefix in DiaryTagSpec.PREFIXES_SET && value.isNotBlank()) {
+            return "$prefix:$value"
+        }
+        return compact
+    }
+
+    private fun extractReflectionTagCandidates(action: JSONObject): List<String> {
+        val result = mutableListOf<String>()
+        val arrayKeys = listOf("focusTags", "tags", "reflectionTags", "selectedTags")
+        arrayKeys.forEach { key ->
+            parseStringList(action.optJSONArray(key)).forEach { value ->
+                normalizeReflectionTagCandidate(value)?.let { result.add(it) }
+            }
+        }
+        val scalarKeys = listOf("focusTag", "tag", "reflectionTag", "selectedTag")
+        scalarKeys.forEach { key ->
+            normalizeReflectionTagCandidate(action.optString(key, ""))?.let { result.add(it) }
+        }
+        val nested = action.optJSONObject("reflection")
+        if (nested != null) {
+            arrayKeys.forEach { key ->
+                parseStringList(nested.optJSONArray(key)).forEach { value ->
+                    normalizeReflectionTagCandidate(value)?.let { result.add(it) }
+                }
+            }
+            scalarKeys.forEach { key ->
+                normalizeReflectionTagCandidate(nested.optString(key, ""))?.let { result.add(it) }
+            }
+        }
+        return result
+    }
+
+    private fun matchExistingDiaryTag(
+        candidate: String,
+        existingTags: List<String>,
+        existingByNormalized: Map<String, String>,
+    ): String? {
+        val normalizedCandidate = normalizeDiaryTagKey(candidate)
+        existingByNormalized[normalizedCandidate]?.let { return it }
+        val candidateValue = normalizedCandidate.substringAfter(":", normalizedCandidate)
+        val candidateHasPrefix = normalizedCandidate.contains(":")
+        if (candidateValue.isBlank()) return null
+        return existingTags.firstOrNull { tag ->
+            val normalizedTag = normalizeDiaryTagKey(tag)
+            val tagValue = normalizedTag.substringAfter(":", normalizedTag)
+            if (normalizedTag == normalizedCandidate) return@firstOrNull true
+            if (tagValue == candidateValue) return@firstOrNull true
+            if (!candidateHasPrefix && tagValue.contains(candidateValue)) return@firstOrNull true
+            if (!candidateHasPrefix && candidateValue.contains(tagValue)) return@firstOrNull true
+            false
+        }
+    }
+
+    private fun selectReflectionFocusTags(
+        action: JSONObject,
+        existingTags: List<String>,
+        maxTags: Int,
+    ): List<String> {
+        if (maxTags <= 0) return emptyList()
+        val selected = linkedSetOf<String>()
+        val existingByNormalized = existingTags.associateBy { tag -> normalizeDiaryTagKey(tag) }
+
+        extractReflectionTagCandidates(action).forEach { candidate ->
+            if (selected.size >= maxTags) return@forEach
+            val matched = matchExistingDiaryTag(candidate, existingTags, existingByNormalized)
+            if (matched != null) {
+                selected.add(matched)
+            }
+        }
+
+        if (selected.size < maxTags) {
+            val actionText =
+                listOf(action.optString("intent", ""), action.optString("reason", ""))
+                    .joinToString(" ")
+                    .trim()
+                    .lowercase()
+            if (actionText.isNotBlank()) {
+                val tokens =
+                    Regex("[\\p{L}\\p{N}_-]{3,}")
+                        .findAll(actionText)
+                        .map { match -> match.value.trim() }
+                        .filter { token -> token.isNotBlank() }
+                        .toList()
+                for (token in tokens) {
+                    if (selected.size >= maxTags) break
+                    val matched =
+                        existingTags.firstOrNull { tag ->
+                            val normalizedTag = normalizeDiaryTagKey(tag)
+                            val tagValue = normalizedTag.substringAfter(":", normalizedTag)
+                            normalizedTag.contains(token) || tagValue.contains(token)
+                        }
+                    if (matched != null) {
+                        selected.add(matched)
+                    }
+                }
+            }
+        }
+
+        if (selected.isEmpty()) {
+            existingTags.take(maxTags).forEach { tag -> selected.add(tag) }
+        }
+
+        return selected.take(maxTags)
+    }
+
+    private fun collectDiaryEntriesByFocusTags(
+        diaryEntries: JSONArray,
+        chatId: String,
+        focusTags: List<String>,
+        limit: Int,
+    ): JSONArray {
+        if (limit <= 0 || focusTags.isEmpty()) return JSONArray()
+        val normalizedFocusTags =
+            focusTags
+                .map { tag -> normalizeDiaryTagKey(tag) }
+                .filter { tag -> tag.isNotBlank() }
+                .distinct()
+                .take(limit)
+        if (normalizedFocusTags.isEmpty()) return JSONArray()
+        val focusSet = normalizedFocusTags.toSet()
+        data class RelatedDiaryEntry(
+            val sourceIndex: Int,
+            val score: Int,
+            val createdAtMs: Long,
+            val matchedTags: Set<String>,
+            val entry: JSONObject,
+        )
+        val ranked = mutableListOf<RelatedDiaryEntry>()
+        for (index in 0 until diaryEntries.length()) {
+            val entry = diaryEntries.optJSONObject(index) ?: continue
+            if (entry.optString("chatId", "").trim() != chatId) continue
+            val tags = normalizeDiaryTags(parseStringList(entry.optJSONArray("tags")))
+            if (tags.isEmpty()) continue
+            val normalizedTags = tags.map { tag -> normalizeDiaryTagKey(tag) }
+            val matchedTags = normalizedTags.filter { tag -> tag in focusSet }.toSet()
+            val matchedCount = matchedTags.size
+            if (matchedCount <= 0) continue
+            val createdAtMs = parseIsoMs(entry.optString("createdAt", "").trim()) ?: 0L
+            ranked.add(
+                RelatedDiaryEntry(
+                    sourceIndex = index,
+                    score = matchedCount,
+                    createdAtMs = createdAtMs,
+                    matchedTags = matchedTags,
+                    entry = JSONObject(entry.toString()),
+                ),
+            )
+        }
+        val sorted =
+            ranked
+                .sortedWith(
+                    compareByDescending<RelatedDiaryEntry> { it.score }
+                        .thenByDescending { it.createdAtMs },
+                )
+        if (sorted.isEmpty()) return JSONArray()
+
+        val selected = mutableListOf<RelatedDiaryEntry>()
+        val selectedIndexes = mutableSetOf<Int>()
+
+        // Ensure each selected focus tag has at least one matching diary entry in context.
+        for (focusTag in normalizedFocusTags) {
+            if (selected.size >= limit) break
+            val alreadyCovered = selected.any { row -> focusTag in row.matchedTags }
+            if (alreadyCovered) continue
+            val candidate =
+                sorted.firstOrNull { row ->
+                    focusTag in row.matchedTags && row.sourceIndex !in selectedIndexes
+                } ?: sorted.firstOrNull { row -> focusTag in row.matchedTags }
+            if (candidate != null && candidate.sourceIndex !in selectedIndexes) {
+                selected.add(candidate)
+                selectedIndexes.add(candidate.sourceIndex)
+            }
+        }
+
+        for (row in sorted) {
+            if (selected.size >= limit) break
+            if (row.sourceIndex in selectedIndexes) continue
+            selected.add(row)
+            selectedIndexes.add(row.sourceIndex)
+        }
+        return JSONArray().apply {
+            selected.forEach { row -> put(row.entry) }
+        }
+    }
+
     private fun materializeDiaryEntriesFromDraft(
         chatId: String,
         personaId: String,
@@ -1712,6 +3281,49 @@ object OneToOneChatNativeExecutor {
             next.put("enabled", next.optBoolean("enabled", false))
         }
         return next
+    }
+
+    private fun normalizeChatProactivityConfig(raw: JSONObject?): ChatProactivityConfig {
+        val nextRunAtMs = raw?.optLong("nextRunAtMs", 0L)?.coerceAtLeast(0L) ?: 0L
+        val lastActivityAtMs = raw?.optLong("lastActivityAtMs", 0L)?.coerceAtLeast(0L) ?: 0L
+        val lastProactiveAtMs = raw?.optLong("lastProactiveAtMs", 0L)?.coerceAtLeast(0L) ?: 0L
+        return ChatProactivityConfig(
+            enabled = raw?.optBoolean("enabled", false) == true,
+            lastActivityAtMs = lastActivityAtMs,
+            nextRunAtMs = nextRunAtMs,
+            lastProactiveAtMs = lastProactiveAtMs,
+        )
+    }
+
+    private fun serializeChatProactivityConfig(config: ChatProactivityConfig): JSONObject {
+        return JSONObject().apply {
+            put("enabled", config.enabled)
+            if (config.lastActivityAtMs > 0L) {
+                put("lastActivityAtMs", config.lastActivityAtMs)
+            }
+            if (config.nextRunAtMs > 0L) {
+                put("nextRunAtMs", config.nextRunAtMs)
+            }
+            if (config.lastProactiveAtMs > 0L) {
+                put("lastProactiveAtMs", config.lastProactiveAtMs)
+            }
+        }
+    }
+
+    private fun resolveDayPeriodByHour(hour: Int): String {
+        return when {
+            hour in 5..11 -> "утро"
+            hour in 12..16 -> "день"
+            hour in 17..22 -> "вечер"
+            else -> "ночь"
+        }
+    }
+
+    private fun formatCurrentUserLocalTimeContext(now: ZonedDateTime = ZonedDateTime.now()): String {
+        val zoneId = now.zone.id.trim().ifEmpty { "unknown_timezone" }
+        val dayPeriod = resolveDayPeriodByHour(now.hour)
+        val formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'XXX"))
+        return "Текущее локальное время пользователя: $formatted ($zoneId, $dayPeriod)."
     }
 
     private fun parseIsoMs(value: String): Long? {
@@ -3506,12 +5118,13 @@ object OneToOneChatNativeExecutor {
         jobId: String?,
         stores: JSONObject,
         assetIds: List<String> = emptyList(),
+        taskType: String = ONE_TO_ONE_CHAT_JOB_TYPE,
     ) {
         val normalizedScopeId = scopeId.ifBlank { BackgroundRuntimeRepository.GLOBAL_SCOPE_ID }
         val normalizedAssetIds =
             assetIds.map { id -> id.trim() }.filter { id -> id.isNotEmpty() }.distinct()
         runtime.appendDelta(
-            taskType = ONE_TO_ONE_CHAT_JOB_TYPE,
+            taskType = taskType,
             scopeId = normalizedScopeId,
             kind = "state_patch",
             entityType = "stores",
@@ -3534,10 +5147,11 @@ object OneToOneChatNativeExecutor {
         level: String,
         message: String,
         details: JSONObject?,
+        taskType: String = ONE_TO_ONE_CHAT_JOB_TYPE,
     ) {
         val normalizedScopeId = scopeId.ifBlank { "unknown" }
         runtime.appendEvent(
-            taskType = ONE_TO_ONE_CHAT_JOB_TYPE,
+            taskType = taskType,
             scopeId = normalizedScopeId,
             jobId = jobId,
             stage = stage,
@@ -3546,7 +5160,7 @@ object OneToOneChatNativeExecutor {
             detailsJson = details?.toString(),
         )
         runtime.appendDelta(
-            taskType = ONE_TO_ONE_CHAT_JOB_TYPE,
+            taskType = taskType,
             scopeId = normalizedScopeId,
             kind = "worker_action",
             entityType = stage,

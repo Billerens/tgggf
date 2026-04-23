@@ -6,6 +6,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.util.Log
+import org.json.JSONObject
 
 data class BackgroundDesiredStateRecord(
     val taskType: String,
@@ -563,6 +564,53 @@ class BackgroundRuntimeRepository(
             } else {
                 cursor.getLong(0)
             }
+        }
+    }
+
+    fun countPendingDiaryEntriesInDelta(
+        taskType: String,
+        scopeId: String? = null,
+    ): Int {
+        val normalizedTaskType = taskType.trim()
+        if (normalizedTaskType.isEmpty()) return 0
+        val normalizedScopeId = scopeId?.trim()?.ifEmpty { null }
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        clauses.add("$COL_TASK_TYPE = ?")
+        args.add(normalizedTaskType)
+        clauses.add("$COL_KIND = ?")
+        args.add("state_patch")
+        if (normalizedScopeId != null) {
+            clauses.add("$COL_SCOPE_ID = ?")
+            args.add(normalizedScopeId)
+        }
+        clauses.add("$COL_DELTA_PAYLOAD_JSON LIKE ?")
+        args.add("%\"diaryEntries\"%")
+
+        val selection = clauses.joinToString(" AND ")
+        return readableDatabase.query(
+            TABLE_DELTA,
+            arrayOf(COL_DELTA_PAYLOAD_JSON),
+            selection,
+            args.toTypedArray(),
+            null,
+            null,
+            "$COL_DELTA_ID ASC",
+            null,
+        ).use { cursor ->
+            var totalEntries = 0
+            while (cursor.moveToNext()) {
+                val payloadRaw = cursor.getString(0) ?: continue
+                val payload = try {
+                    JSONObject(payloadRaw)
+                } catch (_: Exception) {
+                    continue
+                }
+                val stores = payload.optJSONObject("stores") ?: continue
+                val diary = stores.optJSONArray("diaryEntries") ?: continue
+                totalEntries += diary.length()
+            }
+            totalEntries
         }
     }
 
