@@ -142,6 +142,7 @@ describe("influence prompt integration", () => {
     const room: GroupRoom = {
       id: "room-1",
       title: "Группа",
+      notificationsEnabled: true,
       mode: "personas_plus_user",
       status: "active",
       state: {

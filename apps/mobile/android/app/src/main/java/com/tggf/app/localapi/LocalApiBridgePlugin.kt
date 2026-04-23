@@ -20,6 +20,7 @@ import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.Permission
 import com.getcapacitor.annotation.PermissionCallback
+import com.tggf.app.MainActivity
 import org.json.JSONException
 import org.json.JSONObject
 import org.json.JSONArray
@@ -1050,6 +1051,25 @@ class LocalApiBridgePlugin : Plugin() {
         val method = (call.getString("method", "GET") ?: "GET").trim().uppercase()
         val normalizedPath = normalizePath(call.getString("path", "/") ?: "/")
         val (path, query) = splitPathAndQuery(normalizedPath)
+
+        if (method == "GET" && path == "/api/notifications/launch-target/consume") {
+            val target = MainActivity.consumePendingLaunchTarget()
+            respond(
+                call,
+                200,
+                JSObject().apply {
+                    put("ok", true)
+                    if (target != null && target.size >= 2) {
+                        put("targetType", target[0])
+                        put("targetId", target[1])
+                    } else {
+                        put("targetType", null)
+                        put("targetId", null)
+                    }
+                },
+            )
+            return
+        }
 
         if (method == "GET" && path == "/api/foreground-service") {
             respond(call, 200, buildForegroundServiceStatusPayload())

@@ -129,6 +129,7 @@ interface AppState {
   deleteChat: (chatId: string) => Promise<void>;
   renameChat: (chatId: string, title: string) => Promise<void>;
   setChatStyleStrength: (chatId: string, value: number | null) => Promise<void>;
+  setChatNotificationsEnabled: (chatId: string, enabled: boolean) => Promise<void>;
   setChatDiaryEnabled: (chatId: string, enabled: boolean) => Promise<void>;
   setChatProactivityEnabled: (chatId: string, enabled: boolean) => Promise<void>;
   setChatEvolutionEnabled: (chatId: string, enabled: boolean) => Promise<void>;
@@ -1160,6 +1161,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         id: id(),
         personaId: activePersonaId,
         title: "Новый чат",
+        notificationsEnabled: true,
         diaryConfig: {
           enabled: false,
         },
@@ -1300,6 +1302,37 @@ export const useAppStore = create<AppState>((set, get) => ({
         updatedAt: nowIso(),
       };
       await dbApi.saveChat(updatedChat);
+      const chats = await dbApi.getChats(updatedChat.personaId);
+      set({
+        chats,
+        activeChatId: chatId,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  setChatNotificationsEnabled: async (chatId, enabled) => {
+    set({ isLoading: true, error: null });
+    try {
+      const currentChat = get().chats.find((chat) => chat.id === chatId);
+      if (!currentChat) {
+        set({ isLoading: false });
+        return;
+      }
+      const updatedChat: ChatSession = {
+        ...currentChat,
+        notificationsEnabled: Boolean(enabled),
+        updatedAt: nowIso(),
+      };
+      await dbApi.saveChat(updatedChat);
+      if (getRuntimeContext().mode === "android") {
+        await syncOneToOneContextToNative({
+          chatId,
+          personaId: updatedChat.personaId,
+        });
+      }
       const chats = await dbApi.getChats(updatedChat.personaId);
       set({
         chats,

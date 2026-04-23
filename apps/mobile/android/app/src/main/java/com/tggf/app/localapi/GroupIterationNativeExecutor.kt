@@ -1126,6 +1126,15 @@ object GroupIterationNativeExecutor {
         repository.writeStoreJson("groupEvents", events.toString())
         if (persistedMessageId != null) {
             repository.writeStoreJson("groupMessages", messages.toString())
+            val persistedMessage = findObjectById(messages, persistedMessageId)
+            if (persistedMessage != null) {
+                IncomingMessageNotificationManager.notifyIncomingGroupMessage(
+                    context = context,
+                    repository = repository,
+                    room = nextRoom,
+                    message = persistedMessage,
+                )
+            }
         }
         val patchEvents = JSONArray()
         if (events.length() > initialEventsLength) {

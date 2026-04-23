@@ -1,6 +1,7 @@
 package com.tggf.app;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.os.Build;
@@ -25,8 +26,14 @@ import java.lang.ref.WeakReference;
 public class MainActivity extends BridgeActivity {
     private static final int NOTIFICATION_PERMISSION_REQUEST_CODE = 7002;
     private static final String TAG = "tg-gf/MainActivity";
+    private static final String EXTRA_TARGET_TYPE = "targetType";
+    private static final String EXTRA_TARGET_ID = "targetId";
     private static final Handler MAIN_HANDLER = new Handler(Looper.getMainLooper());
     private static WeakReference<MainActivity> activeInstance = new WeakReference<>(null);
+    private static final Object launchTargetLock = new Object();
+    private static volatile boolean appInForeground = false;
+    private static String pendingTargetType = null;
+    private static String pendingTargetId = null;
     private View privacyShieldView = null;
     private boolean privacyShieldEnabled = false;
 
@@ -40,12 +47,14 @@ public class MainActivity extends BridgeActivity {
         requestNotificationPermissionIfNeeded();
         BackgroundScheduler.ensureScheduled(this, "activity_on_create");
         ForegroundSyncService.ensureStartedIfEnabled(this);
+        captureLaunchTarget(getIntent());
     }
 
     @Override
     public void onResume() {
         super.onResume();
         activeInstance = new WeakReference<>(this);
+        appInForeground = true;
         disablePrivacyShield("onResume");
         // Some devices/WebView updates can reset this flag; enforce it again.
         enableWebViewDebugging("onResume");
@@ -54,12 +63,14 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onPause() {
+        appInForeground = false;
         enablePrivacyShield("onPause");
         super.onPause();
     }
 
     @Override
     public void onStop() {
+        appInForeground = false;
         enablePrivacyShield("onStop");
         super.onStop();
     }
@@ -71,7 +82,56 @@ public class MainActivity extends BridgeActivity {
         if (current == this) {
             activeInstance = new WeakReference<>(null);
         }
+        appInForeground = false;
         super.onDestroy();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        captureLaunchTarget(intent);
+    }
+
+    public static boolean isAppInForeground() {
+        return appInForeground;
+    }
+
+    public static String[] consumePendingLaunchTarget() {
+        synchronized (launchTargetLock) {
+            if (pendingTargetType == null || pendingTargetType.trim().isEmpty()) {
+                pendingTargetType = null;
+                pendingTargetId = null;
+                return null;
+            }
+            if (pendingTargetId == null || pendingTargetId.trim().isEmpty()) {
+                pendingTargetType = null;
+                pendingTargetId = null;
+                return null;
+            }
+            String[] result = new String[] { pendingTargetType, pendingTargetId };
+            pendingTargetType = null;
+            pendingTargetId = null;
+            return result;
+        }
+    }
+
+    private void captureLaunchTarget(Intent intent) {
+        if (intent == null) return;
+        String targetType = intent.getStringExtra(EXTRA_TARGET_TYPE);
+        String targetId = intent.getStringExtra(EXTRA_TARGET_ID);
+        if (targetType == null) return;
+        if (targetId == null) return;
+        String normalizedType = targetType.trim().toLowerCase();
+        String normalizedId = targetId.trim();
+        if (normalizedId.isEmpty()) return;
+        if (!"chat".equals(normalizedType) && !"group".equals(normalizedType)) {
+            return;
+        }
+        synchronized (launchTargetLock) {
+            pendingTargetType = normalizedType;
+            pendingTargetId = normalizedId;
+        }
     }
 
     private void enableWebViewDebugging(String reason) {

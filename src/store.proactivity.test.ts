@@ -45,6 +45,7 @@ function createBaseChat(overrides: Partial<ChatSession> = {}): ChatSession {
     id: "chat-1",
     personaId: "persona-1",
     title: "Test chat",
+    notificationsEnabled: true,
     diaryConfig: { enabled: false },
     proactivityConfig: { enabled: false },
     evolutionConfig: { enabled: false, applyMode: "manual" },

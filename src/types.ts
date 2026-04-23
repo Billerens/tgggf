@@ -260,6 +260,7 @@ export interface ChatSession {
   id: string;
   personaId: string;
   title: string;
+  notificationsEnabled: boolean;
   diaryConfig?: ChatDiaryConfig;
   proactivityConfig?: ChatProactivityConfig;
   evolutionConfig?: ChatEvolutionConfig;
@@ -354,6 +355,7 @@ export interface ChatMessage {
 export interface GroupRoom {
   id: string;
   title: string;
+  notificationsEnabled: boolean;
   mode: GroupRoomMode;
   status: GroupRoomStatus;
   state: {

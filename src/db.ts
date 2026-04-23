@@ -499,6 +499,10 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
     ? (source.status as GroupRoom["status"])
     : "paused";
   const waitingForUser = Boolean(source.waitingForUser);
+  const notificationsEnabled =
+    typeof source.notificationsEnabled === "boolean"
+      ? source.notificationsEnabled
+      : true;
   const waitingReason = toOptionalTrimmedString(source.waitingReason);
 
   const stateSource = (source.state ?? {}) as Partial<GroupRoom["state"]>;
@@ -530,6 +534,7 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
   return {
     id,
     title: toTrimmedString(source.title) || "Групповой чат",
+    notificationsEnabled,
     mode,
     status,
     state: {
@@ -880,6 +885,10 @@ function normalizeDiaryEntry(entry: DiaryEntry): DiaryEntry {
 
 function normalizeChatSession(chat: ChatSession): ChatSession {
   const next: ChatSession = { ...chat };
+  next.notificationsEnabled =
+    typeof next.notificationsEnabled === "boolean"
+      ? next.notificationsEnabled
+      : true;
   if (
     typeof next.chatStyleStrength === "number" &&
     Number.isFinite(next.chatStyleStrength)

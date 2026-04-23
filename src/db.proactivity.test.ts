@@ -6,6 +6,7 @@ const BASE_CHAT: ChatSession = {
   id: "chat-1",
   personaId: "persona-1",
   title: "Test chat",
+  notificationsEnabled: true,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
 };
@@ -54,4 +55,3 @@ describe("db proactivity normalization", () => {
     });
   });
 });
-

@@ -401,7 +401,12 @@ export function Sidebar({
                         </div>
                         <div className="sidebar-item-text">
                           <strong>{chat.title}</strong>
-                          <span>{formatDate(chat.updatedAt)}</span>
+                          <span>
+                            {formatDate(chat.updatedAt)}
+                            {chat.notificationsEnabled === false
+                              ? " • Уведомления выкл."
+                              : ""}
+                          </span>
                         </div>
                       </div>
                     </button>
@@ -456,6 +461,9 @@ export function Sidebar({
                       <span>
                         {room.mode === "personas_plus_user" ? "Персоны + пользователь" : "Только персоны"} •{" "}
                         {formatDate(room.updatedAt)}
+                        {room.notificationsEnabled === false
+                          ? " • Уведомления выкл."
+                          : ""}
                       </span>
                     </div>
                   </div>

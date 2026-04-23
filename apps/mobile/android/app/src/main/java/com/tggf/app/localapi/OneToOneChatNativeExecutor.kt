@@ -721,6 +721,16 @@ object OneToOneChatNativeExecutor {
         repository.writeStoreJson("chats", chats.toString())
         if (patchedMessages.length() > 0) {
             repository.writeStoreJson("messages", messages.toString())
+            for (index in 0 until patchedMessages.length()) {
+                val patchedMessage = patchedMessages.optJSONObject(index) ?: continue
+                IncomingMessageNotificationManager.notifyIncomingChatMessage(
+                    context = context,
+                    repository = repository,
+                    chat = chat,
+                    persona = effectivePersona,
+                    message = patchedMessage,
+                )
+            }
         }
         if (patchedDiaryEntries.length() > 0) {
             repository.writeStoreJson("diaryEntries", diaryEntries.toString())
@@ -1440,6 +1450,13 @@ object OneToOneChatNativeExecutor {
         // Publish assistant message immediately after LLM response.
         repository.writeStoreJson("chats", chats.toString())
         repository.writeStoreJson("messages", messages.toString())
+        IncomingMessageNotificationManager.notifyIncomingChatMessage(
+            context = context,
+            repository = repository,
+            chat = chat,
+            persona = effectivePersona,
+            message = assistantMessage,
+        )
         appendStatePatch(
             runtime = runtime,
             scopeId = scope.chatId,

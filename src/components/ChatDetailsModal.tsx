@@ -66,6 +66,7 @@ interface ChatDetailsModalProps {
     promptOverride?: string,
   ) => void;
   onUpdateChatStyleStrength: (chatId: string, value: number | null) => void;
+  onToggleNotificationsEnabled: (chatId: string, enabled: boolean) => void;
   onToggleDiaryEnabled: (chatId: string, enabled: boolean) => void;
   onToggleProactivityEnabled: (chatId: string, enabled: boolean) => void;
   onToggleEvolutionEnabled: (chatId: string, enabled: boolean) => void;
@@ -613,6 +614,7 @@ export function ChatDetailsModal({
   onEnhanceImage,
   onRegenerateImage,
   onUpdateChatStyleStrength,
+  onToggleNotificationsEnabled,
   onToggleDiaryEnabled,
   onToggleProactivityEnabled,
   onToggleEvolutionEnabled,
@@ -756,6 +758,10 @@ export function ChatDetailsModal({
     return selected ?? filteredDiaryEntries[0] ?? null;
   }, [filteredDiaryEntries, selectedDiaryEntryId]);
   const diaryEnabled = Boolean(chat?.diaryConfig?.enabled);
+  const notificationsEnabled =
+    typeof chat?.notificationsEnabled === "boolean"
+      ? chat.notificationsEnabled
+      : true;
   const proactivityEnabled = Boolean(chat?.proactivityConfig?.enabled);
   const evolutionEnabled = Boolean(chat?.evolutionConfig?.enabled);
   const evolutionApplyMode: PersonaEvolutionApplyMode =
@@ -1799,6 +1805,29 @@ export function ChatDetailsModal({
                     Приоритет выше глобальной настройки. Если включено наследование, используется значение из настроек.
                   </small>
                 </label>
+              </div>
+
+              <div className="status-card">
+                <h4>Уведомления</h4>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={notificationsEnabled}
+                    disabled={!isAndroidRuntime}
+                    onChange={(event) => {
+                      if (!chat?.id || !isAndroidRuntime) return;
+                      onToggleNotificationsEnabled(chat.id, event.target.checked);
+                    }}
+                  />
+                  Уведомления для этого чата
+                </label>
+                <p className="status-lock-hint">
+                  Пуши приходят только в фоне и только для входящих сообщений
+                  персонажа.
+                </p>
+                {!isAndroidRuntime ? (
+                  <p className="status-lock-hint">Android-only (на этой платформе только просмотр).</p>
+                ) : null}
               </div>
 
               <div className="status-card">

@@ -59,6 +59,7 @@ import { useGroupIterationBackgroundWorker } from "./features/mobile/useGroupIte
 import { useOneToOneBackgroundWorker } from "./features/mobile/useOneToOneBackgroundWorker";
 import { useTopicGenerationBackgroundWorker } from "./features/mobile/useTopicGenerationBackgroundWorker";
 import { downloadExportFileOnAndroid } from "./features/mobile/exportDownload";
+import { consumeNotificationLaunchTarget } from "./features/mobile/notificationLaunchTarget";
 import { useGroupStore } from "./groupStore";
 import {
   type BackupExportSelection,
@@ -219,6 +220,7 @@ export default function App() {
     deleteChat,
     renameChat,
     setChatStyleStrength,
+    setChatNotificationsEnabled,
     setChatDiaryEnabled,
     setChatProactivityEnabled,
     setChatEvolutionEnabled,
@@ -258,11 +260,13 @@ export default function App() {
     groupSharedMemories,
     groupPrivateMemories,
     activeGroupRoomId,
+    initialized: groupInitialized,
     isLoading: isGroupLoading,
     initializeGroup,
     createGroupRoom,
     deleteGroupRoom,
     renameGroupRoom,
+    setGroupRoomNotificationsEnabled,
     selectGroupRoom,
     sendUserGroupMessage,
     setActiveGroupRoomStatus,
@@ -554,6 +558,55 @@ export default function App() {
     () => groupRooms.find((room) => room.id === activeGroupRoomId) ?? null,
     [groupRooms, activeGroupRoomId],
   );
+  const consumeLaunchTargetAndNavigate = useCallback(async () => {
+    if (!isAndroidRuntime) return;
+    const target = await consumeNotificationLaunchTarget().catch(() => null);
+    if (!target) return;
+    if (target.targetType === "chat") {
+      setSidebarTab("chats");
+      const chatExists = useAppStore
+        .getState()
+        .chats.some((chat) => chat.id === target.targetId);
+      if (chatExists) {
+        await selectChat(target.targetId);
+      }
+      return;
+    }
+    setSidebarTab("groups");
+    const groupExists = useGroupStore
+      .getState()
+      .groupRooms.some((room) => room.id === target.targetId);
+    if (groupExists) {
+      await selectGroupRoom(target.targetId);
+    }
+  }, [isAndroidRuntime, selectChat, selectGroupRoom]);
+  useEffect(() => {
+    if (!isAndroidRuntime) return;
+    if (!initialized || !groupInitialized) return;
+    void consumeLaunchTargetAndNavigate();
+  }, [
+    consumeLaunchTargetAndNavigate,
+    groupInitialized,
+    initialized,
+    isAndroidRuntime,
+  ]);
+  useEffect(() => {
+    if (!isAndroidRuntime) return;
+    if (!initialized || !groupInitialized) return;
+    const onVisibilityChange = () => {
+      if (document.hidden) return;
+      void consumeLaunchTargetAndNavigate();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [
+    consumeLaunchTargetAndNavigate,
+    groupInitialized,
+    initialized,
+    isAndroidRuntime,
+  ]);
   useOneToOneBackgroundWorker({
     chats,
     activeChat,
@@ -1366,6 +1419,9 @@ export default function App() {
           onUpdateChatStyleStrength={(chatId, value) => {
             void setChatStyleStrength(chatId, value);
           }}
+          onToggleNotificationsEnabled={(chatId, enabled) => {
+            void setChatNotificationsEnabled(chatId, enabled);
+          }}
           onToggleDiaryEnabled={(chatId, enabled) => {
             void setChatDiaryEnabled(chatId, enabled);
           }}
@@ -1436,6 +1492,9 @@ export default function App() {
           relationEdges={groupRelationEdges}
           sharedMemories={groupSharedMemories}
           privateMemories={groupPrivateMemories}
+          onToggleNotificationsEnabled={(roomId, enabled) => {
+            void setGroupRoomNotificationsEnabled(roomId, enabled);
+          }}
           onClose={() => setShowGroupChatDetailsModal(false)}
         />
 
