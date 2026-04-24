@@ -690,6 +690,11 @@ function normalizeSettings(
   )
     ? merged.imagePromptProvider
     : DEFAULT_SETTINGS.imagePromptProvider;
+  merged.imageDescriptionProvider = LLM_PROVIDERS.includes(
+    merged.imageDescriptionProvider,
+  )
+    ? merged.imageDescriptionProvider
+    : DEFAULT_SETTINGS.imageDescriptionProvider;
   merged.personaGenerationProvider = LLM_PROVIDERS.includes(
     merged.personaGenerationProvider,
   )
@@ -709,6 +714,7 @@ function normalizeSettings(
     toTrimmedString(merged.imagePromptModel) ||
     merged.model ||
     DEFAULT_SETTINGS.model;
+  merged.imageDescriptionModel = toTrimmedString(merged.imageDescriptionModel);
   merged.personaGenerationModel =
     toTrimmedString(merged.personaGenerationModel) ||
     merged.model ||
@@ -1071,11 +1077,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   groupOrchestratorProvider: "lmstudio",
   groupPersonaProvider: "lmstudio",
   imagePromptProvider: "lmstudio",
+  imageDescriptionProvider: "lmstudio",
   personaGenerationProvider: "lmstudio",
   model: "local-model",
   groupOrchestratorModel: "local-model",
   groupPersonaModel: "local-model",
   imagePromptModel: "local-model",
+  imageDescriptionModel: "",
   personaGenerationModel: "local-model",
   temperature: 0.7,
   maxTokens: 600,

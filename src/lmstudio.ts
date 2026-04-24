@@ -2999,6 +2999,125 @@ function parseModelKeys(data: unknown): string[] {
   return [];
 }
 
+interface ModelCatalogEntry {
+  id: string;
+  inputModalities: string[];
+  outputModalities: string[];
+  pipelineTag: string;
+}
+
+function normalizeModelCatalogModalities(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((item) => toTrimmedString(item).toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function parseModelCatalogItem(item: unknown): ModelCatalogEntry | null {
+  if (!item || typeof item !== "object") return null;
+  const rec = item as Record<string, unknown>;
+  const id = toTrimmedString(rec.id ?? rec.model_key ?? rec.key);
+  if (!id) return null;
+  const architecture =
+    rec.architecture && typeof rec.architecture === "object"
+      ? (rec.architecture as Record<string, unknown>)
+      : null;
+  const inputModalities = normalizeModelCatalogModalities(
+    architecture?.input_modalities ?? rec.input_modalities,
+  );
+  const outputModalities = normalizeModelCatalogModalities(
+    architecture?.output_modalities ?? rec.output_modalities,
+  );
+  const pipelineTag = toTrimmedString(
+    rec.pipeline_tag ?? rec.pipelineTag,
+  ).toLowerCase();
+  return {
+    id,
+    inputModalities,
+    outputModalities,
+    pipelineTag,
+  };
+}
+
+function parseModelCatalogEntries(data: unknown): ModelCatalogEntry[] {
+  if (!data) return [];
+
+  const parseArray = (input: unknown): ModelCatalogEntry[] => {
+    if (!Array.isArray(input)) return [];
+    return input
+      .map((item) => parseModelCatalogItem(item))
+      .filter((item): item is ModelCatalogEntry => Boolean(item));
+  };
+
+  if (Array.isArray(data)) {
+    return parseArray(data);
+  }
+  if (typeof data !== "object") return [];
+
+  const obj = data as Record<string, unknown>;
+  if (Array.isArray(obj.data)) {
+    return parseArray(obj.data);
+  }
+  if (Array.isArray(obj.models)) {
+    return parseArray(obj.models);
+  }
+  return [];
+}
+
+function extractVisionCapableModelIds(entries: ModelCatalogEntry[]) {
+  const ids = entries
+    .filter((entry) => {
+      const hasImageInput = entry.inputModalities.includes("image");
+      if (hasImageInput) {
+        if (entry.outputModalities.length === 0) return true;
+        return entry.outputModalities.includes("text");
+      }
+      return entry.pipelineTag === "image-text-to-text";
+    })
+    .map((entry) => entry.id);
+  return Array.from(new Set(ids));
+}
+
+function buildVisionModelListEndpoints(provider: LlmProvider, baseUrl: string) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) return [] as string[];
+  if (provider === "openrouter") {
+    return Array.from(
+      new Set([
+        `${normalizedBaseUrl}/models?output_modalities=text`,
+        `${normalizedBaseUrl}/v1/models?output_modalities=text`,
+        `${normalizedBaseUrl}/api/v1/models?output_modalities=text`,
+      ]),
+    );
+  }
+  return Array.from(
+    new Set([
+      `${normalizedBaseUrl}/models`,
+      `${normalizedBaseUrl}/v1/models`,
+      `${normalizedBaseUrl}/api/v1/models`,
+    ]),
+  );
+}
+
+function buildToolCallableModelListEndpoints(
+  provider: LlmProvider,
+  baseUrl: string,
+) {
+  const normalizedBaseUrl = normalizeBaseUrl(baseUrl);
+  if (!normalizedBaseUrl || provider !== "openrouter") return [] as string[];
+  return Array.from(
+    new Set([
+      `${normalizedBaseUrl}/models?supported_parameters=tools`,
+      `${normalizedBaseUrl}/v1/models?supported_parameters=tools`,
+      `${normalizedBaseUrl}/api/v1/models?supported_parameters=tools`,
+    ]),
+  );
+}
+
 export async function listModels(settings: {
   baseUrl: string;
   auth: EndpointAuthConfig;
@@ -3033,6 +3152,92 @@ export async function listModels(settings: {
   }
 
   throw new Error(`Unable to load models: ${lastError}`);
+}
+
+export async function listVisionCapableModels(settings: {
+  provider: LlmProvider;
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+  apiKey?: string;
+}) {
+  const provider = settings.provider;
+  const baseUrl = normalizeBaseUrl(settings.baseUrl);
+  const headers = buildAuthHeaders(settings.auth, settings.apiKey);
+  const endpoints = buildVisionModelListEndpoints(provider, baseUrl);
+  let lastError = "Unknown error while loading vision-capable models.";
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, { headers });
+      if (!response.ok) {
+        lastError = `${response.status} ${response.statusText}`;
+        continue;
+      }
+      const payload = (await response.json()) as unknown;
+      const entries = parseModelCatalogEntries(payload);
+      const visionModels = extractVisionCapableModelIds(entries);
+      if (visionModels.length > 0) return visionModels;
+      lastError = "No vision-capable models found in response.";
+    } catch (error) {
+      lastError = (error as Error).message;
+    }
+  }
+
+  if (provider === "huggingface") {
+    try {
+      const response = await fetch(
+        "https://huggingface.co/api/models?inference_provider=all&pipeline_tag=image-text-to-text&limit=1000",
+        { headers },
+      );
+      if (response.ok) {
+        const payload = (await response.json()) as unknown;
+        const entries = parseModelCatalogEntries(payload);
+        const visionModels = extractVisionCapableModelIds(entries);
+        if (visionModels.length > 0) return visionModels;
+        lastError = "No HuggingFace vision-capable models found.";
+      } else {
+        lastError = `${response.status} ${response.statusText}`;
+      }
+    } catch (error) {
+      lastError = (error as Error).message;
+    }
+  }
+
+  throw new Error(`Unable to load vision-capable models: ${lastError}`);
+}
+
+export async function listToolCallableModels(settings: {
+  provider: LlmProvider;
+  baseUrl: string;
+  auth: EndpointAuthConfig;
+  apiKey?: string;
+}) {
+  const provider = settings.provider;
+  const baseUrl = normalizeBaseUrl(settings.baseUrl);
+  const headers = buildAuthHeaders(settings.auth, settings.apiKey);
+  const endpoints = buildToolCallableModelListEndpoints(provider, baseUrl);
+  if (endpoints.length === 0) return [];
+  let lastError = "Unknown error while loading tool-callable models.";
+
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, { headers });
+      if (!response.ok) {
+        lastError = `${response.status} ${response.statusText}`;
+        continue;
+      }
+      const payload = (await response.json()) as unknown;
+      const models = parseModelKeys(payload);
+      if (models.length > 0) {
+        return Array.from(new Set(models));
+      }
+      lastError = "No tool-callable models found in response.";
+    } catch (error) {
+      lastError = (error as Error).message;
+    }
+  }
+
+  throw new Error(`Unable to load tool-callable models: ${lastError}`);
 }
 
 function parseJsonBlock(text: string) {

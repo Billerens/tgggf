@@ -68,6 +68,8 @@ interface SettingsModalProps {
   foregroundServiceLastError: string | null;
   foregroundServiceError: string | null;
   availableModelsByProvider: Record<LlmProvider, string[]>;
+  visionModelsByProvider: Record<LlmProvider, string[]>;
+  toolModelsByProvider: Record<LlmProvider, string[]>;
   modelsLoadingByProvider: Record<LlmProvider, boolean>;
   toolCapabilityMatrix: Array<{
     task: ModelRoutingTask;
@@ -751,6 +753,8 @@ export function SettingsModal({
   foregroundServiceLastError,
   foregroundServiceError,
   availableModelsByProvider,
+  visionModelsByProvider,
+  toolModelsByProvider,
   modelsLoadingByProvider,
   toolCapabilityMatrix,
   toolCapabilityBatchChecking,
@@ -1201,8 +1205,16 @@ export function SettingsModal({
   const getProviderModelOptions = (
     provider: LlmProvider,
     currentModel: string,
+    visionOnly = false,
+    toolOnlyForOpenRouter = false,
   ) => {
-    const providerModels = availableModelsByProvider[provider] ?? [];
+    const providerModels = visionOnly
+      ? provider === "lmstudio"
+        ? (availableModelsByProvider[provider] ?? [])
+        : (visionModelsByProvider[provider] ?? [])
+      : toolOnlyForOpenRouter && provider === "openrouter"
+        ? (toolModelsByProvider.openrouter ?? [])
+        : (availableModelsByProvider[provider] ?? []);
     if (providerModels.length > 0) {
       return providerModels.map((modelName) => ({
         value: modelName,
@@ -1219,17 +1231,22 @@ export function SettingsModal({
 
   const renderRoleMatrixRow = (params: {
     title: string;
+    subtitle?: string;
+    visionOnly?: boolean;
+    toolOnlyForOpenRouter?: boolean;
     providerField:
       | "oneToOneProvider"
       | "groupOrchestratorProvider"
       | "groupPersonaProvider"
       | "imagePromptProvider"
+      | "imageDescriptionProvider"
       | "personaGenerationProvider";
     modelField:
       | "model"
       | "groupOrchestratorModel"
       | "groupPersonaModel"
       | "imagePromptModel"
+      | "imageDescriptionModel"
       | "personaGenerationModel";
   }) => {
     const provider = settingsDraft[params.providerField];
@@ -1239,6 +1256,11 @@ export function SettingsModal({
     return (
       <div className="persona-section" key={params.title}>
         <h5>{params.title}</h5>
+        {params.subtitle ? (
+          <small style={{ color: "var(--text-secondary)", display: "block" }}>
+            {params.subtitle}
+          </small>
+        ) : null}
         <label>
           Провайдер
           <Dropdown
@@ -1257,7 +1279,12 @@ export function SettingsModal({
           <div className="inline-row">
             <Dropdown
               value={model}
-              options={getProviderModelOptions(provider, model)}
+              options={getProviderModelOptions(
+                provider,
+                model,
+                Boolean(params.visionOnly),
+                Boolean(params.toolOnlyForOpenRouter),
+              )}
               onChange={(nextModel) =>
                 setSettingsDraft((prev) => ({
                   ...prev,
@@ -1273,6 +1300,18 @@ export function SettingsModal({
               <RefreshCw size={14} className={loading ? "spin" : ""} /> Обновить
             </button>
           </div>
+          {params.visionOnly ? (
+            <small style={{ color: "var(--text-secondary)", display: "block", marginTop: 6 }}>
+              {provider === "lmstudio"
+                ? "Для LMStudio фильтрация не применяется."
+                : "Доступны только модели с vision-capability по данным API провайдера."}
+            </small>
+          ) : null}
+          {params.toolOnlyForOpenRouter ? (
+            <small style={{ color: "var(--text-secondary)", display: "block", marginTop: 6 }}>
+              Для OpenRouter отображаются только модели с поддержкой tool calling.
+            </small>
+          ) : null}
         </label>
       </div>
     );
@@ -1800,26 +1839,39 @@ export function SettingsModal({
               </div>
               {renderRoleMatrixRow({
                 title: "1:1 чат",
+                toolOnlyForOpenRouter: true,
                 providerField: "oneToOneProvider",
                 modelField: "model",
               })}
               {renderRoleMatrixRow({
                 title: "Группы: оркестратор",
+                toolOnlyForOpenRouter: true,
                 providerField: "groupOrchestratorProvider",
                 modelField: "groupOrchestratorModel",
               })}
               {renderRoleMatrixRow({
                 title: "Группы: персона",
+                toolOnlyForOpenRouter: true,
                 providerField: "groupPersonaProvider",
                 modelField: "groupPersonaModel",
               })}
               {renderRoleMatrixRow({
                 title: "Генератор prompt изображений",
+                toolOnlyForOpenRouter: true,
                 providerField: "imagePromptProvider",
                 modelField: "imagePromptModel",
               })}
               {renderRoleMatrixRow({
+                title: "Валидация/описание изображений (planned)",
+                subtitle:
+                  "Роль запланирована и пока не подключена в runtime.",
+                visionOnly: true,
+                providerField: "imageDescriptionProvider",
+                modelField: "imageDescriptionModel",
+              })}
+              {renderRoleMatrixRow({
                 title: "Генератор карточек персон",
+                toolOnlyForOpenRouter: true,
                 providerField: "personaGenerationProvider",
                 modelField: "personaGenerationModel",
               })}

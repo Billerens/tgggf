@@ -604,11 +604,13 @@ export interface AppSettings {
   groupOrchestratorProvider: LlmProvider;
   groupPersonaProvider: LlmProvider;
   imagePromptProvider: LlmProvider;
+  imageDescriptionProvider: LlmProvider;
   personaGenerationProvider: LlmProvider;
   model: string;
   groupOrchestratorModel: string;
   groupPersonaModel: string;
   imagePromptModel: string;
+  imageDescriptionModel: string;
   personaGenerationModel: string;
   temperature: number;
   maxTokens: number;

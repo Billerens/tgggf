@@ -1,7 +1,12 @@
 import { useEffect, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { listComfyCheckpoints } from "../../comfy";
-import { listModels, resolveProviderModelCatalogTarget } from "../../lmstudio";
+import {
+  listModels,
+  listToolCallableModels,
+  listVisionCapableModels,
+  resolveProviderModelCatalogTarget,
+} from "../../lmstudio";
 import { useAppStore } from "../../store";
 import type { AppSettings, LlmProvider } from "../../types";
 
@@ -32,55 +37,108 @@ export function useModelCheckpointCatalog({
     openrouter: false,
     huggingface: false,
   });
+  const [visionModelsByProvider, setVisionModelsByProvider] = useState<
+    Record<LlmProvider, string[]>
+  >({
+    lmstudio: [],
+    openrouter: [],
+    huggingface: [],
+  });
+  const [toolModelsByProvider, setToolModelsByProvider] = useState<
+    Record<LlmProvider, string[]>
+  >({
+    lmstudio: [],
+    openrouter: [],
+    huggingface: [],
+  });
   const [comfyCheckpoints, setComfyCheckpoints] = useState<string[]>([]);
   const [checkpointsLoading, setCheckpointsLoading] = useState(false);
 
   const loadModels = async (provider: LlmProvider, baseUrl: string, auth: typeof settingsDraft.lmAuth) => {
     setModelsLoadingByProvider((prev) => ({ ...prev, [provider]: true }));
     try {
-      const models = await listModels({
-        baseUrl,
-        auth,
-        apiKey: settingsDraft.apiKey,
-      });
+      const [models, visionModels, toolModels] = await Promise.all([
+        listModels({
+          baseUrl,
+          auth,
+          apiKey: settingsDraft.apiKey,
+        }),
+        provider === "openrouter" || provider === "huggingface"
+          ? listVisionCapableModels({
+              provider,
+              baseUrl,
+              auth,
+              apiKey: settingsDraft.apiKey,
+            }).catch((): string[] => [])
+          : Promise.resolve([] as string[]),
+        provider === "openrouter"
+          ? listToolCallableModels({
+              provider,
+              baseUrl,
+              auth,
+              apiKey: settingsDraft.apiKey,
+            }).catch((): string[] => [])
+          : Promise.resolve([] as string[]),
+      ]);
       setAvailableModelsByProvider((prev) => ({ ...prev, [provider]: models }));
+      setVisionModelsByProvider((prev) => ({
+        ...prev,
+        [provider]: visionModels,
+      }));
+      setToolModelsByProvider((prev) => ({
+        ...prev,
+        [provider]: toolModels,
+      }));
       if (models.length > 0) {
+        const defaultRoleModels = provider === "openrouter" ? toolModels : models;
         setSettingsDraft((v) => ({
           ...v,
           model:
             v.oneToOneProvider === provider
-              ? models.includes(v.model)
+              ? defaultRoleModels.includes(v.model)
                 ? v.model
-                : models[0]
+                : (defaultRoleModels[0] ?? "")
               : v.model,
           groupOrchestratorModel:
             v.groupOrchestratorProvider === provider
-              ? models.includes(v.groupOrchestratorModel)
+              ? defaultRoleModels.includes(v.groupOrchestratorModel)
                 ? v.groupOrchestratorModel
-                : models[0]
+                : (defaultRoleModels[0] ?? "")
               : v.groupOrchestratorModel,
           groupPersonaModel:
             v.groupPersonaProvider === provider
-              ? models.includes(v.groupPersonaModel)
+              ? defaultRoleModels.includes(v.groupPersonaModel)
                 ? v.groupPersonaModel
-                : models[0]
+                : (defaultRoleModels[0] ?? "")
               : v.groupPersonaModel,
           imagePromptModel:
             v.imagePromptProvider === provider
-              ? models.includes(v.imagePromptModel)
+              ? defaultRoleModels.includes(v.imagePromptModel)
                 ? v.imagePromptModel
-                : models[0]
+                : (defaultRoleModels[0] ?? "")
               : v.imagePromptModel,
+          imageDescriptionModel:
+            v.imageDescriptionProvider === provider
+              ? provider === "openrouter" || provider === "huggingface"
+                ? visionModels.includes(v.imageDescriptionModel)
+                  ? v.imageDescriptionModel
+                  : (visionModels[0] ?? "")
+                : models.includes(v.imageDescriptionModel)
+                  ? v.imageDescriptionModel
+                  : (models[0] ?? "")
+              : v.imageDescriptionModel,
           personaGenerationModel:
             v.personaGenerationProvider === provider
-              ? models.includes(v.personaGenerationModel)
+              ? defaultRoleModels.includes(v.personaGenerationModel)
                 ? v.personaGenerationModel
-                : models[0]
+                : (defaultRoleModels[0] ?? "")
               : v.personaGenerationModel,
         }));
       }
     } catch (e) {
       setAvailableModelsByProvider((prev) => ({ ...prev, [provider]: [] }));
+      setVisionModelsByProvider((prev) => ({ ...prev, [provider]: [] }));
+      setToolModelsByProvider((prev) => ({ ...prev, [provider]: [] }));
       useAppStore.setState({ error: (e as Error).message });
     } finally {
       setModelsLoadingByProvider((prev) => ({ ...prev, [provider]: false }));
@@ -127,6 +185,8 @@ export function useModelCheckpointCatalog({
       ]),
     ),
     availableModelsByProvider,
+    visionModelsByProvider,
+    toolModelsByProvider,
     modelsLoading: Object.values(modelsLoadingByProvider).some(Boolean),
     modelsLoadingByProvider,
     comfyCheckpoints,

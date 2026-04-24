@@ -554,6 +554,8 @@ export default function App() {
   const {
     availableModels,
     availableModelsByProvider,
+    visionModelsByProvider,
+    toolModelsByProvider,
     modelsLoadingByProvider,
     comfyCheckpoints,
     checkpointsLoading,
@@ -862,6 +864,61 @@ export default function App() {
   ) => {
     event.preventDefault();
     const settingsToSave = nextSettings ?? settingsDraft;
+    const openRouterToolModels = toolModelsByProvider.openrouter ?? [];
+    const openRouterToolRoles = [
+      {
+        role: "1:1 чат",
+        provider: settingsToSave.oneToOneProvider,
+        model: settingsToSave.model,
+      },
+      {
+        role: "Группы: оркестратор",
+        provider: settingsToSave.groupOrchestratorProvider,
+        model: settingsToSave.groupOrchestratorModel,
+      },
+      {
+        role: "Группы: персона",
+        provider: settingsToSave.groupPersonaProvider,
+        model: settingsToSave.groupPersonaModel,
+      },
+      {
+        role: "Генератор prompt изображений",
+        provider: settingsToSave.imagePromptProvider,
+        model: settingsToSave.imagePromptModel,
+      },
+      {
+        role: "Генератор карточек персон",
+        provider: settingsToSave.personaGenerationProvider,
+        model: settingsToSave.personaGenerationModel,
+      },
+    ];
+    for (const row of openRouterToolRoles) {
+      const model = row.model.trim();
+      if (!model || row.provider !== "openrouter") continue;
+      if (!openRouterToolModels.includes(model)) {
+        useAppStore.setState({
+          error: `Для роли "${row.role}" в OpenRouter нужно выбрать модель с поддержкой tool calling.`,
+        });
+        return;
+      }
+    }
+    const imageDescriptionModel = settingsToSave.imageDescriptionModel.trim();
+    if (imageDescriptionModel) {
+      const imageDescriptionProvider = settingsToSave.imageDescriptionProvider;
+      if (
+        imageDescriptionProvider === "openrouter" ||
+        imageDescriptionProvider === "huggingface"
+      ) {
+        const visionModels = visionModelsByProvider[imageDescriptionProvider] ?? [];
+        if (!visionModels.includes(imageDescriptionModel)) {
+          useAppStore.setState({
+            error:
+              "Для роли валидации/описания изображений выберите vision-модель из списка.",
+          });
+          return;
+        }
+      }
+    }
     await saveSettings(settingsToSave);
     setShowSettingsModal(false);
   };
@@ -1539,6 +1596,8 @@ export default function App() {
           foregroundServiceLastError={foregroundServiceState.lastError}
           foregroundServiceError={foregroundServiceState.error}
           availableModelsByProvider={availableModelsByProvider}
+          visionModelsByProvider={visionModelsByProvider}
+          toolModelsByProvider={toolModelsByProvider}
           modelsLoadingByProvider={modelsLoadingByProvider}
           toolCapabilityMatrix={toolCapabilityMatrix}
           toolCapabilityBatchChecking={toolCapabilityBatchChecking}
