@@ -82,6 +82,7 @@ import { triggerBackgroundRuntime } from "./features/mobile/backgroundDelta";
 import {
   requestNativeDiaryPreview,
   requestNativeProactivitySimulation,
+  syncOneToOneChatPatchToNative,
   syncOneToOneContextToNative,
   type NativeProactivitySimulationReport,
 } from "./features/mobile/oneToOneNativeRuntime";
@@ -261,6 +262,12 @@ const randomSeed = () => {
 function titleFromText(text: string) {
   const first = text.replace(/\s+/g, " ").trim().slice(0, 48);
   return first || "Новый чат";
+}
+
+function patchChatsWithUpdatedChat(chats: ChatSession[], updatedChat: ChatSession) {
+  return chats
+    .map((chat) => (chat.id === updatedChat.id ? updatedChat : chat))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 function dedupeTrimmedStrings(values: string[]) {
@@ -1295,11 +1302,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setChatStyleStrength: async (chatId, value) => {
-    set({ isLoading: true, error: null });
     try {
       const currentChat = get().chats.find((chat) => chat.id === chatId);
       if (!currentChat) {
-        set({ isLoading: false });
         return;
       }
       const normalizedValue =
@@ -1312,23 +1317,20 @@ export const useAppStore = create<AppState>((set, get) => ({
         updatedAt: nowIso(),
       };
       await dbApi.saveChat(updatedChat);
-      const chats = await dbApi.getChats(updatedChat.personaId);
-      set({
-        chats,
+      set((current) => ({
+        chats: patchChatsWithUpdatedChat(current.chats, updatedChat),
         activeChatId: chatId,
-        isLoading: false,
-      });
+        error: null,
+      }));
     } catch (error) {
-      set({ isLoading: false, error: (error as Error).message });
+      set({ error: (error as Error).message });
     }
   },
 
   setChatNotificationsEnabled: async (chatId, enabled) => {
-    set({ isLoading: true, error: null });
     try {
       const currentChat = get().chats.find((chat) => chat.id === chatId);
       if (!currentChat) {
-        set({ isLoading: false });
         return;
       }
       const updatedChat: ChatSession = {
@@ -1338,28 +1340,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       await dbApi.saveChat(updatedChat);
       if (getRuntimeContext().mode === "android") {
-        await syncOneToOneContextToNative({
-          chatId,
-          personaId: updatedChat.personaId,
-        });
+        await syncOneToOneChatPatchToNative(updatedChat);
       }
-      const chats = await dbApi.getChats(updatedChat.personaId);
-      set({
-        chats,
+      set((current) => ({
+        chats: patchChatsWithUpdatedChat(current.chats, updatedChat),
         activeChatId: chatId,
-        isLoading: false,
-      });
+        error: null,
+      }));
     } catch (error) {
-      set({ isLoading: false, error: (error as Error).message });
+      set({ error: (error as Error).message });
     }
   },
 
   setChatDiaryEnabled: async (chatId, enabled) => {
-    set({ isLoading: true, error: null });
     try {
       const currentChat = get().chats.find((chat) => chat.id === chatId);
       if (!currentChat) {
-        set({ isLoading: false });
         return;
       }
       const nextDiaryConfig = {
@@ -1373,34 +1369,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       await dbApi.saveChat(updatedChat);
       if (getRuntimeContext().mode === "android") {
-        await syncOneToOneContextToNative({
-          chatId,
-          personaId: updatedChat.personaId,
-        });
+        await syncOneToOneChatPatchToNative(updatedChat);
         await triggerBackgroundRuntime("one_to_one_diary_toggle");
       }
-      const chats = await dbApi.getChats(updatedChat.personaId);
-      let activeDiaryEntries = get().activeDiaryEntries;
-      if (get().activeChatId === chatId) {
-        activeDiaryEntries = await dbApi.getDiaryEntries(chatId);
-      }
-      set({
-        chats,
-        activeDiaryEntries,
+      set((current) => ({
+        chats: patchChatsWithUpdatedChat(current.chats, updatedChat),
+        activeDiaryEntries: current.activeDiaryEntries,
         activeChatId: chatId,
-        isLoading: false,
-      });
+        error: null,
+      }));
     } catch (error) {
-      set({ isLoading: false, error: (error as Error).message });
+      set({ error: (error as Error).message });
     }
   },
 
   setChatProactivityEnabled: async (chatId, enabled) => {
-    set({ isLoading: true, error: null });
     try {
       const currentChat = get().chats.find((chat) => chat.id === chatId);
       if (!currentChat) {
-        set({ isLoading: false });
         return;
       }
       const nextProactivityConfig = {
@@ -1414,29 +1400,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       await dbApi.saveChat(updatedChat);
       if (getRuntimeContext().mode === "android") {
-        await syncOneToOneContextToNative({
-          chatId,
-          personaId: updatedChat.personaId,
-        });
+        await syncOneToOneChatPatchToNative(updatedChat);
         await triggerBackgroundRuntime("one_to_one_proactivity_toggle");
       }
-      const chats = await dbApi.getChats(updatedChat.personaId);
-      set({
-        chats,
+      set((current) => ({
+        chats: patchChatsWithUpdatedChat(current.chats, updatedChat),
         activeChatId: chatId,
-        isLoading: false,
-      });
+        error: null,
+      }));
     } catch (error) {
-      set({ isLoading: false, error: (error as Error).message });
+      set({ error: (error as Error).message });
     }
   },
 
   setChatEvolutionEnabled: async (chatId, enabled) => {
-    set({ isLoading: true, error: null });
     try {
       const currentChat = get().chats.find((chat) => chat.id === chatId);
       if (!currentChat) {
-        set({ isLoading: false });
         return;
       }
       const updatedChat: ChatSession = {
@@ -1449,29 +1429,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       await dbApi.saveChat(updatedChat);
       if (getRuntimeContext().mode === "android") {
-        await syncOneToOneContextToNative({
-          chatId,
-          personaId: updatedChat.personaId,
-        });
+        await syncOneToOneChatPatchToNative(updatedChat);
         await triggerBackgroundRuntime("one_to_one_evolution_toggle");
       }
-      const chats = await dbApi.getChats(updatedChat.personaId);
-      set({
-        chats,
+      set((current) => ({
+        chats: patchChatsWithUpdatedChat(current.chats, updatedChat),
         activeChatId: chatId,
-        isLoading: false,
-      });
+        error: null,
+      }));
     } catch (error) {
-      set({ isLoading: false, error: (error as Error).message });
+      set({ error: (error as Error).message });
     }
   },
 
   setChatEvolutionApplyMode: async (chatId, applyMode) => {
-    set({ isLoading: true, error: null });
     try {
       const currentChat = get().chats.find((chat) => chat.id === chatId);
       if (!currentChat) {
-        set({ isLoading: false });
         return;
       }
       const updatedChat: ChatSession = {
@@ -1484,20 +1458,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
       await dbApi.saveChat(updatedChat);
       if (getRuntimeContext().mode === "android") {
-        await syncOneToOneContextToNative({
-          chatId,
-          personaId: updatedChat.personaId,
-        });
+        await syncOneToOneChatPatchToNative(updatedChat);
         await triggerBackgroundRuntime("one_to_one_evolution_apply_mode");
       }
-      const chats = await dbApi.getChats(updatedChat.personaId);
-      set({
-        chats,
+      set((current) => ({
+        chats: patchChatsWithUpdatedChat(current.chats, updatedChat),
         activeChatId: chatId,
-        isLoading: false,
-      });
+        error: null,
+      }));
     } catch (error) {
-      set({ isLoading: false, error: (error as Error).message });
+      set({ error: (error as Error).message });
     }
   },
 

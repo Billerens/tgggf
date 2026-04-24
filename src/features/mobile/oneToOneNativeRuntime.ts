@@ -271,6 +271,26 @@ export async function syncOneToOneContextToNative(input: {
   }
 }
 
+export async function syncOneToOneChatPatchToNative(chat: ChatSession) {
+  const scope = globalThis as unknown as CapacitorLikeScope;
+  const plugin = resolveLocalApiPlugin(scope);
+  if (!plugin) return;
+
+  const response = await plugin.request({
+    method: "PUT",
+    path: "/api/background-runtime/context",
+    body: {
+      mode: "merge",
+      stores: {
+        chats: [chat],
+      },
+    },
+  });
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`native_context_sync_http_${response.status}`);
+  }
+}
+
 export async function applyOneToOneStatePatch(
   stores: Record<string, unknown>,
   preferredChatId: string | null,
