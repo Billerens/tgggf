@@ -491,75 +491,6 @@ class LocalApiBridgePlugin : Plugin() {
         repository.writeStoreJson(storeName, value.toString())
     }
 
-    private fun cloneJsonObject(source: JSONObject): JSONObject {
-        return try {
-            JSONObject(source.toString())
-        } catch (_: JSONException) {
-            JSONObject()
-        }
-    }
-
-    private fun resolveStoreRowMergeKey(storeName: String, row: JSONObject): String? {
-        val directId = row.optString("id", "").trim()
-        if (directId.isNotEmpty()) return "id:$directId"
-        return when (storeName) {
-            "personaStates", "personaEvolutionStates" -> {
-                val chatId = row.optString("chatId", "").trim()
-                if (chatId.isNotEmpty()) "chatId:$chatId" else null
-            }
-            else -> null
-        }
-    }
-
-    private fun mergeStoreArrays(
-        storeName: String,
-        existing: JSONArray,
-        incoming: JSONArray,
-    ): JSONArray {
-        if (storeName == "settings") {
-            val existingSettings = existing.optJSONObject(0) ?: JSONObject()
-            val incomingSettings = incoming.optJSONObject(0) ?: return JSONArray().put(existingSettings)
-            val merged = cloneJsonObject(existingSettings)
-            val keys = incomingSettings.keys()
-            while (keys.hasNext()) {
-                val key = keys.next()
-                merged.put(key, incomingSettings.opt(key))
-            }
-            return JSONArray().put(merged)
-        }
-
-        val out = JSONArray()
-        val keyToIndex = mutableMapOf<String, Int>()
-
-        for (index in 0 until existing.length()) {
-            val row = existing.optJSONObject(index) ?: continue
-            val cloned = cloneJsonObject(row)
-            out.put(cloned)
-            resolveStoreRowMergeKey(storeName, cloned)?.let { key ->
-                keyToIndex[key] = out.length() - 1
-            }
-        }
-
-        for (index in 0 until incoming.length()) {
-            val row = incoming.optJSONObject(index) ?: continue
-            val cloned = cloneJsonObject(row)
-            val key = resolveStoreRowMergeKey(storeName, cloned)
-            if (key == null) {
-                out.put(cloned)
-                continue
-            }
-            val existingIndex = keyToIndex[key]
-            if (existingIndex == null || existingIndex < 0 || existingIndex >= out.length()) {
-                out.put(cloned)
-                keyToIndex[key] = out.length() - 1
-            } else {
-                out.put(existingIndex, cloned)
-            }
-        }
-
-        return out
-    }
-
     private fun parseRequestedStoreNames(query: String?): Set<String>? {
         val raw = readQueryParam(query, "stores") ?: return null
         if (raw.isBlank()) return null
@@ -609,13 +540,7 @@ class LocalApiBridgePlugin : Plugin() {
                 is JSONObject -> JSONArray().put(rawValue)
                 else -> JSONArray()
             }
-            if (mode == "merge") {
-                val existingValue = readStoreArray(storeName)
-                val mergedValue = mergeStoreArrays(storeName, existingValue, arrayValue)
-                writeStoreArray(storeName, mergedValue)
-            } else {
-                writeStoreArray(storeName, arrayValue)
-            }
+            writeStoreArray(storeName, arrayValue)
         }
     }
 

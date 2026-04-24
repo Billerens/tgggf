@@ -2619,11 +2619,6 @@ export const useAppStore = create<AppState>((set, get) => ({
             : null;
         if (nextChat) {
           await dbApi.saveChat(nextChat);
-          set((current) => ({
-            chats: current.chats.map((chat) =>
-              chat.id === nextChat.id ? nextChat : chat,
-            ),
-          }));
         }
         await syncOneToOneContextToNative({
           chatId: activeChatId,
@@ -2644,6 +2639,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           maxAttempts: ONE_TO_ONE_CHAT_MAX_ATTEMPTS,
         });
         await triggerBackgroundRuntime("one_to_one_enqueue");
+        const chats = await dbApi.getChats(activePersona.id);
+        set({
+          chats,
+          messages: nextMessages,
+        });
         return;
       }
 

@@ -11,7 +11,6 @@ import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -1020,7 +1019,7 @@ object NativeLlmClient {
                 appendLine("Новые сообщения для инкрементального учета:")
                 transcript.forEach { entry ->
                     val roleLabel = if (entry.role == "assistant") "Персона" else "Пользователь"
-                    val createdAt = entry.createdAt?.trim().orEmpty().ifBlank { "unknown" }
+                    val createdAt = formatMessageContextTime(entry.createdAt)
                     appendLine("$roleLabel [time=$createdAt]: ${entry.content.trim()}")
                 }
             }.trim()
@@ -1825,7 +1824,7 @@ object NativeLlmClient {
             val content = buildPromptMessageContent(message, contentMaxLen)
             val authorName = clipText(message.optString("authorDisplayName", "").trim(), 36)
             val authorType = message.optString("authorType", "").uppercase()
-            val createdAt = message.optString("createdAt", "").trim().ifBlank { "unknown" }
+            val createdAt = formatMessageContextTime(message.optString("createdAt", ""))
             lines.add("$authorType $authorName [time=$createdAt]: $content")
         }
         return lines.takeLast(max(1, limit))
@@ -2691,11 +2690,26 @@ object NativeLlmClient {
         }
     }
 
+    private fun formatUtcOffsetForPrompt(offsetId: String): String {
+        return if (offsetId == "Z") "+00:00" else offsetId
+    }
+
+    private fun formatZonedDateTimeForPrompt(zoned: ZonedDateTime): String {
+        val zoneId = zoned.zone.id.trim().ifEmpty { "unknown_timezone" }
+        val year = zoned.year
+        val month = zoned.monthValue.toString().padStart(2, '0')
+        val day = zoned.dayOfMonth.toString().padStart(2, '0')
+        val hours = zoned.hour.toString().padStart(2, '0')
+        val minutes = zoned.minute.toString().padStart(2, '0')
+        val seconds = zoned.second.toString().padStart(2, '0')
+        val offset = formatUtcOffsetForPrompt(zoned.offset.id)
+        return "$year-$month-$day $hours:$minutes:$seconds UTC$offset ($zoneId)"
+    }
+
     private fun formatCurrentUserLocalTimeContext(now: ZonedDateTime = ZonedDateTime.now()): String {
-        val zoneId = now.zone.id.trim().ifEmpty { "unknown_timezone" }
         val dayPeriod = resolveDayPeriodByHour(now.hour)
-        val formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'XXX"))
-        return "Текущее локальное время пользователя: $formatted ($zoneId, $dayPeriod)."
+        val formatted = formatZonedDateTimeForPrompt(now)
+        return "Текущее локальное время пользователя: $formatted, $dayPeriod."
     }
 
     private fun buildOneToOneSystemPrompt(
@@ -3132,7 +3146,7 @@ object NativeLlmClient {
         val normalized = history.takeLast(max(1, limit))
         if (normalized.isEmpty()) return "none"
         return normalized.joinToString("\n") { event ->
-            val timestamp = event.optString("timestamp", "").trim().ifBlank { "unknown" }
+            val timestamp = formatMessageContextTime(event.optString("timestamp", ""))
             val reason = clipText(event.optString("reason", "").trim().ifBlank { "-" }, 180)
             val fields = summarizePersonaEvolutionPatchFields(event.optJSONObject("patch"), maxItems = 10)
             val changed = if (fields.isEmpty()) "patch" else fields.joinToString(", ")
@@ -3156,7 +3170,7 @@ object NativeLlmClient {
             val content = item.optString("content", "").trim()
             if (content.isBlank()) continue
             if (role != "user" && role != "assistant") continue
-            val createdAt = item.optString("createdAt", "").trim().ifBlank { "unknown" }
+            val createdAt = formatMessageContextTime(item.optString("createdAt", ""))
             rows.add(Triple(role, content, createdAt))
         }
         if (rows.isEmpty()) return userInput
@@ -3213,11 +3227,7 @@ object NativeLlmClient {
         val safeLimit = max(1, limit)
         val selected = if (rows.size <= safeLimit) rows else rows.takeLast(safeLimit)
         return selected.joinToString("\n") { entry ->
-            val createdAt =
-                entry
-                    .optString("createdAt", entry.optString("updatedAt", ""))
-                    .trim()
-                    .ifBlank { "unknown" }
+            val createdAt = formatMessageContextTime(entry.optString("createdAt", entry.optString("updatedAt", "")))
             val markdown = entry.optString("markdown", "").trim()
             val content =
                 entry
@@ -3238,7 +3248,7 @@ object NativeLlmClient {
     private fun buildProactivePlannerTemporalAnchorsContext(recentMessages: JSONArray): String {
         val now = ZonedDateTime.now()
         val nowDate = now.toLocalDate()
-        val nowFormatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'XXX"))
+        val nowFormatted = formatZonedDateTimeForPrompt(now)
         val knownTimesMs = mutableListOf<Long>()
         var unknownTimestamps = 0
         for (index in 0 until recentMessages.length()) {
@@ -3279,7 +3289,7 @@ object NativeLlmClient {
         return buildString {
             appendLine("current_user_local_time=$nowFormatted")
             appendLine("current_user_local_date=$nowDate")
-            appendLine("known_message_range_local=${formatMessageContextTime(minZoned.toInstant().toString())} .. ${formatMessageContextTime(maxZoned.toInstant().toString())}")
+            appendLine("known_message_range_local=${formatZonedDateTimeForPrompt(minZoned)} .. ${formatZonedDateTimeForPrompt(maxZoned)}")
             appendLine("known_message_dates_local=$minDate .. $maxDate")
             appendLine("last_known_message_day_relation=$lastLabel")
             appendLine("unknown_or_unreadable_timestamps=$unknownTimestamps")
@@ -3580,13 +3590,7 @@ object NativeLlmClient {
         return try {
             val instant = Instant.ofEpochMilli(parsedMs)
             val zoned = instant.atZone(java.time.ZoneId.systemDefault())
-            val year = zoned.year
-            val month = zoned.monthValue.toString().padStart(2, '0')
-            val day = zoned.dayOfMonth.toString().padStart(2, '0')
-            val hours = zoned.hour.toString().padStart(2, '0')
-            val minutes = zoned.minute.toString().padStart(2, '0')
-            val seconds = zoned.second.toString().padStart(2, '0')
-            "$year-$month-$day $hours:$minutes:$seconds"
+            formatZonedDateTimeForPrompt(zoned)
         } catch (_: Exception) {
             raw
         }

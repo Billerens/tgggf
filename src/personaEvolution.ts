@@ -613,6 +613,27 @@ function clipPromptLine(value: string, max = 220) {
   return `${normalized.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function formatPromptTimestamp(value: string) {
+  const raw = value.trim();
+  if (!raw) return "unknown";
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  const hours = String(parsed.getHours()).padStart(2, "0");
+  const minutes = String(parsed.getMinutes()).padStart(2, "0");
+  const seconds = String(parsed.getSeconds()).padStart(2, "0");
+  const offsetMinutes = -parsed.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offsetHours = String(Math.floor(absOffset / 60)).padStart(2, "0");
+  const offsetRemainderMinutes = String(absOffset % 60).padStart(2, "0");
+  const timeZone =
+    Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown_timezone";
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC${sign}${offsetHours}:${offsetRemainderMinutes} (${timeZone})`;
+}
+
 export function formatPersonaEvolutionHistoryForPrompt(
   history: PersonaEvolutionHistoryItem[],
   limit = 10,
@@ -627,7 +648,7 @@ export function formatPersonaEvolutionHistoryForPrompt(
       const changedFields = summarizePersonaEvolutionPatchFields(event.patch, 10);
       const changedLabel =
         changedFields.length > 0 ? changedFields.join(", ") : "patch";
-      return `- ${event.timestamp}: reason=${reason}; changed=${changedLabel}`;
+      return `- ${formatPromptTimestamp(event.timestamp)}: reason=${reason}; changed=${changedLabel}`;
     })
     .join("\n");
 }

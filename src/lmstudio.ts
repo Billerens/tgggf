@@ -181,18 +181,36 @@ function sanitizeAssistantText(content: string) {
   return content;
 }
 
+function formatUtcOffset(offsetMinutes: number) {
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(absOffset / 60)).padStart(2, "0");
+  const minutes = String(absOffset % 60).padStart(2, "0");
+  return `${sign}${hours}:${minutes}`;
+}
+
+function resolveUserTimeZone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown_timezone";
+}
+
+function formatDateInUserTimeZone(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  const offset = formatUtcOffset(-date.getTimezoneOffset());
+  const timeZone = resolveUserTimeZone();
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC${offset} (${timeZone})`;
+}
+
 function formatMessageContextTime(value: string | undefined) {
   const raw = (value || "").trim();
   if (!raw) return "unknown";
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return raw;
-  const year = parsed.getFullYear();
-  const month = String(parsed.getMonth() + 1).padStart(2, "0");
-  const day = String(parsed.getDate()).padStart(2, "0");
-  const hours = String(parsed.getHours()).padStart(2, "0");
-  const minutes = String(parsed.getMinutes()).padStart(2, "0");
-  const seconds = String(parsed.getSeconds()).padStart(2, "0");
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  return formatDateInUserTimeZone(parsed);
 }
 
 function formatRecentMessages(
@@ -310,10 +328,6 @@ function formatLookPromptCacheInput(
   ].join("\n");
 }
 
-function padTwoDigits(value: number) {
-  return value.toString().padStart(2, "0");
-}
-
 function resolveDayPeriodByHour(hour: number) {
   if (hour >= 5 && hour < 12) return "утро";
   if (hour >= 12 && hour < 17) return "день";
@@ -322,21 +336,8 @@ function resolveDayPeriodByHour(hour: number) {
 }
 
 function formatCurrentUserLocalTimeContext(now: Date = new Date()) {
-  const timeZone =
-    Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown_timezone";
-  const year = now.getFullYear();
-  const month = padTwoDigits(now.getMonth() + 1);
-  const day = padTwoDigits(now.getDate());
-  const hours = padTwoDigits(now.getHours());
-  const minutes = padTwoDigits(now.getMinutes());
-  const seconds = padTwoDigits(now.getSeconds());
-  const offsetMinutes = -now.getTimezoneOffset();
-  const sign = offsetMinutes >= 0 ? "+" : "-";
-  const absOffset = Math.abs(offsetMinutes);
-  const offsetHours = padTwoDigits(Math.floor(absOffset / 60));
-  const offsetRestMinutes = padTwoDigits(absOffset % 60);
   const dayPeriod = resolveDayPeriodByHour(now.getHours());
-  return `Текущее локальное время пользователя: ${year}-${month}-${day} ${hours}:${minutes}:${seconds} UTC${sign}${offsetHours}:${offsetRestMinutes} (${timeZone}, ${dayPeriod}).`;
+  return `Текущее локальное время пользователя: ${formatDateInUserTimeZone(now)}, ${dayPeriod}.`;
 }
 
 export function buildSystemPrompt(
