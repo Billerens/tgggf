@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildOneToOneChatJobId,
+  buildOneToOneProactiveJobId,
   readOneToOneChatScope,
+  readOneToOneProactiveScope,
 } from "./backgroundJobKeys";
 
 describe("backgroundJobKeys (one_to_one_chat)", () => {
@@ -33,6 +35,34 @@ describe("backgroundJobKeys (one_to_one_chat)", () => {
     expect(scope).toEqual({
       chatId: "chat-id",
       userMessageId: "msg-id",
+    });
+  });
+
+  it("builds deterministic proactive one-to-one job id", () => {
+    expect(buildOneToOneProactiveJobId("chat-1")).toBe(
+      "one_to_one_proactive:chat-1",
+    );
+  });
+
+  it("parses proactive scope from payload first", () => {
+    const scope = readOneToOneProactiveScope({
+      id: "one_to_one_proactive:chat-a",
+      payload: {
+        chatId: "chat-payload",
+      },
+    });
+    expect(scope).toEqual({
+      chatId: "chat-payload",
+    });
+  });
+
+  it("falls back to parsing proactive scope from job id", () => {
+    const scope = readOneToOneProactiveScope({
+      id: "one_to_one_proactive:chat-id",
+      payload: {},
+    });
+    expect(scope).toEqual({
+      chatId: "chat-id",
     });
   });
 });

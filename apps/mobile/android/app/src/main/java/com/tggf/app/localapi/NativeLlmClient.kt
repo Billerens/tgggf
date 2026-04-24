@@ -11,7 +11,6 @@ import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.ZonedDateTime
-import java.time.format.DateTimeFormatter
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -67,6 +66,21 @@ data class NativeOneToOneTurnResponse(
     val comfyImageDescription: String?,
     val comfyImageDescriptions: List<String>,
     val personaControl: JSONObject?,
+    val llmDebug: NativeLlmCallDebug?,
+)
+
+data class NativeOneToOneProactivePlan(
+    val status: String,
+    val reason: String,
+    val actions: List<JSONObject>,
+    val nextDelayMinutes: Int?,
+    val llmDebug: NativeLlmCallDebug?,
+)
+
+data class NativeOneToOneProactiveReflection(
+    val shouldWriteDiary: Boolean,
+    val entries: List<NativeOneToOneDiaryEntryDraft>,
+    val reason: String?,
     val llmDebug: NativeLlmCallDebug?,
 )
 
@@ -565,6 +579,386 @@ object NativeLlmClient {
         )
     }
 
+    fun requestOneToOneProactivePlan(
+        settings: JSONObject,
+        persona: JSONObject,
+        recentMessages: JSONArray,
+        runtimeState: JSONObject?,
+        memoryCard: JSONObject?,
+        conversationSummary: JSONObject?,
+        diaryEntries: JSONArray,
+        pendingProactiveDiaryEntries: Int = 0,
+        pendingProactiveDiarySoftLimit: Int = 0,
+        userLocalTimeContext: String,
+        evolutionHistoryApplied: List<JSONObject> = emptyList(),
+    ): NativeOneToOneProactivePlan? {
+        val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model = settings.optString("model", "").trim()
+        if (model.isBlank()) return null
+
+        val memoryContext = formatMemoryContextWithUsage(collectMemoriesFromCard(memoryCard))
+        val conversationSummaryContext = formatConversationSummaryContext(conversationSummary)
+        val evolutionHistoryContext = formatPersonaEvolutionHistoryForPrompt(evolutionHistoryApplied)
+        val influencePromptContext = formatInfluenceProfileForPrompt(runtimeState)
+        val personaProfileContext = formatPersonaProfileContextForPrompt(persona)
+        val recentDiaryContext = formatRecentDiaryEntriesForPrompt(diaryEntries, 12)
+        val recentMessagesContext =
+            formatOneToOneRecentMessages(recentMessages, userInput = "[proactive planner context]")
+        val temporalAnchorsContext = buildProactivePlannerTemporalAnchorsContext(recentMessages)
+        val systemPrompt =
+            listOf(
+                "Ты planner проактивности персоны в 1:1 чате.",
+                "Верни только JSON: {\"status\":\"run|skip\",\"reason\":\"...\",\"actions\":[...],\"nextDelayMinutes\":number}.",
+                "Максимум 3 действия в actions.",
+                "Допустимые type: message, photo, reflection.",
+                "Для reflection по возможности добавляй focusTags:[\"prefix:value\", ...] — это теги темы, по которым нужно поднять прошлые записи дневника.",
+                "Для photo в action обязательно добавь intent с явным указанием, что нужен текст и фото в одном сообщении.",
+                "Нет жестких quiet hours: можно писать в любое время, но мягко учитывай локальное время пользователя.",
+                "КРИТИЧНО: временные рассуждения делай только по текущему локальному времени пользователя и timestamp'ам сообщений.",
+                "Если событие не в текущей локальной календарной дате, НЕ называй его «сегодня».",
+                "Если событие не в предыдущей локальной календарной дате, НЕ называй его «вчера».",
+                "Если timestamp сообщения отсутствует/нечитаем, избегай формулировок «сегодня/вчера», используй нейтральные «недавно/ранее».",
+                "При сомнении в датах выбирай безопасную нейтральную формулировку и не искажай хронологию.",
+                "Избегай повторов одинаковых событий и формулировок.",
+                "Допустима лёгкая и ненавязчивая инициатива: короткий check-in, приветствие, вопрос «как ты?» без масштабного действия.",
+                "Если нет сильного повода для проактивности, это нормально: status=skip.",
+                "Reflection/diary — редкий инструмент, не default-поведение.",
+                "Если pendingProactiveDiaryEntries >= pendingProactiveDiarySoftLimit, избегай reflection: выбирай message или skip.",
+                "Если проактивность сейчас неуместна — status=skip и задай nextDelayMinutes.",
+                "nextDelayMinutes держи в диапазоне 15-45.",
+                "Возвращай только валидный JSON без markdown и пояснений.",
+            ).joinToString("\n")
+
+        val userPrompt =
+            buildString {
+                appendLine("Persona: ${persona.optString("name", "Персона").trim().ifEmpty { "Персона" }}")
+                appendLine(userLocalTimeContext)
+                appendLine()
+                appendLine("Persona profile context:")
+                appendLine(personaProfileContext)
+                appendLine()
+                appendLine("Recent messages:")
+                appendLine(recentMessagesContext)
+                appendLine()
+                appendLine("Temporal anchors for reasoning:")
+                appendLine(temporalAnchorsContext)
+                appendLine()
+                appendLine("Runtime state hints:")
+                appendLine(influencePromptContext)
+                appendLine()
+                appendLine("Memory card context:")
+                appendLine(memoryContext)
+                appendLine()
+                appendLine("Conversation summary context:")
+                appendLine(conversationSummaryContext)
+                appendLine()
+                appendLine("Recent diary entries:")
+                appendLine(recentDiaryContext)
+                appendLine()
+                appendLine("Proactive diary backlog safety:")
+                appendLine("pendingProactiveDiaryEntries=$pendingProactiveDiaryEntries")
+                appendLine("pendingProactiveDiarySoftLimit=$pendingProactiveDiarySoftLimit")
+                appendLine()
+                appendLine("Applied persona evolution history (last 10):")
+                appendLine(evolutionHistoryContext)
+            }.trim()
+
+        return try {
+            val response =
+                requestChatCompletionsWithRetry(
+                    provider = provider,
+                    openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
+                    baseUrl = baseUrl,
+                    model = model,
+                    auth = resolveProviderAuth(settings, provider),
+                    temperature = clampTemperature(settings.optDouble("temperature", 0.55), minValue = 0.2, maxValue = 0.8),
+                    maxTokens = clampMaxTokens(settings.optInt("maxTokens", 600), minValue = 240, maxValue = 1000),
+                    systemPrompt = systemPrompt,
+                    userPrompt = userPrompt,
+                    forceJsonObject = true,
+                    toolDefinition = null,
+                )
+            val parsed = parseJsonObjectLoose(response.content)
+            if (parsed.length() == 0) return null
+            val status = parsed.optString("status", "").trim().lowercase().ifBlank { "skip" }
+            val reason = parsed.optString("reason", "").trim()
+            val nextDelayMinutesRaw = parsed.optInt("nextDelayMinutes", -1)
+            val nextDelayMinutes = if (nextDelayMinutesRaw > 0) nextDelayMinutesRaw else null
+            val actions = mutableListOf<JSONObject>()
+            val actionsRaw = parsed.optJSONArray("actions")
+            if (actionsRaw != null) {
+                for (index in 0 until actionsRaw.length()) {
+                    val row = parseOptionalJsonObjectFromAny(actionsRaw.opt(index)) ?: continue
+                    actions.add(row)
+                }
+            }
+            NativeOneToOneProactivePlan(
+                status = if (status == "run") "run" else "skip",
+                reason = reason,
+                actions = actions,
+                nextDelayMinutes = nextDelayMinutes,
+                llmDebug = response.llmDebug,
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun requestOneToOneProactiveSpeech(
+        settings: JSONObject,
+        persona: JSONObject,
+        action: JSONObject,
+        recentMessages: JSONArray,
+        runtimeState: JSONObject?,
+        memoryCard: JSONObject?,
+        conversationSummary: JSONObject?,
+        userLocalTimeContext: String,
+        evolutionHistoryApplied: List<JSONObject> = emptyList(),
+    ): NativeOneToOneTurnResponse? {
+        val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model = settings.optString("model", "").trim()
+        if (model.isBlank()) return null
+
+        val actionType = action.optString("type", action.optString("action", "")).trim().lowercase()
+        val actionIntent = action.optString("intent", "").trim()
+        val actionReason = action.optString("reason", "").trim()
+        val actionSuggestedContent =
+            extractProactiveActionSuggestedContent(action).let { value ->
+                if (value.length <= 1800) value else "${value.take(1799).trimEnd()}…"
+            }
+        val systemPrompt =
+            buildOneToOneProactiveSpeechSystemPrompt(
+                settings = settings,
+                persona = persona,
+                runtimeState = runtimeState,
+                memoryCard = memoryCard,
+                conversationSummary = conversationSummary,
+                evolutionHistoryApplied = evolutionHistoryApplied,
+                actionType = actionType,
+            )
+        val userPrompt =
+            buildString {
+                appendLine("Action type: $actionType")
+                appendLine("Action intent: ${if (actionIntent.isBlank()) "-" else actionIntent}")
+                appendLine("Action reason: ${if (actionReason.isBlank()) "-" else actionReason}")
+                appendLine("Planner suggested content draft:")
+                appendLine(if (actionSuggestedContent.isBlank()) "-" else actionSuggestedContent)
+                appendLine(userLocalTimeContext)
+                appendLine()
+                appendLine("Recent messages context:")
+                appendLine(formatOneToOneRecentMessages(recentMessages, userInput = "[proactive speech context]"))
+                appendLine()
+                appendLine("Mode: proactive initiative (no new inbound user message right now).")
+                appendLine("Task: produce one natural proactive assistant turn for this action.")
+            }.trim()
+
+        val response =
+            requestChatCompletionsWithRetry(
+                provider = provider,
+                openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
+                baseUrl = baseUrl,
+                model = model,
+                auth = resolveProviderAuth(settings, provider),
+                temperature = clampTemperature(settings.optDouble("temperature", 0.7), minValue = 0.25, maxValue = 0.95),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 620), minValue = 180, maxValue = 1200),
+                systemPrompt = systemPrompt,
+                userPrompt = userPrompt,
+                forceJsonObject = true,
+                toolDefinition = buildOneToOneChatTurnToolDefinition(),
+            )
+        val parsed = parseJsonObjectLoose(response.content)
+        val visibleTextEntry =
+            readFirstNonBlankEntry(
+                parsed,
+                "visibleText",
+                "visible_text",
+                "speech",
+                "text",
+                "reply",
+                "message",
+            )
+        var visibleText = sanitizeVisibleText(visibleTextEntry?.value.orEmpty())
+        var parsedVisibleField = visibleTextEntry?.key
+        if (visibleText.isBlank()) {
+            val rawContent = response.content.trim()
+            val looksLikeStructuredPayload = rawContent.startsWith("{") || rawContent.startsWith("[")
+            if (!looksLikeStructuredPayload) {
+                visibleText = sanitizeVisibleText(rawContent)
+                if (visibleText.isNotBlank()) {
+                    parsedVisibleField = "raw_content_fallback"
+                }
+            }
+        }
+        val comfyPrompts =
+            parseStringArrayFlexible(parsed.opt("comfyPrompts"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfy_prompts")) }
+                .ifEmpty {
+                    parsed.optString("comfyPrompt", parsed.optString("comfy_prompt", ""))
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
+                }
+        val comfyImageDescriptions =
+            parseStringArrayFlexible(parsed.opt("comfyImageDescriptions"))
+                .ifEmpty { parseStringArrayFlexible(parsed.opt("comfy_image_descriptions")) }
+                .ifEmpty {
+                    parsed.optString("comfyImageDescription", parsed.optString("comfy_image_description", ""))
+                        .trim()
+                        .ifEmpty { null }
+                        ?.let { listOf(it) } ?: emptyList()
+                }
+        val personaControl =
+            parsed.optJSONObject("personaControl")
+                ?: parsed.optJSONObject("persona_control")
+                ?: parseOptionalJsonObjectFromAny(parsed.opt("personaControl"))
+                ?: parseOptionalJsonObjectFromAny(parsed.opt("persona_control"))
+
+        return NativeOneToOneTurnResponse(
+            content = visibleText,
+            responseId = response.responseId,
+            comfyPrompt = comfyPrompts.firstOrNull(),
+            comfyPrompts = comfyPrompts,
+            comfyImageDescription = comfyImageDescriptions.firstOrNull(),
+            comfyImageDescriptions = comfyImageDescriptions,
+            personaControl = personaControl,
+            llmDebug = response.llmDebug?.copy(parsedField = parsedVisibleField),
+        )
+    }
+
+    fun requestOneToOneProactiveReflection(
+        settings: JSONObject,
+        persona: JSONObject,
+        action: JSONObject,
+        recentMessages: JSONArray,
+        runtimeState: JSONObject?,
+        memoryCard: JSONObject?,
+        conversationSummary: JSONObject?,
+        existingTags: List<String> = emptyList(),
+        focusTags: List<String> = emptyList(),
+        relatedDiaryEntries: JSONArray = JSONArray(),
+        userLocalTimeContext: String,
+        evolutionHistoryApplied: List<JSONObject> = emptyList(),
+    ): NativeOneToOneProactiveReflection? {
+        val provider = settings.optString("oneToOneProvider", "lmstudio").trim().ifEmpty { "lmstudio" }
+        val baseUrl = resolveProviderBaseUrl(settings, provider)
+        val model = settings.optString("model", "").trim()
+        if (model.isBlank()) return null
+
+        val normalizedExistingTags =
+            existingTags
+                .map { value -> value.trim() }
+                .filter { value -> value.isNotBlank() }
+                .distinct()
+                .take(200)
+        val normalizedFocusTags =
+            focusTags
+                .map { value -> value.trim() }
+                .filter { value -> value.isNotBlank() }
+                .distinct()
+                .take(3)
+        val actionIntent = action.optString("intent", "").trim()
+        val actionReason = action.optString("reason", "").trim()
+        val actionSuggestedContent =
+            extractProactiveActionSuggestedContent(action).let { value ->
+                if (value.length <= 1400) value else "${value.take(1399).trimEnd()}…"
+            }
+        val influencePromptContext = formatInfluenceProfileForPrompt(runtimeState)
+        val memoryContext = formatMemoryContextWithUsage(collectMemoriesFromCard(memoryCard))
+        val relatedDiaryContext = formatRecentDiaryEntriesForPrompt(relatedDiaryEntries, 8)
+        val transcript = buildSummaryTranscriptFromRecentMessages(recentMessages)
+        if (transcript.isEmpty()) return null
+        val summaryState = convertConversationSummaryToState(conversationSummary)
+        val promptBundle =
+            buildOneToOneDiaryPromptBundle(
+                persona = persona,
+                chatTitle = "[proactive reflection]",
+                existing = summaryState,
+                transcript = transcript,
+                existingTags = normalizedExistingTags,
+                evolutionHistoryApplied = evolutionHistoryApplied,
+                extraSystemInstructions =
+                    listOf(
+                        "PROACTIVE REFLECTION MODE: это фоновая рефлексия, а не ответ пользователю.",
+                        "Можно писать запись в дневник даже если пользовательский diary toggle выключен.",
+                        "Дополнительно к shouldWrite верни shouldWriteDiary (дублирует shouldWrite).",
+                        "Дополнительно верни reason (коротко, почему писать/не писать дневник сейчас).",
+                        "Если переданы relatedDiaryEntriesByFocusTags, используй их как память предыдущих размышлений по теме.",
+                        "Новая запись должна развивать или уточнять предыдущие размышления по focusTags, а не дублировать их дословно.",
+                        "Если передан Planner suggested content draft, используй его как контекст направления мысли, но не копируй дословно.",
+                    ),
+                extraUserSections =
+                    listOf(
+                        "Action context" to
+                            buildString {
+                                appendLine("intent: ${if (actionIntent.isBlank()) "-" else actionIntent}")
+                                appendLine("reason: ${if (actionReason.isBlank()) "-" else actionReason}")
+                                appendLine(userLocalTimeContext)
+                            }.trim(),
+                        "Planner suggested content draft" to
+                            if (actionSuggestedContent.isBlank()) "-" else actionSuggestedContent,
+                        "Runtime hints" to influencePromptContext,
+                        "Memory context" to memoryContext,
+                        "focusTags" to JSONArray(normalizedFocusTags).toString(),
+                        "relatedDiaryEntriesByFocusTags" to relatedDiaryContext,
+                    ),
+            )
+        val systemPrompt = promptBundle.systemPrompt
+        val userPrompt = promptBundle.userPrompt
+
+        return try {
+            val response =
+                requestChatCompletionsWithRetry(
+                    provider = provider,
+                    openRouterProviderRouting = buildOpenRouterProviderRouting(settings),
+                    baseUrl = baseUrl,
+                    model = model,
+                    auth = resolveProviderAuth(settings, provider),
+                    temperature = clampTemperature(settings.optDouble("temperature", 0.5), minValue = 0.2, maxValue = 0.75),
+                    maxTokens = clampMaxTokens(settings.optInt("maxTokens", 1800), minValue = 500, maxValue = 2600),
+                    systemPrompt = systemPrompt,
+                    userPrompt = userPrompt,
+                    forceJsonObject = true,
+                    toolDefinition = null,
+                )
+            val parsed = parseJsonObjectLoose(response.content)
+            if (parsed.length() == 0) return null
+            val shouldWriteDiary = parsed.optBoolean("shouldWriteDiary", parsed.optBoolean("shouldWrite", false))
+            val entries =
+                parsed
+                    .optJSONArray("entries")
+                    ?.let { rawEntries ->
+                        val normalized = mutableListOf<NativeOneToOneDiaryEntryDraft>()
+                        for (index in 0 until rawEntries.length()) {
+                            val item = rawEntries.optJSONObject(index) ?: continue
+                            val markdown = item.optString("markdown", "").trim()
+                            if (markdown.isBlank()) continue
+                            val tags =
+                                parseStringArrayFlexible(item.opt("tags"))
+                                    .map { value -> value.trim() }
+                                    .filter { value -> value.isNotBlank() }
+                                    .distinct()
+                            normalized.add(
+                                NativeOneToOneDiaryEntryDraft(
+                                    markdown = markdown,
+                                    tags = tags,
+                                ),
+                            )
+                        }
+                        normalized
+                    } ?: emptyList()
+            NativeOneToOneProactiveReflection(
+                shouldWriteDiary = shouldWriteDiary,
+                entries = entries,
+                reason = parsed.optString("reason", "").trim().ifEmpty { null },
+                llmDebug = response.llmDebug,
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun requestOneToOneSummaryUpdate(
         settings: JSONObject,
         persona: JSONObject,
@@ -625,7 +1019,7 @@ object NativeLlmClient {
                 appendLine("Новые сообщения для инкрементального учета:")
                 transcript.forEach { entry ->
                     val roleLabel = if (entry.role == "assistant") "Персона" else "Пользователь"
-                    val createdAt = entry.createdAt?.trim().orEmpty().ifBlank { "unknown" }
+                    val createdAt = formatMessageContextTime(entry.createdAt)
                     appendLine("$roleLabel [time=$createdAt]: ${entry.content.trim()}")
                 }
             }.trim()
@@ -716,72 +1110,17 @@ object NativeLlmClient {
                 .filter { value -> value.isNotBlank() }
                 .distinct()
                 .take(200)
-
-        // Keep in sync with src/lmstudio.ts::requestOneToOneDiaryEntry.
-        val systemPrompt =
-            listOf(
-                "Ты модуль дневника персоны для 1:1 чата.",
-                "Твоя задача: решить, стоит ли сейчас писать запись в дневник.",
-                "Если писать нечего (нет новых заметных эмоций/впечатлений/событий), верни shouldWrite=false.",
-                "Если писать стоит, верни shouldWrite=true и entries (массив атомарных записей).",
-                "Каждый элемент entries — самостоятельная запись с полями markdown и tags.",
-                "Одна запись должна описывать один отдельный момент/эпизод, без склейки разных тем в один блок.",
-                "КРИТИЧНО: не объединяй весь диалог в одну длинную запись.",
-                "Если есть несколько самостоятельных эпизодов/поворотов/эмоциональных сдвигов, ОБЯЗАТЕЛЬНО разбей их на отдельные entries.",
-                "Предпочтительно несколько коротких entries вместо одного длинного эссе.",
-                "Стиль: личный дневник живого человека.",
-                "Тон естественный: тепло, уязвимо, лично, иногда с самоиронией; без официоза и без сухого отчета.",
-                "Можно аккуратно добавлять внутренние секреты, личные детали и образные формулировки, если это органично персоне и контексту.",
-                "Формат каждой записи: короткий цельный фрагмент 1-2 абзаца, обычно 3-6 предложений.",
-                "НЕ используй подзаголовки, секции и заголовки markdown (`#`, `##`, `###`) внутри markdown записи.",
-                "НЕ используй нумерованные разделы вида «1., 2., 3.» внутри одной записи.",
-                "Запрещены длинные многочастные монологи формата «сначала..., потом..., затем...» в одном entry.",
-                "Не повторяй слово в слово предыдущие формулировки summary.",
-                "Пиши на русском языке.",
-                "В КАЖДОЙ записи tags должны быть максимально конкретными и узкими, в формате prefix:value.",
-                "Для каждой записи верни содержательные non-date теги (дата добавится вне модели).",
-                "Обычно достаточно 2-6 тегов на запись, но не обрезай искусственно, если нужно больше.",
-                "Избегай широких и абстрактных тегов вроде topic:отношения, emotion:чувства, decision:доверие.",
-                "Теги должны помогать точечно находить запись, а не описывать жизнь в целом.",
-                "Тебе передан список existingTags. При логическом совпадении ОБЯЗАТЕЛЬНО переиспользуй уже существующий тег.",
-                "Создавай новый тег только если в existingTags нет подходящей формулировки для конкретной сущности.",
-                "Допустимые prefix: ${DiaryTagSpec.PREFIXES_TEXT}.",
-                "Возвращай только JSON.",
-                "Формат: {\"shouldWrite\":true|false,\"entries\":[{\"markdown\":\"...\",\"tags\":[\"topic:...\",\"emotion:...\"]}]}",
-                "Не возвращай markdown/tags на верхнем уровне JSON.",
-                "Не выдумывай факты, которых нет в контексте.",
-            ).joinToString("\n")
-
-        val existingJson =
-            JSONObject().apply {
-                put("summary", existing.summary)
-                put("facts", JSONArray(existing.facts))
-                put("goals", JSONArray(existing.goals))
-                put("openThreads", JSONArray(existing.openThreads))
-                put("agreements", JSONArray(existing.agreements))
-            }.toString()
-
-        val userPrompt =
-            buildString {
-                appendLine("Персона: ${persona.optString("name", "Персона").trim().ifEmpty { "Персона" }}")
-                appendLine("Чат: ${chatTitle.trim().ifEmpty { "Без названия" }}")
-                appendLine()
-                appendLine("Applied persona evolution history (last 10):")
-                appendLine(formatPersonaEvolutionHistoryForPrompt(evolutionHistoryApplied))
-                appendLine()
-                appendLine("existingTags (используй повторно при семантическом совпадении):")
-                appendLine(JSONArray(normalizedExistingTags).toString())
-                appendLine()
-                appendLine("Текущее summary чата:")
-                appendLine(existingJson)
-                appendLine()
-                appendLine("Новые сообщения (последние релевантные):")
-                transcript.forEach { entry ->
-                    val roleLabel = if (entry.role == "assistant") "Персона" else "Пользователь"
-                    val createdAt = formatMessageContextTime(entry.createdAt)
-                    appendLine("$roleLabel [time=$createdAt]: ${entry.content.trim()}")
-                }
-            }.trim()
+        val promptBundle =
+            buildOneToOneDiaryPromptBundle(
+                persona = persona,
+                chatTitle = chatTitle,
+                existing = existing,
+                transcript = transcript,
+                existingTags = normalizedExistingTags,
+                evolutionHistoryApplied = evolutionHistoryApplied,
+            )
+        val systemPrompt = promptBundle.systemPrompt
+        val userPrompt = promptBundle.userPrompt
 
         return try {
             val response =
@@ -838,6 +1177,151 @@ object NativeLlmClient {
         } catch (_: Exception) {
             null
         }
+    }
+
+    private data class OneToOneDiaryPromptBundle(
+        val systemPrompt: String,
+        val userPrompt: String,
+    )
+
+    private fun buildOneToOneDiaryPromptBundle(
+        persona: JSONObject,
+        chatTitle: String,
+        existing: NativeConversationSummaryState,
+        transcript: List<NativeSummaryTranscriptEntry>,
+        existingTags: List<String> = emptyList(),
+        evolutionHistoryApplied: List<JSONObject> = emptyList(),
+        extraSystemInstructions: List<String> = emptyList(),
+        extraUserSections: List<Pair<String, String>> = emptyList(),
+    ): OneToOneDiaryPromptBundle {
+        // Keep in sync with src/lmstudio.ts::requestOneToOneDiaryEntry.
+        val baseSystemPrompt =
+            listOf(
+                "Ты модуль дневника персоны для 1:1 чата.",
+                "Твоя задача: решить, стоит ли сейчас писать запись в дневник.",
+                "Если писать нечего (нет новых заметных эмоций/впечатлений/событий), верни shouldWrite=false.",
+                "Если писать стоит, верни shouldWrite=true и entries (массив атомарных записей).",
+                "Каждый элемент entries — самостоятельная запись с полями markdown и tags.",
+                "Одна запись должна описывать один отдельный момент/эпизод, без склейки разных тем в один блок.",
+                "КРИТИЧНО: не объединяй весь диалог в одну длинную запись.",
+                "Если есть несколько самостоятельных эпизодов/поворотов/эмоциональных сдвигов, ОБЯЗАТЕЛЬНО разбей их на отдельные entries.",
+                "Предпочтительно несколько коротких entries вместо одного длинного эссе.",
+                "Стиль: личный дневник живого человека.",
+                "Тон естественный: тепло, уязвимо, лично, иногда с самоиронией; без официоза и без сухого отчета.",
+                "Можно аккуратно добавлять внутренние секреты, личные детали и образные формулировки, если это органично персоне и контексту.",
+                "Формат каждой записи: короткий цельный фрагмент 1-2 абзаца, обычно 3-6 предложений.",
+                "НЕ используй подзаголовки, секции и заголовки markdown (`#`, `##`, `###`) внутри markdown записи.",
+                "НЕ используй нумерованные разделы вида «1., 2., 3.» внутри одной записи.",
+                "Запрещены длинные многочастные монологи формата «сначала..., потом..., затем...» в одном entry.",
+                "Не повторяй слово в слово предыдущие формулировки summary.",
+                "Пиши на русском языке.",
+                "В КАЖДОЙ записи tags должны быть максимально конкретными и узкими, в формате prefix:value.",
+                "Для каждой записи верни содержательные non-date теги (дата добавится вне модели).",
+                "Обычно достаточно 2-6 тегов на запись, но не обрезай искусственно, если нужно больше.",
+                "Избегай широких и абстрактных тегов вроде topic:отношения, emotion:чувства, decision:доверие.",
+                "Теги должны помогать точечно находить запись, а не описывать жизнь в целом.",
+                "Тебе передан список existingTags. При логическом совпадении ОБЯЗАТЕЛЬНО переиспользуй уже существующий тег.",
+                "Создавай новый тег только если в existingTags нет подходящей формулировки для конкретной сущности.",
+                "Допустимые prefix: ${DiaryTagSpec.PREFIXES_TEXT}.",
+                "Возвращай только JSON.",
+                "Формат: {\"shouldWrite\":true|false,\"entries\":[{\"markdown\":\"...\",\"tags\":[\"topic:...\",\"emotion:...\"]}]}",
+                "Не возвращай markdown/tags на верхнем уровне JSON.",
+                "Не выдумывай факты, которых нет в контексте.",
+            )
+        val systemPrompt =
+            if (extraSystemInstructions.isEmpty()) {
+                baseSystemPrompt.joinToString("\n")
+            } else {
+                (baseSystemPrompt + listOf("", "=== ADDITIONAL MODE INSTRUCTIONS ===") + extraSystemInstructions).joinToString("\n")
+            }
+
+        val existingJson =
+            JSONObject().apply {
+                put("summary", existing.summary)
+                put("facts", JSONArray(existing.facts))
+                put("goals", JSONArray(existing.goals))
+                put("openThreads", JSONArray(existing.openThreads))
+                put("agreements", JSONArray(existing.agreements))
+            }.toString()
+
+        val userPrompt =
+            buildString {
+                appendLine("Персона: ${persona.optString("name", "Персона").trim().ifEmpty { "Персона" }}")
+                appendLine("Чат: ${chatTitle.trim().ifEmpty { "Без названия" }}")
+                appendLine()
+                appendLine("Applied persona evolution history (last 10):")
+                appendLine(formatPersonaEvolutionHistoryForPrompt(evolutionHistoryApplied))
+                appendLine()
+                appendLine("existingTags (используй повторно при семантическом совпадении):")
+                appendLine(JSONArray(existingTags).toString())
+                appendLine()
+                appendLine("Текущее summary чата:")
+                appendLine(existingJson)
+                appendLine()
+                appendLine("Новые сообщения (последние релевантные):")
+                transcript.forEach { entry ->
+                    val roleLabel = if (entry.role == "assistant") "Персона" else "Пользователь"
+                    val createdAt = formatMessageContextTime(entry.createdAt)
+                    appendLine("$roleLabel [time=$createdAt]: ${entry.content.trim()}")
+                }
+                extraUserSections.forEach { section ->
+                    val sectionTitle = section.first.trim()
+                    val sectionBody = section.second.trim()
+                    if (sectionTitle.isBlank() || sectionBody.isBlank()) return@forEach
+                    appendLine()
+                    appendLine("$sectionTitle:")
+                    appendLine(sectionBody)
+                }
+            }.trim()
+        return OneToOneDiaryPromptBundle(
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+        )
+    }
+
+    private fun convertConversationSummaryToState(conversationSummary: JSONObject?): NativeConversationSummaryState {
+        if (conversationSummary == null) {
+            return NativeConversationSummaryState(
+                summary = "",
+                facts = emptyList(),
+                goals = emptyList(),
+                openThreads = emptyList(),
+                agreements = emptyList(),
+            )
+        }
+        return NativeConversationSummaryState(
+            summary = conversationSummary.optString("summary", "").trim(),
+            facts = parseStringArrayFlexible(conversationSummary.opt("facts")),
+            goals = parseStringArrayFlexible(conversationSummary.opt("goals")),
+            openThreads = parseStringArrayFlexible(conversationSummary.opt("openThreads")),
+            agreements = parseStringArrayFlexible(conversationSummary.opt("agreements")),
+        )
+    }
+
+    private fun buildSummaryTranscriptFromRecentMessages(
+        recentMessages: JSONArray,
+        maxMessages: Int = 40,
+        maxCharsPerMessage: Int = 1800,
+    ): List<NativeSummaryTranscriptEntry> {
+        if (recentMessages.length() == 0) return emptyList()
+        val rows = mutableListOf<NativeSummaryTranscriptEntry>()
+        for (index in 0 until recentMessages.length()) {
+            val item = recentMessages.optJSONObject(index) ?: continue
+            val role = item.optString("role", "").trim().lowercase()
+            if (role != "assistant" && role != "user") continue
+            val content = item.optString("content", "").trim()
+            if (content.isBlank()) continue
+            rows.add(
+                NativeSummaryTranscriptEntry(
+                    role = if (role == "assistant") "assistant" else "user",
+                    content = content.take(maxCharsPerMessage),
+                    createdAt = item.optString("createdAt", "").trim().ifBlank { null },
+                ),
+            )
+        }
+        if (rows.isEmpty()) return emptyList()
+        val safeLimit = max(1, maxMessages)
+        return if (rows.size <= safeLimit) rows else rows.takeLast(safeLimit)
     }
 
     fun generateComfyPromptsFromImageDescriptions(
@@ -1340,7 +1824,7 @@ object NativeLlmClient {
             val content = buildPromptMessageContent(message, contentMaxLen)
             val authorName = clipText(message.optString("authorDisplayName", "").trim(), 36)
             val authorType = message.optString("authorType", "").uppercase()
-            val createdAt = message.optString("createdAt", "").trim().ifBlank { "unknown" }
+            val createdAt = formatMessageContextTime(message.optString("createdAt", ""))
             lines.add("$authorType $authorName [time=$createdAt]: $content")
         }
         return lines.takeLast(max(1, limit))
@@ -2206,11 +2690,26 @@ object NativeLlmClient {
         }
     }
 
+    private fun formatUtcOffsetForPrompt(offsetId: String): String {
+        return if (offsetId == "Z") "+00:00" else offsetId
+    }
+
+    private fun formatZonedDateTimeForPrompt(zoned: ZonedDateTime): String {
+        val zoneId = zoned.zone.id.trim().ifEmpty { "unknown_timezone" }
+        val year = zoned.year
+        val month = zoned.monthValue.toString().padStart(2, '0')
+        val day = zoned.dayOfMonth.toString().padStart(2, '0')
+        val hours = zoned.hour.toString().padStart(2, '0')
+        val minutes = zoned.minute.toString().padStart(2, '0')
+        val seconds = zoned.second.toString().padStart(2, '0')
+        val offset = formatUtcOffsetForPrompt(zoned.offset.id)
+        return "$year-$month-$day $hours:$minutes:$seconds UTC$offset ($zoneId)"
+    }
+
     private fun formatCurrentUserLocalTimeContext(now: ZonedDateTime = ZonedDateTime.now()): String {
-        val zoneId = now.zone.id.trim().ifEmpty { "unknown_timezone" }
         val dayPeriod = resolveDayPeriodByHour(now.hour)
-        val formatted = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss 'UTC'XXX"))
-        return "Текущее локальное время пользователя: $formatted ($zoneId, $dayPeriod)."
+        val formatted = formatZonedDateTimeForPrompt(now)
+        return "Текущее локальное время пользователя: $formatted, $dayPeriod."
     }
 
     private fun buildOneToOneSystemPrompt(
@@ -2438,6 +2937,92 @@ object NativeLlmClient {
         ).joinToString("\n")
     }
 
+    private fun buildOneToOneProactiveSpeechSystemPrompt(
+        settings: JSONObject,
+        persona: JSONObject,
+        runtimeState: JSONObject?,
+        memoryCard: JSONObject?,
+        conversationSummary: JSONObject?,
+        evolutionHistoryApplied: List<JSONObject>,
+        actionType: String,
+    ): String {
+        val basePrompt =
+            buildOneToOneSystemPrompt(
+                settings = settings,
+                persona = persona,
+                runtimeState = runtimeState,
+                memoryCard = memoryCard,
+                conversationSummary = conversationSummary,
+                evolutionHistoryApplied = evolutionHistoryApplied,
+            )
+        val normalizedActionType =
+            actionType
+                .trim()
+                .lowercase()
+                .ifBlank { "message" }
+        val actionStrictBlock =
+            when (normalizedActionType) {
+                "photo" ->
+                    listOf(
+                        "ACTION TYPE = photo.",
+                        "Это жесткое требование: ответ ДОЛЖЕН содержать и visible_text, и непустой comfy_image_descriptions.",
+                        "Нельзя возвращать только текст без comfy_image_descriptions.",
+                        "Не задавай уточняющий вопрос вместо выполнения, если planner уже выбрал photo.",
+                    )
+                else ->
+                    listOf(
+                        "ACTION TYPE = message/message_with_photo.",
+                        "Верни текстовую реплику, и, если персона \"хочет\" - верни comfy_image_descriptions.",
+                    )
+            }
+        val proactiveOverlay =
+            listOf(
+                "=== PROACTIVE MODE OVERLAY ===",
+                "Это проактивная инициатива персоны без нового входящего сообщения пользователя.",
+                "Не упоминай внутреннюю механику planner/action/proactive в visible_text.",
+                "Сохраняй естественный тон и непротиворечивость с недавним контекстом.",
+                "Используй локальное время пользователя как контекст уместности реплики.",
+                "Нормальный выбор для message: короткий дружелюбный check-in без перегруза и без «больших» тем, напоминание о чем-то или исполнение чего-то запланированного (а может - и внезапного, неожиданного).",
+                "Если в action передан Planner suggested content draft, используй его как опорный черновик: сохраняй намерение и смысл, адаптируя формулировки под голос персонажа.",
+                "В КАЖДОМ ответе обязательно заполняй persona_control (или personaControl).",
+                "Для state_delta используй только дельты и соблюдай лимиты из базового контракта.",
+                "Для evolution используй реалистичные небольшие патчи или shouldEvolve=false при отсутствии сигнала.",
+                "",
+            ) + actionStrictBlock
+        return "$basePrompt\n\n${proactiveOverlay.joinToString("\n")}"
+    }
+
+    private fun extractProactiveActionSuggestedContent(action: JSONObject): String {
+        val direct =
+            readFirstNonBlankEntry(
+                action,
+                "content",
+                "text",
+                "message",
+                "draft",
+                "suggestedContent",
+                "suggestedText",
+            )?.value?.trim().orEmpty()
+        if (direct.isNotBlank()) return direct
+
+        val nestedKeys = listOf("payload", "data", "meta")
+        for (key in nestedKeys) {
+            val nested = parseOptionalJsonObjectFromAny(action.opt(key)) ?: continue
+            val nestedValue =
+                readFirstNonBlankEntry(
+                    nested,
+                    "content",
+                    "text",
+                    "message",
+                    "draft",
+                    "suggestedContent",
+                    "suggestedText",
+                )?.value?.trim().orEmpty()
+            if (nestedValue.isNotBlank()) return nestedValue
+        }
+        return ""
+    }
+
     private fun buildOneToOneUserPrompt(
         userInput: String,
         recentMessages: JSONArray,
@@ -2561,7 +3146,7 @@ object NativeLlmClient {
         val normalized = history.takeLast(max(1, limit))
         if (normalized.isEmpty()) return "none"
         return normalized.joinToString("\n") { event ->
-            val timestamp = event.optString("timestamp", "").trim().ifBlank { "unknown" }
+            val timestamp = formatMessageContextTime(event.optString("timestamp", ""))
             val reason = clipText(event.optString("reason", "").trim().ifBlank { "-" }, 180)
             val fields = summarizePersonaEvolutionPatchFields(event.optJSONObject("patch"), maxItems = 10)
             val changed = if (fields.isEmpty()) "patch" else fields.joinToString(", ")
@@ -2585,7 +3170,7 @@ object NativeLlmClient {
             val content = item.optString("content", "").trim()
             if (content.isBlank()) continue
             if (role != "user" && role != "assistant") continue
-            val createdAt = item.optString("createdAt", "").trim().ifBlank { "unknown" }
+            val createdAt = formatMessageContextTime(item.optString("createdAt", ""))
             rows.add(Triple(role, content, createdAt))
         }
         if (rows.isEmpty()) return userInput
@@ -2606,6 +3191,110 @@ object NativeLlmClient {
             "ТЕКУЩЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:",
             userInput,
         ).joinToString("\n")
+    }
+
+    private fun formatPersonaProfileContextForPrompt(persona: JSONObject): String {
+        val advanced = persona.optJSONObject("advanced") ?: JSONObject()
+        val core = advanced.optJSONObject("core") ?: JSONObject()
+        val voice = advanced.optJSONObject("voice") ?: JSONObject()
+        val behavior = advanced.optJSONObject("behavior") ?: JSONObject()
+        return listOf(
+            "name=${persona.optString("name", "").trim().ifEmpty { "Персона" }}",
+            "personalityPrompt=${clipText(persona.optString("personalityPrompt", "").trim().ifEmpty { "-" }, 600)}",
+            "stylePrompt=${clipText(persona.optString("stylePrompt", "").trim().ifEmpty { "-" }, 600)}",
+            "appearance=${formatAppearanceProfileInput(persona.optJSONObject("appearance"))}",
+            "core.archetype=${core.optString("archetype", "").trim().ifEmpty { "-" }}",
+            "core.goals=${clipText(core.optString("goals", "").trim().ifEmpty { "-" }, 280)}",
+            "voice.tone=${voice.optString("tone", "").trim().ifEmpty { "-" }}",
+            "voice.lexicalStyle=${voice.optString("lexicalStyle", "").trim().ifEmpty { "-" }}",
+            "behavior.empathy=${behavior.optInt("empathy", 50)}",
+            "behavior.directness=${behavior.optInt("directness", 50)}",
+            "behavior.curiosity=${behavior.optInt("curiosity", 50)}",
+        ).joinToString("\n")
+    }
+
+    private fun formatRecentDiaryEntriesForPrompt(
+        diaryEntries: JSONArray,
+        limit: Int = 12,
+    ): String {
+        if (diaryEntries.length() == 0) return "none"
+        val rows = mutableListOf<JSONObject>()
+        for (index in 0 until diaryEntries.length()) {
+            val entry = diaryEntries.optJSONObject(index) ?: continue
+            rows.add(entry)
+        }
+        if (rows.isEmpty()) return "none"
+        val safeLimit = max(1, limit)
+        val selected = if (rows.size <= safeLimit) rows else rows.takeLast(safeLimit)
+        return selected.joinToString("\n") { entry ->
+            val createdAt = formatMessageContextTime(entry.optString("createdAt", entry.optString("updatedAt", "")))
+            val markdown = entry.optString("markdown", "").trim()
+            val content =
+                entry
+                    .optString("content", entry.optString("text", markdown))
+                    .trim()
+                    .ifBlank { "-" }
+            val tags =
+                parseStringArrayFlexible(entry.opt("tags"))
+                    .map { value -> value.trim() }
+                    .filter { value -> value.isNotBlank() }
+                    .distinct()
+                    .take(8)
+            val tagsSuffix = if (tags.isEmpty()) "" else "; tags=${tags.joinToString(", ")}"
+            "- $createdAt: ${clipText(content, 240)}$tagsSuffix"
+        }
+    }
+
+    private fun buildProactivePlannerTemporalAnchorsContext(recentMessages: JSONArray): String {
+        val now = ZonedDateTime.now()
+        val nowDate = now.toLocalDate()
+        val nowFormatted = formatZonedDateTimeForPrompt(now)
+        val knownTimesMs = mutableListOf<Long>()
+        var unknownTimestamps = 0
+        for (index in 0 until recentMessages.length()) {
+            val item = recentMessages.optJSONObject(index) ?: continue
+            val createdAt = item.optString("createdAt", "").trim()
+            if (createdAt.isBlank()) {
+                unknownTimestamps += 1
+                continue
+            }
+            val parsedMs = parseIsoToMillisOrNull(createdAt)
+            if (parsedMs == null) {
+                unknownTimestamps += 1
+                continue
+            }
+            knownTimesMs.add(parsedMs)
+        }
+        if (knownTimesMs.isEmpty()) {
+            return buildString {
+                appendLine("current_user_local_time=$nowFormatted")
+                appendLine("current_user_local_date=$nowDate")
+                appendLine("known_message_timestamps=none")
+                appendLine("unknown_or_unreadable_timestamps=$unknownTimestamps")
+                append("temporal_note=No reliable message timestamps. Avoid strict day labels like today/yesterday.")
+            }
+        }
+        val minMs = knownTimesMs.minOrNull() ?: knownTimesMs.first()
+        val maxMs = knownTimesMs.maxOrNull() ?: knownTimesMs.last()
+        val minZoned = Instant.ofEpochMilli(minMs).atZone(now.zone)
+        val maxZoned = Instant.ofEpochMilli(maxMs).atZone(now.zone)
+        val minDate = minZoned.toLocalDate()
+        val maxDate = maxZoned.toLocalDate()
+        val lastLabel =
+            when (maxDate) {
+                nowDate -> "today"
+                nowDate.minusDays(1) -> "yesterday"
+                else -> "older"
+            }
+        return buildString {
+            appendLine("current_user_local_time=$nowFormatted")
+            appendLine("current_user_local_date=$nowDate")
+            appendLine("known_message_range_local=${formatZonedDateTimeForPrompt(minZoned)} .. ${formatZonedDateTimeForPrompt(maxZoned)}")
+            appendLine("known_message_dates_local=$minDate .. $maxDate")
+            appendLine("last_known_message_day_relation=$lastLabel")
+            appendLine("unknown_or_unreadable_timestamps=$unknownTimestamps")
+            append("temporal_rule=Use today/yesterday labels only when dates match these anchors.")
+        }
     }
 
     private fun buildPrimitiveSchema(type: String): JSONObject {
@@ -2901,13 +3590,7 @@ object NativeLlmClient {
         return try {
             val instant = Instant.ofEpochMilli(parsedMs)
             val zoned = instant.atZone(java.time.ZoneId.systemDefault())
-            val year = zoned.year
-            val month = zoned.monthValue.toString().padStart(2, '0')
-            val day = zoned.dayOfMonth.toString().padStart(2, '0')
-            val hours = zoned.hour.toString().padStart(2, '0')
-            val minutes = zoned.minute.toString().padStart(2, '0')
-            val seconds = zoned.second.toString().padStart(2, '0')
-            "$year-$month-$day $hours:$minutes:$seconds"
+            formatZonedDateTimeForPrompt(zoned)
         } catch (_: Exception) {
             raw
         }

@@ -30,6 +30,7 @@ vi.mock("../../db", () => ({
 import {
   applyOneToOneStatePatch,
   requestNativeDiaryPreview,
+  requestNativeProactivitySimulation,
   syncOneToOneContextToNative,
 } from "./oneToOneNativeRuntime";
 
@@ -226,5 +227,45 @@ describe("oneToOneNativeRuntime", () => {
     const entries = await requestNativeDiaryPreview("chat-1");
     expect(entries).toHaveLength(1);
     expect(entries[0]?.id).toBe("diary-1");
+  });
+
+  it("requestNativeProactivitySimulation returns report with stages", async () => {
+    const request = vi.fn(async (_payload: NativeContextSyncPayload) => ({
+      status: 200,
+      body: {
+        ok: true,
+        report: {
+          chatId: "chat-1",
+          personaId: "persona-1",
+          simulatedAt: "2026-01-01T00:00:00.000Z",
+          stages: [
+            {
+              id: "planner_call",
+              title: "Решение planner",
+              status: "ok",
+              details: {
+                status: "run",
+                actionCount: 1,
+              },
+            },
+          ],
+          summary: {
+            dryRun: true,
+            simulatedMessagesCount: 1,
+          },
+        },
+      },
+    }));
+    (globalThis as unknown as { Capacitor?: unknown }).Capacitor = {
+      Plugins: {
+        LocalApi: { request },
+      },
+    };
+
+    const report = await requestNativeProactivitySimulation("chat-1");
+    expect(report).not.toBeNull();
+    expect(report?.chatId).toBe("chat-1");
+    expect(report?.stages).toHaveLength(1);
+    expect(report?.stages[0]?.status).toBe("ok");
   });
 });

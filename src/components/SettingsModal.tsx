@@ -36,6 +36,10 @@ import {
   listBackgroundRuntimeEvents,
   type BackgroundRuntimeEventRecord,
 } from "../features/mobile/backgroundRuntime";
+import {
+  hashSecurityPin,
+  isValidSecurityPin,
+} from "../features/security/pinSecurity";
 
 type PwaInstallStatus = "installed" | "available" | "unavailable";
 type ToolCapabilityMatrixStatus =
@@ -112,7 +116,7 @@ interface SettingsModalProps {
   }) => Promise<void>;
   onImportData: (file: File, mode: BackupImportMode) => Promise<void>;
   onClose: () => void;
-  onSubmit: (event: FormEvent) => void;
+  onSubmit: (event: FormEvent, nextSettings?: AppSettings) => void;
 }
 
 type SettingsTab = "system" | "models" | "personal" | "chat" | "data" | "logs";
@@ -816,6 +820,10 @@ export function SettingsModal({
   const [nativeRuntimeEventsClearing, setNativeRuntimeEventsClearing] = useState(false);
   const [nativeRuntimeEventsError, setNativeRuntimeEventsError] = useState<string | null>(null);
   const [copyLogsFeedback, setCopyLogsFeedback] = useState<string>("");
+  const [securityPinValue, setSecurityPinValue] = useState("");
+  const [securityPinConfirmValue, setSecurityPinConfirmValue] = useState("");
+  const [securityPinError, setSecurityPinError] = useState<string | null>(null);
+  const [securityPinSaving, setSecurityPinSaving] = useState(false);
   const [nativeRuntimeEventsFetchedAtMs, setNativeRuntimeEventsFetchedAtMs] = useState<number | null>(
     null,
   );
@@ -851,12 +859,18 @@ export function SettingsModal({
     }
     setNativeRuntimeEventsLoading(true);
     try {
-      const [groupRows, topicRows, oneToOneRows] = await Promise.all([
+      const [groupRows, topicRows, oneToOneRows, oneToOneProactiveRows] = await Promise.all([
         listBackgroundRuntimeEvents({ taskType: "group_iteration", limit: 400 }),
         listBackgroundRuntimeEvents({ taskType: "topic_generation", limit: 400 }),
         listBackgroundRuntimeEvents({ taskType: "one_to_one_chat", limit: 400 }),
+        listBackgroundRuntimeEvents({ taskType: "one_to_one_proactive", limit: 400 }),
       ]);
-      const mergedRows = [...groupRows, ...topicRows, ...oneToOneRows].sort((left, right) => {
+      const mergedRows = [
+        ...groupRows,
+        ...topicRows,
+        ...oneToOneRows,
+        ...oneToOneProactiveRows,
+      ].sort((left, right) => {
         if (left.createdAtMs !== right.createdAtMs) {
           return right.createdAtMs - left.createdAtMs;
         }
@@ -1280,6 +1294,73 @@ export function SettingsModal({
             "ru-RU",
           )}`
         : "Native Runtime ещё не загружен";
+  const hasConfiguredSecurityPin =
+    settingsDraft.securityPinHash.trim().length > 0 &&
+    settingsDraft.securityPinSalt.trim().length > 0;
+
+  useEffect(() => {
+    if (!open) {
+      setSecurityPinValue("");
+      setSecurityPinConfirmValue("");
+      setSecurityPinError(null);
+      setSecurityPinSaving(false);
+    }
+  }, [open]);
+
+  const handleFormSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSecurityPinError(null);
+    let nextSettings: AppSettings = settingsDraft;
+
+    try {
+      if (!settingsDraft.securityPinEnabled) {
+        nextSettings = {
+          ...nextSettings,
+          securityPinEnabled: false,
+          securityPinHash: "",
+          securityPinSalt: "",
+        };
+      } else {
+        const pinValue = securityPinValue.trim();
+        const pinConfirmValue = securityPinConfirmValue.trim();
+        const shouldSetOrChangePin =
+          pinValue.length > 0 || pinConfirmValue.length > 0 || !hasConfiguredSecurityPin;
+
+        if (shouldSetOrChangePin) {
+          if (!isValidSecurityPin(pinValue)) {
+            setSecurityPinError("PIN должен содержать 4-8 цифр.");
+            return;
+          }
+          if (pinValue !== pinConfirmValue) {
+            setSecurityPinError("PIN и подтверждение не совпадают.");
+            return;
+          }
+          setSecurityPinSaving(true);
+          const { hash, salt } = await hashSecurityPin(pinValue);
+          nextSettings = {
+            ...nextSettings,
+            securityPinEnabled: true,
+            securityPinHash: hash,
+            securityPinSalt: salt,
+          };
+          setSecurityPinValue("");
+          setSecurityPinConfirmValue("");
+        } else if (!hasConfiguredSecurityPin) {
+          setSecurityPinError("Установите PIN, чтобы включить блокировку.");
+          return;
+        }
+      }
+    } catch (error) {
+      setSecurityPinError(
+        error instanceof Error ? error.message : "Не удалось сохранить PIN.",
+      );
+      return;
+    } finally {
+      setSecurityPinSaving(false);
+    }
+
+    onSubmit(event, nextSettings);
+  };
 
   if (!open) return null;
 
@@ -1336,7 +1417,7 @@ export function SettingsModal({
             Логи
           </button>
         </div>
-        <form className="form" onSubmit={onSubmit}>
+        <form className="form" onSubmit={(event) => void handleFormSubmit(event)}>
           {activeTab === "system" ? (
             <>
               <div className="persona-section">
@@ -1849,6 +1930,85 @@ export function SettingsModal({
                   }
                 />
               </label>
+              <div className="persona-section">
+                <h5>Безопасность</h5>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={settingsDraft.securityPinEnabled}
+                    onChange={(event) =>
+                      setSettingsDraft((prev) => ({
+                        ...prev,
+                        securityPinEnabled: event.target.checked,
+                      }))
+                    }
+                  />
+                  Включить PIN-код (4-8 цифр)
+                </label>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={settingsDraft.securityLockOnBackground}
+                    disabled={!settingsDraft.securityPinEnabled}
+                    onChange={(event) =>
+                      setSettingsDraft((prev) => ({
+                        ...prev,
+                        securityLockOnBackground: event.target.checked,
+                      }))
+                    }
+                  />
+                  Блокировать интерфейс при сворачивании
+                </label>
+                {settingsDraft.securityPinEnabled ? (
+                  <>
+                    <label>
+                      {hasConfiguredSecurityPin ? "Новый PIN (опционально)" : "PIN"}
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        autoComplete="new-password"
+                        value={securityPinValue}
+                        onChange={(event) =>
+                          setSecurityPinValue(event.target.value.replace(/\D+/g, ""))
+                        }
+                        placeholder="4-8 цифр"
+                      />
+                    </label>
+                    <label>
+                      {hasConfiguredSecurityPin
+                        ? "Подтверждение нового PIN"
+                        : "Подтверждение PIN"}
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        autoComplete="new-password"
+                        value={securityPinConfirmValue}
+                        onChange={(event) =>
+                          setSecurityPinConfirmValue(
+                            event.target.value.replace(/\D+/g, ""),
+                          )
+                        }
+                        placeholder="Повторите PIN"
+                      />
+                    </label>
+                  </>
+                ) : null}
+                {securityPinError ? (
+                  <small style={{ color: "var(--danger)" }}>{securityPinError}</small>
+                ) : null}
+                <small style={{ color: "var(--text-secondary)" }}>
+                  {hasConfiguredSecurityPin
+                    ? "PIN сохранён в виде hash+salt и не переносится в бэкап."
+                    : "PIN нужен, чтобы включить безопасную блокировку интерфейса."}
+                </small>
+                {securityPinSaving ? (
+                  <small style={{ color: "var(--text-secondary)" }}>
+                    Сохраняем PIN...
+                  </small>
+                ) : null}
+              </div>
             </>
           ) : null}
 
@@ -2349,12 +2509,12 @@ export function SettingsModal({
                     />
                   </label>
                 </div>
-                <div className="inline-row" style={{ marginTop: 8 }}>
+                <div className="settings-log-summary">
                   <small style={{ color: "var(--text-secondary)" }}>
                     Показано: {filteredLogEntries.length} из {allLogEntries.length}
                   </small>
                 </div>
-                <div className="inline-row">
+                <div className="settings-log-actions">
                     {canLoadNativeRuntimeEvents ? (
                       <button
                         type="button"

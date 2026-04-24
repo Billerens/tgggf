@@ -27,6 +27,7 @@ interface GroupChatDetailsModalProps {
   relationEdges: GroupRelationEdge[];
   sharedMemories: GroupMemoryShared[];
   privateMemories: GroupMemoryPrivate[];
+  onToggleNotificationsEnabled: (roomId: string, enabled: boolean) => void;
   onClose: () => void;
 }
 
@@ -96,6 +97,7 @@ export function GroupChatDetailsModal({
   relationEdges,
   sharedMemories,
   privateMemories,
+  onToggleNotificationsEnabled,
   onClose,
 }: GroupChatDetailsModalProps) {
   const [tab, setTab] = useState<DetailsTab>("attachments");
@@ -172,6 +174,10 @@ export function GroupChatDetailsModal({
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
   }, [privateMemories]);
   const lastMessageAt = messages[messages.length - 1]?.createdAt;
+  const notificationsEnabled =
+    typeof room?.notificationsEnabled === "boolean"
+      ? room.notificationsEnabled
+      : true;
 
   if (!open) return null;
 
@@ -276,6 +282,24 @@ export function GroupChatDetailsModal({
                 <p>lastTickAt: {formatDateTime(room?.lastTickAt)}</p>
                 <p>createdAt: {formatDateTime(room?.createdAt)}</p>
                 <p>updatedAt: {formatDateTime(room?.updatedAt)}</p>
+              </div>
+
+              <div className="status-card">
+                <h4>Уведомления</h4>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={notificationsEnabled}
+                    onChange={(event) => {
+                      if (!room?.id) return;
+                      onToggleNotificationsEnabled(room.id, event.target.checked);
+                    }}
+                  />
+                  Уведомления для этой группы
+                </label>
+                <p className="status-lock-hint">
+                  Пуши приходят только в фоне и только для входящих сообщений персон.
+                </p>
               </div>
 
               <div className="status-card">

@@ -74,6 +74,7 @@ interface GroupStoreState {
   ) => Promise<void>;
   deleteGroupRoom: (roomId: string) => Promise<void>;
   renameGroupRoom: (roomId: string, title: string) => Promise<void>;
+  setGroupRoomNotificationsEnabled: (roomId: string, enabled: boolean) => Promise<void>;
   selectGroupRoom: (roomId: string) => Promise<void>;
   sendUserGroupMessage: (content: string, userName: string, personas: Persona[]) => Promise<void>;
   savePersonaGroupMessage: (
@@ -485,7 +486,9 @@ function buildMentionResolvedEvent(
 }
 
 function ensureRoomState(room: GroupRoom): GroupRoom {
-  if (room.state?.phase) return room;
+  if (room.state?.phase && typeof room.notificationsEnabled === "boolean") {
+    return room;
+  }
   const phase =
     room.status === "paused"
       ? "paused"
@@ -494,6 +497,10 @@ function ensureRoomState(room: GroupRoom): GroupRoom {
         : "idle";
   return {
     ...room,
+    notificationsEnabled:
+      typeof room.notificationsEnabled === "boolean"
+        ? room.notificationsEnabled
+        : true,
     state: {
       phase,
       updatedAt: room.updatedAt,
@@ -546,6 +553,7 @@ function buildDefaultGroupRoom(title: string, mode: GroupRoomMode): GroupRoom {
   return {
     id: newId(),
     title,
+    notificationsEnabled: true,
     mode,
     status,
     state: {
@@ -1094,6 +1102,32 @@ export const useGroupStore = create<GroupStoreState>((set, get) => ({
       const updatedRoom: GroupRoom = {
         ...room,
         title: normalizedTitle,
+        updatedAt: nowIso(),
+      };
+
+      await dbApi.saveGroupRoom(updatedRoom);
+      const rooms = ensureRoomsState(await dbApi.getGroupRooms());
+      set({
+        groupRooms: rooms,
+        isLoading: false,
+      });
+    } catch (error) {
+      set({ isLoading: false, error: (error as Error).message });
+    }
+  },
+
+  setGroupRoomNotificationsEnabled: async (roomId, enabled) => {
+    set({ isLoading: true, error: null });
+    try {
+      const room = get().groupRooms.find((item) => item.id === roomId);
+      if (!room) {
+        set({ isLoading: false });
+        return;
+      }
+
+      const updatedRoom: GroupRoom = {
+        ...room,
+        notificationsEnabled: Boolean(enabled),
         updatedAt: nowIso(),
       };
 

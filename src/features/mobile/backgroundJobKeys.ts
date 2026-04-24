@@ -11,6 +11,10 @@ export const ONE_TO_ONE_CHAT_JOB_TYPE = "one_to_one_chat";
 export const ONE_TO_ONE_CHAT_JOB_ID_PREFIX = `${ONE_TO_ONE_CHAT_JOB_TYPE}:`;
 export const ONE_TO_ONE_CHAT_RETRY_DELAY_MS = 6500;
 export const ONE_TO_ONE_CHAT_MAX_ATTEMPTS = 3;
+export const ONE_TO_ONE_PROACTIVE_JOB_TYPE = "one_to_one_proactive";
+export const ONE_TO_ONE_PROACTIVE_JOB_ID_PREFIX = `${ONE_TO_ONE_PROACTIVE_JOB_TYPE}:`;
+export const ONE_TO_ONE_PROACTIVE_DEFAULT_MIN_DELAY_MINUTES = 15;
+export const ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_DELAY_MINUTES = 45;
 
 export const TOPIC_GENERATION_JOB_TYPE = "topic_generation";
 export const TOPIC_GENERATION_JOB_ID_PREFIX = `${TOPIC_GENERATION_JOB_TYPE}:`;
@@ -47,6 +51,10 @@ export function buildOneToOneChatJobId(chatId: string, userMessageId: string) {
   return `${ONE_TO_ONE_CHAT_JOB_ID_PREFIX}${chatId.trim()}:${userMessageId.trim()}`;
 }
 
+export function buildOneToOneProactiveJobId(chatId: string) {
+  return `${ONE_TO_ONE_PROACTIVE_JOB_ID_PREFIX}${chatId.trim()}`;
+}
+
 export function readOneToOneChatScope(
   job: Pick<BackgroundJobRecord, "id" | "payload">,
 ) {
@@ -66,6 +74,19 @@ export function readOneToOneChatScope(
     }
   }
   return { chatId: "", userMessageId: "" };
+}
+
+export function readOneToOneProactiveScope(
+  job: Pick<BackgroundJobRecord, "id" | "payload">,
+) {
+  const chatId = readPayloadStringField(job.payload, "chatId");
+  if (chatId) return { chatId };
+  if (job.id.startsWith(ONE_TO_ONE_PROACTIVE_JOB_ID_PREFIX)) {
+    return {
+      chatId: job.id.slice(ONE_TO_ONE_PROACTIVE_JOB_ID_PREFIX.length).trim(),
+    };
+  }
+  return { chatId: "" };
 }
 
 export function readTopicGenerationSessionId(

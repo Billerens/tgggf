@@ -93,6 +93,13 @@ export interface ChatDiaryConfig {
   lastSourceMessageAtMs?: number;
 }
 
+export interface ChatProactivityConfig {
+  enabled: boolean;
+  lastActivityAtMs?: number;
+  nextRunAtMs?: number;
+  lastProactiveAtMs?: number;
+}
+
 export interface DiarySourceRange {
   fromMessageId?: string;
   toMessageId?: string;
@@ -253,7 +260,9 @@ export interface ChatSession {
   id: string;
   personaId: string;
   title: string;
+  notificationsEnabled: boolean;
   diaryConfig?: ChatDiaryConfig;
+  proactivityConfig?: ChatProactivityConfig;
   evolutionConfig?: ChatEvolutionConfig;
   lastResponseId?: string;
   chatStyleStrength?: number;
@@ -346,6 +355,7 @@ export interface ChatMessage {
 export interface GroupRoom {
   id: string;
   title: string;
+  notificationsEnabled: boolean;
   mode: GroupRoomMode;
   status: GroupRoomStatus;
   state: {
@@ -603,6 +613,10 @@ export interface AppSettings {
   comfyAuth: EndpointAuthConfig;
   userName: string;
   userGender: UserGender;
+  securityPinEnabled: boolean;
+  securityPinHash: string;
+  securityPinSalt: string;
+  securityLockOnBackground: boolean;
   showSystemImageBlock: boolean;
   showStatusChangeDetails: boolean;
   enhanceDetailLevelAll: EnhanceDetailLevel;

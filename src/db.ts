@@ -7,6 +7,7 @@ import type {
   AuthMode,
   ChatMessage,
   ChatDiaryConfig,
+  ChatProactivityConfig,
   ChatSession,
   DiaryEntry,
   DiaryMoment,
@@ -498,6 +499,10 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
     ? (source.status as GroupRoom["status"])
     : "paused";
   const waitingForUser = Boolean(source.waitingForUser);
+  const notificationsEnabled =
+    typeof source.notificationsEnabled === "boolean"
+      ? source.notificationsEnabled
+      : true;
   const waitingReason = toOptionalTrimmedString(source.waitingReason);
 
   const stateSource = (source.state ?? {}) as Partial<GroupRoom["state"]>;
@@ -529,6 +534,7 @@ function normalizeGroupRoomRecord(room: GroupRoom): GroupRoom {
   return {
     id,
     title: toTrimmedString(source.title) || "Групповой чат",
+    notificationsEnabled,
     mode,
     status,
     state: {
@@ -767,6 +773,17 @@ function normalizeSettings(
   if (!allowedGenders.includes(merged.userGender)) {
     merged.userGender = DEFAULT_SETTINGS.userGender;
   }
+  merged.securityPinHash = toTrimmedString(merged.securityPinHash);
+  merged.securityPinSalt = toTrimmedString(merged.securityPinSalt);
+  merged.securityPinEnabled = Boolean(merged.securityPinEnabled);
+  merged.securityLockOnBackground = Boolean(merged.securityLockOnBackground);
+  const hasPinMaterial =
+    merged.securityPinHash.length > 0 && merged.securityPinSalt.length > 0;
+  if (!merged.securityPinEnabled || !hasPinMaterial) {
+    merged.securityPinEnabled = false;
+    merged.securityPinHash = "";
+    merged.securityPinSalt = "";
+  }
   merged.showSystemImageBlock = Boolean(merged.showSystemImageBlock);
   merged.showStatusChangeDetails = Boolean(merged.showStatusChangeDetails);
   if (!ENHANCE_DETAIL_LEVELS.includes(merged.enhanceDetailLevelAll)) {
@@ -795,6 +812,23 @@ function normalizeChatDiaryConfig(config: unknown): ChatDiaryConfig {
     lastGeneratedAtMs: normalizeMs(source.lastGeneratedAtMs),
     lastCheckedAtMs: normalizeMs(source.lastCheckedAtMs),
     lastSourceMessageAtMs: normalizeMs(source.lastSourceMessageAtMs),
+  };
+}
+
+function normalizeChatProactivityConfig(config: unknown): ChatProactivityConfig {
+  const source =
+    config && typeof config === "object"
+      ? (config as Record<string, unknown>)
+      : {};
+  const normalizeMs = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    return Math.max(0, Math.floor(value));
+  };
+  return {
+    enabled: Boolean(source.enabled),
+    lastActivityAtMs: normalizeMs(source.lastActivityAtMs),
+    nextRunAtMs: normalizeMs(source.nextRunAtMs),
+    lastProactiveAtMs: normalizeMs(source.lastProactiveAtMs),
   };
 }
 
@@ -851,6 +885,10 @@ function normalizeDiaryEntry(entry: DiaryEntry): DiaryEntry {
 
 function normalizeChatSession(chat: ChatSession): ChatSession {
   const next: ChatSession = { ...chat };
+  next.notificationsEnabled =
+    typeof next.notificationsEnabled === "boolean"
+      ? next.notificationsEnabled
+      : true;
   if (
     typeof next.chatStyleStrength === "number" &&
     Number.isFinite(next.chatStyleStrength)
@@ -925,6 +963,7 @@ function normalizeChatSession(chat: ChatSession): ChatSession {
     delete next.summaryTokenBudget;
   }
   next.diaryConfig = normalizeChatDiaryConfig(next.diaryConfig);
+  next.proactivityConfig = normalizeChatProactivityConfig(next.proactivityConfig);
   next.evolutionConfig = normalizeChatEvolutionConfig(next.evolutionConfig);
   return next;
 }
@@ -1060,6 +1099,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   userName: "Пользователь",
   userGender: "unspecified",
+  securityPinEnabled: false,
+  securityPinHash: "",
+  securityPinSalt: "",
+  securityLockOnBackground: true,
   showSystemImageBlock: true,
   showStatusChangeDetails: false,
   enhanceDetailLevelAll: "medium",
@@ -2149,6 +2192,11 @@ export const dbApi = {
       .map((name) => String(name))
       .sort((a, b) => a.localeCompare(b));
   },
+};
+
+export const __dbTestUtils = {
+  normalizeChatProactivityConfig,
+  normalizeChatSession,
 };
 
 export { DEFAULT_SETTINGS };

@@ -34,6 +34,10 @@ import { resolveSharedEnhancePromptDefaults } from "../features/image-actions/en
 import { splitAssistantContent } from "../messageContent";
 import { ImagePreviewModal } from "./ImagePreviewModal";
 import { Dropdown, type DropdownOption } from "./Dropdown";
+import type {
+  NativeProactivitySimulationReport,
+  NativeProactivitySimulationStageStatus,
+} from "../features/mobile/oneToOneNativeRuntime";
 
 interface ChatDetailsModalProps {
   open: boolean;
@@ -46,6 +50,7 @@ interface ChatDetailsModalProps {
   runtimeState: PersonaRuntimeState | null;
   evolutionState: PersonaEvolutionState | null;
   settings: AppSettings;
+  isAndroidRuntime: boolean;
   imageActionBusy: boolean;
   onEnhanceImage: (payload: {
     messageId: string;
@@ -61,7 +66,9 @@ interface ChatDetailsModalProps {
     promptOverride?: string,
   ) => void;
   onUpdateChatStyleStrength: (chatId: string, value: number | null) => void;
+  onToggleNotificationsEnabled: (chatId: string, enabled: boolean) => void;
   onToggleDiaryEnabled: (chatId: string, enabled: boolean) => void;
+  onToggleProactivityEnabled: (chatId: string, enabled: boolean) => void;
   onToggleEvolutionEnabled: (chatId: string, enabled: boolean) => void;
   onChangeEvolutionApplyMode: (
     chatId: string,
@@ -89,6 +96,9 @@ interface ChatDetailsModalProps {
   onUpdateDiaryTags: (chatId: string, diaryEntryId: string, tags: string[]) => void;
   onDeleteDiaryEntry: (chatId: string, diaryEntryId: string) => void;
   onTestDiaryGeneration: (chatId: string) => Promise<DiaryEntry[]>;
+  onTestProactivitySimulation: (
+    chatId: string,
+  ) => Promise<NativeProactivitySimulationReport | null>;
   onUpdateRuntimeState: (
     chatId: string,
     patch: Partial<
@@ -127,7 +137,7 @@ interface ChatDetailsModalProps {
   onClose: () => void;
 }
 
-type DetailsTab = "attachments" | "status" | "diaries";
+type DetailsTab = "attachments" | "status" | "proactivity" | "diaries";
 
 interface ImageAttachment {
   src: string;
@@ -389,6 +399,13 @@ function formatDiaryTagForDisplay(tag: string) {
   return `${prefix}:${suffix}`;
 }
 
+function formatSimulationStageStatusLabel(status: NativeProactivitySimulationStageStatus) {
+  if (status === "ok") return "ok";
+  if (status === "skip") return "skip";
+  if (status === "error") return "error";
+  return "warn";
+}
+
 function renderDiaryMarkdown(markdown: string) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: Array<{ type: "heading" | "list" | "paragraph"; level?: number; lines: string[] }> = [];
@@ -592,11 +609,14 @@ export function ChatDetailsModal({
   runtimeState,
   evolutionState,
   settings,
+  isAndroidRuntime,
   imageActionBusy,
   onEnhanceImage,
   onRegenerateImage,
   onUpdateChatStyleStrength,
+  onToggleNotificationsEnabled,
   onToggleDiaryEnabled,
+  onToggleProactivityEnabled,
   onToggleEvolutionEnabled,
   onChangeEvolutionApplyMode,
   onAddPendingEvolution,
@@ -608,6 +628,7 @@ export function ChatDetailsModal({
   onUpdateDiaryTags,
   onDeleteDiaryEntry,
   onTestDiaryGeneration,
+  onTestProactivitySimulation,
   onUpdateRuntimeState,
   onAddMemory,
   onUpdateMemory,
@@ -667,6 +688,10 @@ export function ChatDetailsModal({
   const [testDiaryBusy, setTestDiaryBusy] = useState(false);
   const [testDiaryMessage, setTestDiaryMessage] = useState<string | null>(null);
   const [testDiaryEntries, setTestDiaryEntries] = useState<DiaryEntry[]>([]);
+  const [testProactivityBusy, setTestProactivityBusy] = useState(false);
+  const [testProactivityMessage, setTestProactivityMessage] = useState<string | null>(null);
+  const [testProactivityReport, setTestProactivityReport] =
+    useState<NativeProactivitySimulationReport | null>(null);
   const [selectedDiaryFilterTags, setSelectedDiaryFilterTags] = useState<string[]>([]);
   const [diaryFilterPickerValue, setDiaryFilterPickerValue] = useState("");
   const [isMobileDiaryViewport, setIsMobileDiaryViewport] = useState(false);
@@ -733,6 +758,11 @@ export function ChatDetailsModal({
     return selected ?? filteredDiaryEntries[0] ?? null;
   }, [filteredDiaryEntries, selectedDiaryEntryId]);
   const diaryEnabled = Boolean(chat?.diaryConfig?.enabled);
+  const notificationsEnabled =
+    typeof chat?.notificationsEnabled === "boolean"
+      ? chat.notificationsEnabled
+      : true;
+  const proactivityEnabled = Boolean(chat?.proactivityConfig?.enabled);
   const evolutionEnabled = Boolean(chat?.evolutionConfig?.enabled);
   const evolutionApplyMode: PersonaEvolutionApplyMode =
     chat?.evolutionConfig?.applyMode === "auto" ? "auto" : "manual";
@@ -950,6 +980,9 @@ export function ChatDetailsModal({
     setTestDiaryBusy(false);
     setTestDiaryMessage(null);
     setTestDiaryEntries([]);
+    setTestProactivityBusy(false);
+    setTestProactivityMessage(null);
+    setTestProactivityReport(null);
     setSelectedDiaryFilterTags([]);
     setDiaryFilterPickerValue("");
     setMobileDiaryDetailOpen(false);
@@ -1291,6 +1324,33 @@ export function ChatDetailsModal({
     }
   }
 
+  async function handleTestProactivitySimulation() {
+    if (!chat?.id || testProactivityBusy || !isAndroidRuntime) return;
+    setTestProactivityBusy(true);
+    setTestProactivityMessage(null);
+    try {
+      const report = await onTestProactivitySimulation(chat.id);
+      if (!report) {
+        setTestProactivityReport(null);
+        setTestProactivityMessage(
+          "Симуляция недоступна: нет ответа от Android runtime.",
+        );
+        return;
+      }
+      setTestProactivityReport(report);
+      setTestProactivityMessage(
+        `Симуляция завершена: этапов ${report.stages.length}. Ничего не сохранено.`,
+      );
+    } catch (error) {
+      setTestProactivityReport(null);
+      setTestProactivityMessage(
+        (error as Error).message || "Не удалось выполнить симуляцию.",
+      );
+    } finally {
+      setTestProactivityBusy(false);
+    }
+  }
+
   function handleAddDiaryFilterTag(tag: string) {
     const normalized = tag.trim();
     if (!normalized) return;
@@ -1417,6 +1477,13 @@ export function ChatDetailsModal({
             onClick={() => setTab("status")}
           >
             Статус
+          </button>
+          <button
+            type="button"
+            className={tab === "proactivity" ? "active" : ""}
+            onClick={() => setTab("proactivity")}
+          >
+            Симуляция
           </button>
           <button
             type="button"
@@ -1738,6 +1805,54 @@ export function ChatDetailsModal({
                     Приоритет выше глобальной настройки. Если включено наследование, используется значение из настроек.
                   </small>
                 </label>
+              </div>
+
+              <div className="status-card">
+                <h4>Уведомления</h4>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={notificationsEnabled}
+                    disabled={!isAndroidRuntime}
+                    onChange={(event) => {
+                      if (!chat?.id || !isAndroidRuntime) return;
+                      onToggleNotificationsEnabled(chat.id, event.target.checked);
+                    }}
+                  />
+                  Уведомления для этого чата
+                </label>
+                <p className="status-lock-hint">
+                  Пуши приходят только в фоне и только для входящих сообщений
+                  персонажа.
+                </p>
+                {!isAndroidRuntime ? (
+                  <p className="status-lock-hint">Android-only (на этой платформе только просмотр).</p>
+                ) : null}
+              </div>
+
+              <div className="status-card">
+                <h4>Проактивность</h4>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={proactivityEnabled}
+                    disabled={!isAndroidRuntime}
+                    onChange={(event) => {
+                      if (!chat?.id || !isAndroidRuntime) return;
+                      onToggleProactivityEnabled(chat.id, event.target.checked);
+                    }}
+                  />
+                  Включить проактивность в этом чате
+                </label>
+                <p className="status-lock-hint">
+                  Работает только в Android и только для 1:1 чатов.
+                </p>
+                {!isAndroidRuntime ? (
+                  <p className="status-lock-hint">Android-only (на этой платформе только просмотр).</p>
+                ) : null}
+                <p className="status-lock-hint">
+                  Dry-run симуляция вынесена во вкладку «Симуляция».
+                </p>
               </div>
 
               <div className="status-card">
@@ -2358,6 +2473,78 @@ export function ChatDetailsModal({
                 </div>
               </details>
             </div>
+          </section>
+        ) : tab === "proactivity" ? (
+          <section className="chat-details-body diaries-tab">
+            <div className="diary-toggle-card">
+              <h4 style={{ marginTop: 0, marginBottom: 8 }}>Симуляция проактивности</h4>
+              <p className="status-lock-hint">
+                Dry-run: выполняет полный proactive-flow и показывает все этапы без
+                сохранений, сообщений и изменений состояния.
+              </p>
+              {!isAndroidRuntime ? (
+                <p className="status-lock-hint">Android-only (на этой платформе только просмотр).</p>
+              ) : null}
+              <div className="diary-test-actions proactivity-sim-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    void handleTestProactivitySimulation();
+                  }}
+                  disabled={!chat?.id || testProactivityBusy || !isAndroidRuntime}
+                >
+                  {testProactivityBusy
+                    ? "Симуляция..."
+                    : "Симуляция проактивности"}
+                </button>
+              </div>
+              {testProactivityMessage ? (
+                <p className="status-lock-hint">{testProactivityMessage}</p>
+              ) : null}
+            </div>
+
+            {testProactivityReport ? (
+              <div className="proactivity-simulation-report">
+                <p>
+                  simulatedAt:{" "}
+                  {formatDateTime(testProactivityReport.simulatedAt)}
+                </p>
+                <p>
+                  personaId: {testProactivityReport.personaId || "—"}
+                </p>
+                {testProactivityReport.summary ? (
+                  <pre className="proactivity-simulation-json">
+                    {JSON.stringify(testProactivityReport.summary, null, 2)}
+                  </pre>
+                ) : null}
+                <div className="proactivity-simulation-stages">
+                  {testProactivityReport.stages.map((stage, index) => (
+                    <article
+                      key={`${stage.id}-${index}`}
+                      className="proactivity-simulation-stage"
+                    >
+                      <div className="proactivity-simulation-stage-head">
+                        <strong>
+                          {index + 1}. {stage.title}
+                        </strong>
+                        <span
+                          className={`proactivity-simulation-badge ${stage.status}`}
+                        >
+                          {formatSimulationStageStatusLabel(stage.status)}
+                        </span>
+                      </div>
+                      <p className="status-lock-hint">{stage.id}</p>
+                      {stage.details ? (
+                        <pre className="proactivity-simulation-json">
+                          {JSON.stringify(stage.details, null, 2)}
+                        </pre>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </section>
         ) : (
           <section className="chat-details-body diaries-tab">
