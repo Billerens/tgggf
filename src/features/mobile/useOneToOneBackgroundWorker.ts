@@ -33,6 +33,7 @@ const ONE_TO_ONE_DELTA_SINCE_ID_PROACTIVE_KEY =
   "tg_gf_one_to_one_delta_since_id_proactive_v1";
 const ONE_TO_ONE_DELTA_POLL_MS = 1400;
 const ONE_TO_ONE_PROACTIVITY_DESIRED_STATE_VERSION = 1;
+const ONE_TO_ONE_PROACTIVE_RESUME_AFTER_ENGAGEMENT_MINUTES = 15;
 
 export const ONE_TO_ONE_DELTA_TASK_POLL_CONFIGS = [
   {
@@ -352,7 +353,8 @@ export function useOneToOneBackgroundWorker({
       );
       const enabledIds = new Set(enabledChats.map((chat) => chat.id));
       const sortedEnabled = Array.from(enabledIds).sort((a, b) => a.localeCompare(b));
-      const signature = sortedEnabled.join("|");
+      const activeChatId = activeChatRef.current?.id?.trim() ?? "";
+      const signature = `${sortedEnabled.join("|")}::active=${activeChatId}`;
       const isInitialSync = !proactivityDesiredStateInitializedRef.current;
       if (
         desiredStateSyncSignatureRef.current === signature &&
@@ -376,6 +378,10 @@ export function useOneToOneBackgroundWorker({
 
       for (const chat of enabledChats) {
         const runImmediately = !isInitialSync && !previousEnabled.has(chat.id);
+        const resumeRunAtMs =
+          activeChatId && activeChatId === chat.id
+            ? Date.now() + ONE_TO_ONE_PROACTIVE_RESUME_AFTER_ENGAGEMENT_MINUTES * 60_000
+            : undefined;
         await syncOneToOneContextToNative({
           chatId: chat.id,
           personaId: chat.personaId,
@@ -392,6 +398,7 @@ export function useOneToOneBackgroundWorker({
             maxDelayMinutes: ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_DELAY_MINUTES,
             maxActionsPerTick: 3,
             runImmediately,
+            resumeRunAtMs,
           },
         }).catch((error) => {
           const errorMessage =

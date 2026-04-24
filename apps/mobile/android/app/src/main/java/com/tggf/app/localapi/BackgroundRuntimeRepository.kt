@@ -39,6 +39,11 @@ data class BackgroundDeltaRecord(
     val createdAtMs: Long,
 )
 
+data class BackgroundDeltaScopeRecord(
+    val taskType: String,
+    val scopeId: String,
+)
+
 class BackgroundRuntimeRepository(
     context: Context,
     dbName: String = "tg_gf_background_runtime.db",
@@ -549,6 +554,42 @@ class BackgroundRuntimeRepository(
             clauses.joinToString(" AND "),
             args.toTypedArray(),
         )
+    }
+
+    fun listDeltaScopesUpTo(ackedUpToId: Long, taskType: String? = null): List<BackgroundDeltaScopeRecord> {
+        val normalizedAckId = maxOf(0L, ackedUpToId)
+        if (normalizedAckId <= 0L) return emptyList()
+        val normalizedTaskType = taskType?.trim()?.ifEmpty { null }
+        val clauses = mutableListOf<String>()
+        val args = mutableListOf<String>()
+        clauses.add("$COL_DELTA_ID <= ?")
+        args.add(normalizedAckId.toString())
+        if (normalizedTaskType != null) {
+            clauses.add("$COL_TASK_TYPE = ?")
+            args.add(normalizedTaskType)
+        }
+        return readableDatabase.query(
+            TABLE_DELTA,
+            arrayOf(COL_TASK_TYPE, COL_SCOPE_ID),
+            clauses.joinToString(" AND "),
+            args.toTypedArray(),
+            "$COL_TASK_TYPE, $COL_SCOPE_ID",
+            null,
+            null,
+        ).use { cursor ->
+            val taskTypeIndex = cursor.getColumnIndexOrThrow(COL_TASK_TYPE)
+            val scopeIdIndex = cursor.getColumnIndexOrThrow(COL_SCOPE_ID)
+            val rows = mutableListOf<BackgroundDeltaScopeRecord>()
+            while (cursor.moveToNext()) {
+                rows.add(
+                    BackgroundDeltaScopeRecord(
+                        taskType = cursor.getString(taskTypeIndex),
+                        scopeId = cursor.getString(scopeIdIndex),
+                    ),
+                )
+            }
+            rows
+        }
     }
 
     fun latestDeltaId(): Long {

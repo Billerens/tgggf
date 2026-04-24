@@ -26,24 +26,33 @@ object OneToOneChatNativeExecutor {
     private const val ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_ATTEMPTS = 0
     private const val ONE_TO_ONE_PROACTIVE_GLOBAL_SCOPE_LIMIT_PER_TICK = 2
     private const val ONE_TO_ONE_PROACTIVE_FIRST_INACTIVITY_MS = 15 * 60 * 1000L
-    private const val ONE_TO_ONE_PROACTIVE_MIN_DELAY_MS = 15 * 60 * 1000L
-    private const val ONE_TO_ONE_PROACTIVE_MAX_DELAY_MS = 45 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_MIN_DELAY_MS = 30 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_MAX_DELAY_MS = 90 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_NIGHT_MIN_DELAY_MS = 60 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_NIGHT_MAX_DELAY_MS = 120 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_MUTE_AFTER_INACTIVITY_MS = 48 * 60 * 60 * 1000L
+    private const val ONE_TO_ONE_PROACTIVE_DORMANT_PARK_DELAY_MS = 365L * 24 * 60 * 60 * 1000L
     private const val ONE_TO_ONE_PROACTIVE_MAX_ACTIONS_PER_ITERATION = 3
     private const val ONE_TO_ONE_PROACTIVE_MAX_DIARY_ENTRIES_PER_ITERATION = 1
     private const val ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT = 3
+    private const val ONE_TO_ONE_PROACTIVE_DAILY_MAX_REFLECTIONS = 2
+    private const val ONE_TO_ONE_PROACTIVE_DAILY_MAX_DIARY_ENTRIES = 3
+    private const val ONE_TO_ONE_PROACTIVE_SOFT_SESSION_MESSAGE_LIMIT = 3
+    private const val ONE_TO_ONE_PROACTIVE_SOFT_DAILY_MESSAGE_LIMIT = 3
     private const val CONTEXT_SYNC_RETRY_DELAY_MS = 1_500L
     private const val RECENT_CONTEXT_MESSAGE_LIMIT = 6
     private const val SUMMARY_DEFAULT_TOKEN_BUDGET = 16000
     private const val SUMMARY_MIN_TOKEN_BUDGET = 600
     private const val SUMMARY_MAX_TOKEN_BUDGET = 16000
-    private const val SUMMARY_MIN_NEW_MESSAGES = 4
-    private const val SUMMARY_MIN_NEW_CHARS = 1200
+    private const val SUMMARY_MIN_NEW_MESSAGES = 16
+    private const val SUMMARY_MIN_NEW_CHARS = 8000
+    private const val SUMMARY_REFRESH_COOLDOWN_MS = 20 * 60 * 1000L
     private const val SUMMARY_TRANSCRIPT_MAX_CHARS_PER_MESSAGE = 4000
     private const val DIARY_IDLE_MS = 10 * 60 * 1000L
     private const val DIARY_CHECK_INTERVAL_MS = 15 * 60 * 1000L
     private const val DIARY_RECENT_MESSAGE_LIMIT = 30
-    private const val DIARY_MIN_NEW_MESSAGES = 4
-    private const val DIARY_MIN_NEW_CHARS = 240
+    private const val DIARY_MIN_NEW_MESSAGES = 12
+    private const val DIARY_MIN_NEW_CHARS = 8000
     private const val DIARY_MAX_TAGS = 256
     private const val DIARY_GENERATION_MAX_ENTRIES = 64
     private const val DIARY_EXISTING_TAGS_LIMIT = 200
@@ -114,6 +123,13 @@ object OneToOneChatNativeExecutor {
         val lastActivityAtMs: Long,
         val nextRunAtMs: Long,
         val lastProactiveAtMs: Long,
+        val countersDayKey: String,
+        val dailyReflectionCount: Int,
+        val dailyDiaryEntryCount: Int,
+        val dailyMessageCount: Int,
+        val inactivitySessionAnchorMs: Long,
+        val inactivitySessionMessageCount: Int,
+        val lastDeltaConsumedAtMs: Long,
     )
 
     private data class EvolutionProcessingResult(
@@ -317,33 +333,103 @@ object OneToOneChatNativeExecutor {
         }
 
         val timeline = buildChatMessageTimeline(messages, scope.chatId).toMutableList()
-        val lastActivityMs =
-            timeline.lastOrNull()?.let { message ->
-                parseIsoMs(message.optString("createdAt", "").trim())
-            } ?: 0L
-        val firstRunAfterActivityAtMs = lastActivityMs + scope.firstRunAfterInactivityMs
+        val lastUserActivityMs = resolveLastUserActivityMs(timeline)
+        val firstRunAfterActivityAtMs =
+            if (lastUserActivityMs > 0L) {
+                lastUserActivityMs + scope.firstRunAfterInactivityMs
+            } else {
+                0L
+            }
+        val userActivityChanged =
+            lastUserActivityMs > 0L && proactivityConfig.lastActivityAtMs != lastUserActivityMs
         var nextRunAtMs = proactivityConfig.nextRunAtMs
         var updatedConfig = proactivityConfig
         var chatChanged = false
+        val todayDayKey = resolveLocalDayKey()
 
-        if (lastActivityMs > 0L && proactivityConfig.lastActivityAtMs != lastActivityMs) {
+        if (updatedConfig.countersDayKey != todayDayKey) {
             updatedConfig =
                 updatedConfig.copy(
-                    lastActivityAtMs = lastActivityMs,
+                    countersDayKey = todayDayKey,
+                    dailyReflectionCount = 0,
+                    dailyDiaryEntryCount = 0,
+                    dailyMessageCount = 0,
+                )
+            chatChanged = true
+        }
+
+        if (userActivityChanged) {
+            updatedConfig =
+                updatedConfig.copy(
+                    lastActivityAtMs = lastUserActivityMs,
                     nextRunAtMs = firstRunAfterActivityAtMs,
+                    dailyMessageCount = 0,
+                    inactivitySessionAnchorMs = lastUserActivityMs,
+                    inactivitySessionMessageCount = 0,
                 )
             nextRunAtMs = updatedConfig.nextRunAtMs
             chatChanged = true
         }
+        if (lastUserActivityMs > 0L && updatedConfig.inactivitySessionAnchorMs != lastUserActivityMs) {
+            updatedConfig =
+                updatedConfig.copy(
+                    inactivitySessionAnchorMs = lastUserActivityMs,
+                    inactivitySessionMessageCount = 0,
+                )
+            chatChanged = true
+        }
         if (nextRunAtMs <= 0L) {
             nextRunAtMs =
-                if (lastActivityMs > 0L) {
+                if (lastUserActivityMs > 0L) {
                     firstRunAfterActivityAtMs
                 } else {
                     nowMs + scope.minDelayMs
                 }
             updatedConfig = updatedConfig.copy(nextRunAtMs = nextRunAtMs)
             chatChanged = true
+        }
+        val lastDeltaConsumedAtMs = updatedConfig.lastDeltaConsumedAtMs.coerceAtLeast(0L)
+        val lastEngagementAtMs = max(lastUserActivityMs, lastDeltaConsumedAtMs)
+        val muteByInactivity =
+            lastEngagementAtMs <= 0L ||
+                nowMs - lastEngagementAtMs >= ONE_TO_ONE_PROACTIVE_MUTE_AFTER_INACTIVITY_MS
+        if (muteByInactivity && !scope.runImmediately) {
+            val dormantNextRunAtMs = nowMs + ONE_TO_ONE_PROACTIVE_DORMANT_PARK_DELAY_MS
+            if (updatedConfig.nextRunAtMs != dormantNextRunAtMs) {
+                updatedConfig = updatedConfig.copy(nextRunAtMs = dormantNextRunAtMs)
+                chatChanged = true
+            }
+            if (chatChanged) {
+                chat.put("proactivityConfig", serializeChatProactivityConfig(updatedConfig))
+                chats.put(chatIndex, chat)
+                repository.writeStoreJson("chats", chats.toString())
+                appendStatePatch(
+                    runtime = runtime,
+                    scopeId = scope.chatId,
+                    jobId = job.id,
+                    stores = JSONObject().put("chats", JSONArray().put(JSONObject(chat.toString()))),
+                    taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+                )
+            }
+            appendRuntimeEvent(
+                runtime = runtime,
+                scopeId = scope.chatId,
+                jobId = job.id,
+                stage = "proactive_muted_inactivity",
+                level = "info",
+                message = "Proactive scope muted due to prolonged inactivity",
+                details =
+                    JSONObject().apply {
+                        put("nowMs", nowMs)
+                        put("lastUserActivityAtMs", lastUserActivityMs)
+                        put("lastDeltaConsumedAtMs", lastDeltaConsumedAtMs)
+                        put("lastEngagementAtMs", lastEngagementAtMs)
+                        put("muteAfterMs", ONE_TO_ONE_PROACTIVE_MUTE_AFTER_INACTIVITY_MS)
+                        put("nextRunAtMs", dormantNextRunAtMs)
+                    },
+                taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+            )
+            return dormantNextRunAtMs
         }
 
         if (scope.runImmediately) {
@@ -358,7 +444,7 @@ object OneToOneChatNativeExecutor {
                     JSONObject().apply {
                         put("nowMs", nowMs)
                         put("nextRunAtMs", nextRunAtMs)
-                        put("lastActivityAtMs", lastActivityMs)
+                        put("lastUserActivityAtMs", lastUserActivityMs)
                     },
                 taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
             )
@@ -388,7 +474,7 @@ object OneToOneChatNativeExecutor {
                     JSONObject().apply {
                         put("nowMs", nowMs)
                         put("nextRunAtMs", nextRunAtMs)
-                        put("lastActivityAtMs", lastActivityMs)
+                        put("lastUserActivityAtMs", lastUserActivityMs)
                     },
                 taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
             )
@@ -442,6 +528,18 @@ object OneToOneChatNativeExecutor {
                 taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
                 scopeId = scope.chatId,
             )
+        var reflectionsUsedToday = updatedConfig.dailyReflectionCount.coerceAtLeast(0)
+        var diaryEntriesUsedToday = updatedConfig.dailyDiaryEntryCount.coerceAtLeast(0)
+        var proactiveMessagesUsedToday = updatedConfig.dailyMessageCount.coerceAtLeast(0)
+        var proactiveMessagesUsedInSession = updatedConfig.inactivitySessionMessageCount.coerceAtLeast(0)
+        if (userActivityChanged) {
+            // Fresh user activity starts a new anti-flood window for proactive messages.
+            proactiveMessagesUsedToday = 0
+        }
+        var remainingReflectionDailyBudget =
+            max(0, ONE_TO_ONE_PROACTIVE_DAILY_MAX_REFLECTIONS - reflectionsUsedToday)
+        var remainingDiaryDailyBudget =
+            max(0, ONE_TO_ONE_PROACTIVE_DAILY_MAX_DIARY_ENTRIES - diaryEntriesUsedToday)
         val evolutionHistoryForPrompt = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10)
         val userLocalTimeContext = formatCurrentUserLocalTimeContext()
 
@@ -456,6 +554,14 @@ object OneToOneChatNativeExecutor {
                 diaryEntries = recentDiaryEntries,
                 pendingProactiveDiaryEntries = pendingProactiveDiaryEntries,
                 pendingProactiveDiarySoftLimit = ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT,
+                proactiveSessionMessageCount = proactiveMessagesUsedInSession,
+                proactiveSessionMessageSoftLimit = ONE_TO_ONE_PROACTIVE_SOFT_SESSION_MESSAGE_LIMIT,
+                proactiveDailyMessageCount = proactiveMessagesUsedToday,
+                proactiveDailyMessageSoftLimit = ONE_TO_ONE_PROACTIVE_SOFT_DAILY_MESSAGE_LIMIT,
+                proactiveDailyReflectionCount = reflectionsUsedToday,
+                proactiveDailyReflectionHardLimit = ONE_TO_ONE_PROACTIVE_DAILY_MAX_REFLECTIONS,
+                proactiveDailyDiaryEntriesCount = diaryEntriesUsedToday,
+                proactiveDailyDiaryEntriesHardLimit = ONE_TO_ONE_PROACTIVE_DAILY_MAX_DIARY_ENTRIES,
                 userLocalTimeContext = userLocalTimeContext,
                 evolutionHistoryApplied = evolutionHistoryForPrompt,
             )
@@ -475,7 +581,7 @@ object OneToOneChatNativeExecutor {
             if (pendingProactiveDiaryEntries >= ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT) {
                 0
             } else {
-                ONE_TO_ONE_PROACTIVE_MAX_DIARY_ENTRIES_PER_ITERATION
+                minOf(ONE_TO_ONE_PROACTIVE_MAX_DIARY_ENTRIES_PER_ITERATION, remainingDiaryDailyBudget)
             }
 
         val applyEvolutionFromControl: (JSONObject?) -> Unit = apply@{ control ->
@@ -517,6 +623,16 @@ object OneToOneChatNativeExecutor {
                         put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
                         put("pendingProactiveDiarySoftLimit", ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT)
                         put("remainingDiaryEntriesBudget", remainingDiaryEntriesBudget)
+                        put("dailyReflectionCount", reflectionsUsedToday)
+                        put("dailyReflectionLimit", ONE_TO_ONE_PROACTIVE_DAILY_MAX_REFLECTIONS)
+                        put("remainingReflectionDailyBudget", remainingReflectionDailyBudget)
+                        put("dailyDiaryEntryCount", diaryEntriesUsedToday)
+                        put("dailyDiaryEntryLimit", ONE_TO_ONE_PROACTIVE_DAILY_MAX_DIARY_ENTRIES)
+                        put("remainingDiaryDailyBudget", remainingDiaryDailyBudget)
+                        put("sessionProactiveMessageCount", proactiveMessagesUsedInSession)
+                        put("sessionProactiveMessageSoftLimit", ONE_TO_ONE_PROACTIVE_SOFT_SESSION_MESSAGE_LIMIT)
+                        put("dailyProactiveMessageCount", proactiveMessagesUsedToday)
+                        put("dailyProactiveMessageSoftLimit", ONE_TO_ONE_PROACTIVE_SOFT_DAILY_MESSAGE_LIMIT)
                         plan?.llmDebug?.let { debug -> putLlmCallDebugDetails(this, debug) }
                     },
                 taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
@@ -529,6 +645,23 @@ object OneToOneChatNativeExecutor {
                         executionAction.optString("type", executionAction.optString("action", "")),
                     )
                 if (actionType == "reflection") {
+                    if (remainingReflectionDailyBudget <= 0) {
+                        appendRuntimeEvent(
+                            runtime = runtime,
+                            scopeId = scope.chatId,
+                            jobId = job.id,
+                            stage = "proactive_reflection_skipped_daily_limit",
+                            level = "info",
+                            message = "Reflection skipped due to daily reflection limit",
+                            details =
+                                JSONObject().apply {
+                                    put("dailyReflectionCount", reflectionsUsedToday)
+                                    put("dailyReflectionLimit", ONE_TO_ONE_PROACTIVE_DAILY_MAX_REFLECTIONS)
+                                },
+                            taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+                        )
+                        return@forEach
+                    }
                     if (remainingDiaryEntriesBudget <= 0) {
                         appendRuntimeEvent(
                             runtime = runtime,
@@ -542,6 +675,8 @@ object OneToOneChatNativeExecutor {
                                     put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
                                     put("pendingProactiveDiarySoftLimit", ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT)
                                     put("remainingDiaryEntriesBudget", remainingDiaryEntriesBudget)
+                                    put("dailyDiaryEntryCount", diaryEntriesUsedToday)
+                                    put("dailyDiaryEntryLimit", ONE_TO_ONE_PROACTIVE_DAILY_MAX_DIARY_ENTRIES)
                                 },
                             taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
                         )
@@ -576,6 +711,8 @@ object OneToOneChatNativeExecutor {
                             evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
                         )
                     if (reflection != null) {
+                        reflectionsUsedToday += 1
+                        remainingReflectionDailyBudget = max(0, remainingReflectionDailyBudget - 1)
                         val sourceMessages =
                             if (timeline.size <= DIARY_RECENT_MESSAGE_LIMIT) {
                                 timeline
@@ -596,14 +733,24 @@ object OneToOneChatNativeExecutor {
                                     nowMs = nowMs,
                                 )
                             if (generatedEntries.length() > 0) {
-                                val allowedEntries = minOf(generatedEntries.length(), remainingDiaryEntriesBudget)
+                                val allowedEntries =
+                                    minOf(
+                                        generatedEntries.length(),
+                                        remainingDiaryEntriesBudget,
+                                        remainingDiaryDailyBudget,
+                                    )
                                 for (index in 0 until allowedEntries) {
                                     val entry = generatedEntries.optJSONObject(index) ?: continue
+                                    addProactiveDiaryEntryMarker(entry)
                                     diaryEntries.put(entry)
                                     patchedDiaryEntries.put(JSONObject(entry.toString()))
                                 }
                                 remainingDiaryEntriesBudget =
                                     max(0, remainingDiaryEntriesBudget - allowedEntries)
+                                if (allowedEntries > 0) {
+                                    diaryEntriesUsedToday += allowedEntries
+                                    remainingDiaryDailyBudget = max(0, remainingDiaryDailyBudget - allowedEntries)
+                                }
                                 val diaryConfig = ensureDiaryConfig(chat)
                                 val sourceLastAtMs =
                                     sourceMessages.lastOrNull()?.let { message ->
@@ -700,6 +847,8 @@ object OneToOneChatNativeExecutor {
                 }
                 patchedMessages.put(JSONObject(assistantMessage.toString()))
                 timeline.add(JSONObject(assistantMessage.toString()))
+                proactiveMessagesUsedToday += 1
+                proactiveMessagesUsedInSession += 1
                 applyEvolutionFromControl(speech.personaControl)
             }
         } else {
@@ -723,13 +872,24 @@ object OneToOneChatNativeExecutor {
             upsertByChatId(personaEvolutionStates, evolutionState, "chatId")
         }
 
-        val nextDelayMs = resolveProactiveNextDelayMs(scope, plan?.nextDelayMinutes)
+        val nextDelayMs = resolveProactiveNextDelayMs(plan?.nextDelayMinutes)
         val nextRunAt = nowMs + nextDelayMs
         updatedConfig =
             updatedConfig.copy(
-                lastActivityAtMs = if (lastActivityMs > 0L) lastActivityMs else updatedConfig.lastActivityAtMs,
+                lastActivityAtMs = if (lastUserActivityMs > 0L) lastUserActivityMs else updatedConfig.lastActivityAtMs,
                 nextRunAtMs = nextRunAt,
                 lastProactiveAtMs = nowMs,
+                countersDayKey = todayDayKey,
+                dailyReflectionCount = reflectionsUsedToday,
+                dailyDiaryEntryCount = diaryEntriesUsedToday,
+                dailyMessageCount = proactiveMessagesUsedToday,
+                inactivitySessionAnchorMs =
+                    if (lastUserActivityMs > 0L) {
+                        lastUserActivityMs
+                    } else {
+                        updatedConfig.inactivitySessionAnchorMs
+                    },
+                inactivitySessionMessageCount = proactiveMessagesUsedInSession,
             )
         chat.put("proactivityConfig", serializeChatProactivityConfig(updatedConfig))
         if (chatChanged || patchedMessages.length() > 0 || patchedDiaryEntries.length() > 0 || evolutionStateChanged) {
@@ -796,6 +956,14 @@ object OneToOneChatNativeExecutor {
                     put("nextDelayMs", nextDelayMs)
                     put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
                     put("remainingDiaryEntriesBudgetAfterRun", remainingDiaryEntriesBudget)
+                    put("dailyReflectionCount", reflectionsUsedToday)
+                    put("dailyReflectionLimit", ONE_TO_ONE_PROACTIVE_DAILY_MAX_REFLECTIONS)
+                    put("dailyDiaryEntryCount", diaryEntriesUsedToday)
+                    put("dailyDiaryEntryLimit", ONE_TO_ONE_PROACTIVE_DAILY_MAX_DIARY_ENTRIES)
+                    put("dailyProactiveMessageCount", proactiveMessagesUsedToday)
+                    put("dailyProactiveMessageSoftLimit", ONE_TO_ONE_PROACTIVE_SOFT_DAILY_MESSAGE_LIMIT)
+                    put("sessionProactiveMessageCount", proactiveMessagesUsedInSession)
+                    put("sessionProactiveMessageSoftLimit", ONE_TO_ONE_PROACTIVE_SOFT_SESSION_MESSAGE_LIMIT)
                 },
             taskType = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
         )
@@ -862,15 +1030,25 @@ object OneToOneChatNativeExecutor {
         }
     }
 
-    private fun resolveProactiveNextDelayMs(
-        scope: ParsedProactiveScope,
-        nextDelayMinutes: Int?,
-    ): Long {
+    private fun resolveProactiveNextDelayMs(nextDelayMinutes: Int?): Long {
+        val isNight = resolveDayPeriodByHour(ZonedDateTime.now().hour) == "ночь"
+        val effectiveMinDelayMs =
+            if (isNight) {
+                ONE_TO_ONE_PROACTIVE_NIGHT_MIN_DELAY_MS
+            } else {
+                ONE_TO_ONE_PROACTIVE_MIN_DELAY_MS
+            }
+        val effectiveMaxDelayMs =
+            if (isNight) {
+                ONE_TO_ONE_PROACTIVE_NIGHT_MAX_DELAY_MS
+            } else {
+                ONE_TO_ONE_PROACTIVE_MAX_DELAY_MS
+            }
         if (nextDelayMinutes != null && nextDelayMinutes > 0) {
             val rawMs = nextDelayMinutes.toLong() * 60_000L
-            return rawMs.coerceIn(scope.minDelayMs, scope.maxDelayMs)
+            return rawMs.coerceIn(effectiveMinDelayMs, effectiveMaxDelayMs)
         }
-        return pickRandomDelayMs(scope.minDelayMs, scope.maxDelayMs)
+        return pickRandomDelayMs(effectiveMinDelayMs, effectiveMaxDelayMs)
     }
 
     private fun pickRandomDelayMs(minDelayMs: Long, maxDelayMs: Long): Long {
@@ -1529,6 +1707,96 @@ object OneToOneChatNativeExecutor {
                 userText = userContent,
             ),
         )
+        val userActivityAtMs =
+            parseIsoMs(userMessage.optString("createdAt", "").trim()) ?: System.currentTimeMillis()
+        val proactivityConfig = normalizeChatProactivityConfig(chat.optJSONObject("proactivityConfig"))
+        if (proactivityConfig.enabled) {
+            val resumeRunAtMs = userActivityAtMs + ONE_TO_ONE_PROACTIVE_FIRST_INACTIVITY_MS
+            val refreshedProactivityConfig =
+                proactivityConfig.copy(
+                    lastActivityAtMs = userActivityAtMs,
+                    nextRunAtMs = resumeRunAtMs,
+                    dailyMessageCount = 0,
+                    inactivitySessionAnchorMs = userActivityAtMs,
+                    inactivitySessionMessageCount = 0,
+                )
+            chat.put("proactivityConfig", serializeChatProactivityConfig(refreshedProactivityConfig))
+            try {
+                val proactiveJobId = "$ONE_TO_ONE_PROACTIVE_JOB_PREFIX${scope.chatId}"
+                val desiredState = runtime.getDesiredState(ONE_TO_ONE_PROACTIVE_JOB_TYPE, scope.chatId)
+                if (desiredState?.enabled != false) {
+                    val desiredPayload =
+                        if (desiredState == null) {
+                            JSONObject()
+                        } else {
+                            parseJsonObject(desiredState.payloadJson)
+                        }
+                    val firstRunAfterInactivityMinutes =
+                        max(
+                            1L,
+                            desiredPayload.optLong(
+                                "firstRunAfterInactivityMinutes",
+                                ONE_TO_ONE_PROACTIVE_FIRST_INACTIVITY_MS / 60_000L,
+                            ),
+                        )
+                    val minDelayMinutes =
+                        max(
+                            1L,
+                            desiredPayload.optLong(
+                                "minDelayMinutes",
+                                ONE_TO_ONE_PROACTIVE_MIN_DELAY_MS / 60_000L,
+                            ),
+                        )
+                    val maxDelayMinutes =
+                        max(
+                            minDelayMinutes,
+                            desiredPayload.optLong(
+                                "maxDelayMinutes",
+                                ONE_TO_ONE_PROACTIVE_MAX_DELAY_MS / 60_000L,
+                            ),
+                        )
+                    val maxActionsPerTick =
+                        max(
+                            1L,
+                            desiredPayload.optLong(
+                                "maxActionsPerTick",
+                                ONE_TO_ONE_PROACTIVE_MAX_ACTIONS_PER_ITERATION.toLong(),
+                            ),
+                        )
+                    val proactivePayload =
+                        JSONObject().apply {
+                            put("chatId", scope.chatId)
+                            if (personaId.isNotBlank()) {
+                                put("personaId", personaId)
+                            }
+                            put("firstRunAfterInactivityMinutes", firstRunAfterInactivityMinutes)
+                            put("minDelayMinutes", minDelayMinutes)
+                            put("maxDelayMinutes", maxDelayMinutes)
+                            put("maxActionsPerTick", maxActionsPerTick)
+                        }
+                    jobs.ensureRecurringJob(
+                        id = proactiveJobId,
+                        type = ONE_TO_ONE_PROACTIVE_JOB_TYPE,
+                        payloadJson = proactivePayload.toString(),
+                        runAtMs = resumeRunAtMs,
+                        maxAttempts = ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_ATTEMPTS,
+                    )
+                }
+            } catch (error: Exception) {
+                appendRuntimeEvent(
+                    runtime = runtime,
+                    scopeId = scope.chatId,
+                    jobId = job.id,
+                    stage = "proactive_resume_schedule_failed",
+                    level = "warn",
+                    message = "Failed to schedule proactive resume after user activity",
+                    details =
+                        JSONObject().apply {
+                            put("error", error.message ?: "proactive_resume_schedule_failed")
+                        },
+                )
+            }
+        }
         chat.put("updatedAt", nowIsoUtc())
         if (!llmResult.responseId.isNullOrBlank()) {
             chat.put("lastResponseId", llmResult.responseId)
@@ -2334,7 +2602,7 @@ object OneToOneChatNativeExecutor {
         if (sourceMessages.isEmpty()) return JSONArray()
 
         val newChars = sourceMessages.sumOf { message -> message.optString("content", "").trim().length }
-        if (sourceMessages.size < DIARY_MIN_NEW_MESSAGES && newChars < DIARY_MIN_NEW_CHARS) {
+        if (sourceMessages.size < DIARY_MIN_NEW_MESSAGES || newChars < DIARY_MIN_NEW_CHARS) {
             return JSONArray()
         }
         val nowMs = System.currentTimeMillis()
@@ -2523,15 +2791,17 @@ object OneToOneChatNativeExecutor {
                 )
             val proactivityConfig = normalizeChatProactivityConfig(chat.optJSONObject("proactivityConfig"))
             val timeline = buildChatMessageTimeline(messages, normalizedChatId).toMutableList()
-            val lastActivityMs =
-                timeline.lastOrNull()?.let { message ->
-                    parseIsoMs(message.optString("createdAt", "").trim())
-                } ?: 0L
-            val firstRunAtMs = lastActivityMs + scope.firstRunAfterInactivityMs
+            val lastUserActivityMs = resolveLastUserActivityMs(timeline)
+            val firstRunAtMs =
+                if (lastUserActivityMs > 0L) {
+                    lastUserActivityMs + scope.firstRunAfterInactivityMs
+                } else {
+                    0L
+                }
             val computedNextRunAtMs =
                 when {
                     proactivityConfig.nextRunAtMs > 0L -> proactivityConfig.nextRunAtMs
-                    lastActivityMs > 0L -> firstRunAtMs
+                    lastUserActivityMs > 0L -> firstRunAtMs
                     else -> nowMs + scope.minDelayMs
                 }
             val dueBySchedule = nowMs >= computedNextRunAtMs
@@ -2541,6 +2811,32 @@ object OneToOneChatNativeExecutor {
                     !dueBySchedule -> "not_due_yet_but_forced_for_simulation"
                     else -> "none"
                 }
+            val todayDayKey = resolveLocalDayKey()
+            val isCurrentCountersDay = proactivityConfig.countersDayKey == todayDayKey
+            val dailyReflectionCount =
+                if (isCurrentCountersDay) {
+                    proactivityConfig.dailyReflectionCount.coerceAtLeast(0)
+                } else {
+                    0
+                }
+            val dailyDiaryEntryCount =
+                if (isCurrentCountersDay) {
+                    proactivityConfig.dailyDiaryEntryCount.coerceAtLeast(0)
+                } else {
+                    0
+                }
+            val dailyMessageCount =
+                if (isCurrentCountersDay) {
+                    proactivityConfig.dailyMessageCount.coerceAtLeast(0)
+                } else {
+                    0
+                }
+            val sessionMessageCount =
+                if (proactivityConfig.inactivitySessionAnchorMs > 0L && proactivityConfig.inactivitySessionAnchorMs == lastUserActivityMs) {
+                    proactivityConfig.inactivitySessionMessageCount.coerceAtLeast(0)
+                } else {
+                    0
+                }
             appendStage(
                 id = "schedule_gate",
                 title = "Проверка расписания и неактивности",
@@ -2549,7 +2845,7 @@ object OneToOneChatNativeExecutor {
                     JSONObject().apply {
                         put("enabled", proactivityConfig.enabled)
                         put("nowMs", nowMs)
-                        put("lastActivityAtMs", lastActivityMs)
+                        put("lastUserActivityAtMs", lastUserActivityMs)
                         put("configuredNextRunAtMs", proactivityConfig.nextRunAtMs)
                         put("computedNextRunAtMs", computedNextRunAtMs)
                         put("dueBySchedule", dueBySchedule)
@@ -2601,6 +2897,10 @@ object OneToOneChatNativeExecutor {
                         put("userLocalTimeContext", userLocalTimeContext)
                         put("pendingProactiveDiaryEntries", pendingProactiveDiaryEntries)
                         put("pendingProactiveDiarySoftLimit", ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT)
+                        put("dailyReflectionCount", dailyReflectionCount)
+                        put("dailyDiaryEntryCount", dailyDiaryEntryCount)
+                        put("dailyMessageCount", dailyMessageCount)
+                        put("sessionMessageCount", sessionMessageCount)
                     },
             )
 
@@ -2615,6 +2915,14 @@ object OneToOneChatNativeExecutor {
                     diaryEntries = recentDiaryEntries,
                     pendingProactiveDiaryEntries = pendingProactiveDiaryEntries,
                     pendingProactiveDiarySoftLimit = ONE_TO_ONE_PROACTIVE_PENDING_DIARY_SOFT_LIMIT,
+                    proactiveSessionMessageCount = sessionMessageCount,
+                    proactiveSessionMessageSoftLimit = ONE_TO_ONE_PROACTIVE_SOFT_SESSION_MESSAGE_LIMIT,
+                    proactiveDailyMessageCount = dailyMessageCount,
+                    proactiveDailyMessageSoftLimit = ONE_TO_ONE_PROACTIVE_SOFT_DAILY_MESSAGE_LIMIT,
+                    proactiveDailyReflectionCount = dailyReflectionCount,
+                    proactiveDailyReflectionHardLimit = ONE_TO_ONE_PROACTIVE_DAILY_MAX_REFLECTIONS,
+                    proactiveDailyDiaryEntriesCount = dailyDiaryEntryCount,
+                    proactiveDailyDiaryEntriesHardLimit = ONE_TO_ONE_PROACTIVE_DAILY_MAX_DIARY_ENTRIES,
                     userLocalTimeContext = userLocalTimeContext,
                     evolutionHistoryApplied = selectAppliedPersonaEvolutionHistory(evolutionState).takeLast(10),
                 )
@@ -2882,7 +3190,7 @@ object OneToOneChatNativeExecutor {
                 )
             }
 
-            val resolvedNextDelayMs = resolveProactiveNextDelayMs(scope, plan.nextDelayMinutes)
+            val resolvedNextDelayMs = resolveProactiveNextDelayMs(plan.nextDelayMinutes)
             val resolvedNextRunAtMs = nowMs + resolvedNextDelayMs
             val rawNextDelayMs =
                 if (plan.nextDelayMinutes != null && plan.nextDelayMinutes > 0) {
@@ -2985,7 +3293,7 @@ object OneToOneChatNativeExecutor {
                 chatsChanged = true
                 continue
             }
-            if (sourceMessages.size < DIARY_MIN_NEW_MESSAGES && newChars < DIARY_MIN_NEW_CHARS) {
+            if (sourceMessages.size < DIARY_MIN_NEW_MESSAGES || newChars < DIARY_MIN_NEW_CHARS) {
                 diaryConfig.put("lastCheckedAtMs", nowMs)
                 chatsChanged = true
                 continue
@@ -3417,6 +3725,12 @@ object OneToOneChatNativeExecutor {
         return normalized
     }
 
+    private fun addProactiveDiaryEntryMarker(entry: JSONObject) {
+        val existingTags = parseStringList(entry.optJSONArray("tags"))
+        val marked = normalizeDiaryTags(existingTags + "source:proactive_reflection")
+        entry.put("tags", JSONArray(marked))
+    }
+
     private fun ensureDiaryConfig(chat: JSONObject): JSONObject {
         val existing = chat.optJSONObject("diaryConfig") ?: JSONObject()
         val next = JSONObject(existing.toString())
@@ -3432,11 +3746,29 @@ object OneToOneChatNativeExecutor {
         val nextRunAtMs = raw?.optLong("nextRunAtMs", 0L)?.coerceAtLeast(0L) ?: 0L
         val lastActivityAtMs = raw?.optLong("lastActivityAtMs", 0L)?.coerceAtLeast(0L) ?: 0L
         val lastProactiveAtMs = raw?.optLong("lastProactiveAtMs", 0L)?.coerceAtLeast(0L) ?: 0L
+        val countersDayKey =
+            raw?.optString("countersDayKey", "")?.trim().orEmpty().ifEmpty { resolveLocalDayKey() }
+        val dailyReflectionCount = raw?.optInt("dailyReflectionCount", 0)?.coerceAtLeast(0) ?: 0
+        val dailyDiaryEntryCount = raw?.optInt("dailyDiaryEntryCount", 0)?.coerceAtLeast(0) ?: 0
+        val dailyMessageCount = raw?.optInt("dailyMessageCount", 0)?.coerceAtLeast(0) ?: 0
+        val inactivitySessionAnchorMs =
+            raw?.optLong("inactivitySessionAnchorMs", 0L)?.coerceAtLeast(0L) ?: 0L
+        val inactivitySessionMessageCount =
+            raw?.optInt("inactivitySessionMessageCount", 0)?.coerceAtLeast(0) ?: 0
+        val lastDeltaConsumedAtMs =
+            raw?.optLong("lastDeltaConsumedAtMs", 0L)?.coerceAtLeast(0L) ?: 0L
         return ChatProactivityConfig(
             enabled = raw?.optBoolean("enabled", false) == true,
             lastActivityAtMs = lastActivityAtMs,
             nextRunAtMs = nextRunAtMs,
             lastProactiveAtMs = lastProactiveAtMs,
+            countersDayKey = countersDayKey,
+            dailyReflectionCount = dailyReflectionCount,
+            dailyDiaryEntryCount = dailyDiaryEntryCount,
+            dailyMessageCount = dailyMessageCount,
+            inactivitySessionAnchorMs = inactivitySessionAnchorMs,
+            inactivitySessionMessageCount = inactivitySessionMessageCount,
+            lastDeltaConsumedAtMs = lastDeltaConsumedAtMs,
         )
     }
 
@@ -3451,6 +3783,27 @@ object OneToOneChatNativeExecutor {
             }
             if (config.lastProactiveAtMs > 0L) {
                 put("lastProactiveAtMs", config.lastProactiveAtMs)
+            }
+            if (config.countersDayKey.isNotBlank()) {
+                put("countersDayKey", config.countersDayKey)
+            }
+            if (config.dailyReflectionCount > 0) {
+                put("dailyReflectionCount", config.dailyReflectionCount)
+            }
+            if (config.dailyDiaryEntryCount > 0) {
+                put("dailyDiaryEntryCount", config.dailyDiaryEntryCount)
+            }
+            if (config.dailyMessageCount > 0) {
+                put("dailyMessageCount", config.dailyMessageCount)
+            }
+            if (config.inactivitySessionAnchorMs > 0L) {
+                put("inactivitySessionAnchorMs", config.inactivitySessionAnchorMs)
+            }
+            if (config.inactivitySessionMessageCount > 0) {
+                put("inactivitySessionMessageCount", config.inactivitySessionMessageCount)
+            }
+            if (config.lastDeltaConsumedAtMs > 0L) {
+                put("lastDeltaConsumedAtMs", config.lastDeltaConsumedAtMs)
             }
         }
     }
@@ -3471,6 +3824,21 @@ object OneToOneChatNativeExecutor {
         return "Текущее локальное время пользователя: $formatted ($zoneId, $dayPeriod)."
     }
 
+    private fun resolveLocalDayKey(now: ZonedDateTime = ZonedDateTime.now()): String {
+        return now.toLocalDate().toString()
+    }
+
+    private fun resolveLastUserActivityMs(timeline: List<JSONObject>): Long {
+        for (index in timeline.size - 1 downTo 0) {
+            val message = timeline[index]
+            val role = message.optString("role", "").trim().lowercase()
+            if (role != "user") continue
+            val parsed = parseIsoMs(message.optString("createdAt", "").trim()) ?: continue
+            return parsed
+        }
+        return 0L
+    }
+
     private fun parseIsoMs(value: String): Long? {
         return try {
             Instant.parse(value.trim()).toEpochMilli()
@@ -3485,6 +3853,10 @@ object OneToOneChatNativeExecutor {
         chat: JSONObject,
         timeline: List<JSONObject>,
     ) {
+        val nowMs = System.currentTimeMillis()
+        val summaryUpdatedAtMs = parseIsoMs(chat.optString("summaryUpdatedAt", "").trim())
+        if (summaryUpdatedAtMs != null && nowMs - summaryUpdatedAtMs < SUMMARY_REFRESH_COOLDOWN_MS) return
+
         if (timeline.size <= RECENT_CONTEXT_MESSAGE_LIMIT) return
         val boundaryExclusive = timeline.size - RECENT_CONTEXT_MESSAGE_LIMIT
         if (boundaryExclusive <= 0) return
@@ -3499,7 +3871,7 @@ object OneToOneChatNativeExecutor {
         if (startIndex >= boundaryExclusive) return
         val pending = timeline.subList(startIndex, boundaryExclusive)
         val pendingChars = pending.sumOf { message -> message.optString("content", "").trim().length }
-        if (pending.size < SUMMARY_MIN_NEW_MESSAGES && pendingChars < SUMMARY_MIN_NEW_CHARS) return
+        if (pending.size < SUMMARY_MIN_NEW_MESSAGES || pendingChars < SUMMARY_MIN_NEW_CHARS) return
 
         val existingSummary =
             NativeConversationSummaryState(

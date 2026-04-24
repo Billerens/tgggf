@@ -820,7 +820,16 @@ function normalizeChatProactivityConfig(config: unknown): ChatProactivityConfig 
     config && typeof config === "object"
       ? (config as Record<string, unknown>)
       : {};
+  const normalizeString = (value: unknown) => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
   const normalizeMs = (value: unknown) => {
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+    return Math.max(0, Math.floor(value));
+  };
+  const normalizeCount = (value: unknown) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
     return Math.max(0, Math.floor(value));
   };
@@ -829,6 +838,13 @@ function normalizeChatProactivityConfig(config: unknown): ChatProactivityConfig 
     lastActivityAtMs: normalizeMs(source.lastActivityAtMs),
     nextRunAtMs: normalizeMs(source.nextRunAtMs),
     lastProactiveAtMs: normalizeMs(source.lastProactiveAtMs),
+    countersDayKey: normalizeString(source.countersDayKey),
+    dailyReflectionCount: normalizeCount(source.dailyReflectionCount),
+    dailyDiaryEntryCount: normalizeCount(source.dailyDiaryEntryCount),
+    dailyMessageCount: normalizeCount(source.dailyMessageCount),
+    inactivitySessionAnchorMs: normalizeMs(source.inactivitySessionAnchorMs),
+    inactivitySessionMessageCount: normalizeCount(source.inactivitySessionMessageCount),
+    lastDeltaConsumedAtMs: normalizeMs(source.lastDeltaConsumedAtMs),
   };
 }
 

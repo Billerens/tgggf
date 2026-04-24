@@ -105,14 +105,27 @@ object BackgroundRuntimeEngine {
         existingJob: BackgroundJobRecord?,
     ) {
         val jobId = buildManagedJobId(state.taskType, state.scopeId)
-        val payloadJson = buildManagedPayloadJson(state)
-        val runAtMs =
+        val payload = parsePayloadObject(state.payloadJson)
+        val resumeRunAtMsHint =
+            if (state.taskType == TASK_ONE_TO_ONE_PROACTIVE) {
+                max(0L, payload.optLong("resumeRunAtMs", 0L))
+            } else {
+                0L
+            }
+        val runAtCandidateMs =
             when (existingJob?.status) {
                 BackgroundJobRepository.STATUS_PENDING,
                 BackgroundJobRepository.STATUS_LEASED,
                 -> existingJob.runAtMs
                 else -> System.currentTimeMillis()
             }
+        val runAtMs =
+            if (resumeRunAtMsHint > 0L) {
+                minOf(runAtCandidateMs, resumeRunAtMsHint)
+            } else {
+                runAtCandidateMs
+            }
+        val payloadJson = buildManagedPayloadJson(state, payload)
         try {
             jobs.ensureRecurringJob(
                 id = jobId,
@@ -160,8 +173,11 @@ object BackgroundRuntimeEngine {
         }
     }
 
-    private fun buildManagedPayloadJson(state: BackgroundDesiredStateRecord): String {
-        val payload = parsePayloadObject(state.payloadJson)
+    private fun buildManagedPayloadJson(
+        state: BackgroundDesiredStateRecord,
+        parsedPayload: JSONObject? = null,
+    ): String {
+        val payload = parsedPayload ?: parsePayloadObject(state.payloadJson)
         return when (state.taskType) {
             TASK_TOPIC_GENERATION -> {
                 val delayMs = max(0L, payload.optLong("delayMs", DEFAULT_TOPIC_DELAY_MS))
@@ -180,10 +196,11 @@ object BackgroundRuntimeEngine {
             TASK_ONE_TO_ONE_PROACTIVE -> {
                 val firstRunAfterInactivityMinutes =
                     max(1L, payload.optLong("firstRunAfterInactivityMinutes", 15L))
-                val minDelayMinutes = max(1L, payload.optLong("minDelayMinutes", 15L))
-                val maxDelayMinutes = max(minDelayMinutes, payload.optLong("maxDelayMinutes", 45L))
+                val minDelayMinutes = max(1L, payload.optLong("minDelayMinutes", 30L))
+                val maxDelayMinutes = max(minDelayMinutes, payload.optLong("maxDelayMinutes", 90L))
                 val maxActionsPerTick = max(1L, payload.optLong("maxActionsPerTick", 3L))
                 val runImmediately = payload.optBoolean("runImmediately", false)
+                val resumeRunAtMs = max(0L, payload.optLong("resumeRunAtMs", 0L))
                 JSONObject().apply {
                     put("chatId", state.scopeId)
                     put("firstRunAfterInactivityMinutes", firstRunAfterInactivityMinutes)
@@ -191,6 +208,9 @@ object BackgroundRuntimeEngine {
                     put("maxDelayMinutes", maxDelayMinutes)
                     put("maxActionsPerTick", maxActionsPerTick)
                     put("runImmediately", runImmediately)
+                    if (resumeRunAtMs > 0L) {
+                        put("resumeRunAtMs", resumeRunAtMs)
+                    }
                 }.toString()
             }
             else -> payload.toString()

@@ -98,6 +98,13 @@ export interface ChatProactivityConfig {
   lastActivityAtMs?: number;
   nextRunAtMs?: number;
   lastProactiveAtMs?: number;
+  countersDayKey?: string;
+  dailyReflectionCount?: number;
+  dailyDiaryEntryCount?: number;
+  dailyMessageCount?: number;
+  inactivitySessionAnchorMs?: number;
+  inactivitySessionMessageCount?: number;
+  lastDeltaConsumedAtMs?: number;
 }
 
 export interface DiarySourceRange {

@@ -1846,7 +1846,6 @@ interface ConversationSummaryUpdateRequest {
 const SUMMARY_TARGET_TOKENS_MIN = 600;
 const SUMMARY_TARGET_TOKENS_MAX = 16000;
 const SUMMARY_RESPONSE_MAX_OUTPUT_TOKENS = 16000;
-const SUMMARY_TRANSCRIPT_MAX_MESSAGES = 160;
 const SUMMARY_MAX_CHARS_CAP = 96_000;
 const SUMMARY_FACTS_MAX_ITEMS = 24;
 const SUMMARY_FACTS_MAX_LEN = 320;
@@ -1971,8 +1970,7 @@ export async function requestConversationSummaryUpdate(
       content: message.content.trim(),
       createdAt: toTrimmedString(message.createdAt),
     }))
-    .filter((message) => message.content.length > 0)
-    .slice(0, SUMMARY_TRANSCRIPT_MAX_MESSAGES);
+    .filter((message) => message.content.length > 0);
   if (transcript.length === 0) {
     return request.existing;
   }

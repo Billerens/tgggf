@@ -30,6 +30,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.time.Instant
 import java.util.UUID
+import kotlin.math.max
 
 @CapacitorPlugin(
     name = "LocalApi",
@@ -45,6 +46,13 @@ class LocalApiBridgePlugin : Plugin() {
         @Volatile
         private var activePluginRef: WeakReference<LocalApiBridgePlugin>? = null
         private const val IMAGE_REF_MIGRATION_MARKER_KEY = "image_ref_migration_v1_done"
+        private const val TASK_ONE_TO_ONE_CHAT = "one_to_one_chat"
+        private const val TASK_ONE_TO_ONE_PROACTIVE = "one_to_one_proactive"
+        private const val ONE_TO_ONE_PROACTIVE_DEFAULT_FIRST_RUN_AFTER_INACTIVITY_MINUTES = 15L
+        private const val ONE_TO_ONE_PROACTIVE_DEFAULT_MIN_DELAY_MINUTES = 30L
+        private const val ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_DELAY_MINUTES = 90L
+        private const val ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_ACTIONS_PER_TICK = 3L
+        private const val ONE_TO_ONE_PROACTIVE_RESUME_AFTER_ENGAGEMENT_MS = 15 * 60 * 1000L
 
         @JvmStatic
         fun emitBackgroundTick(
@@ -489,6 +497,137 @@ class LocalApiBridgePlugin : Plugin() {
             return
         }
         repository.writeStoreJson(storeName, value.toString())
+    }
+
+    private fun buildOneToOneProactivePayload(
+        chatId: String,
+        sourcePayloadJson: String?,
+    ): JSONObject {
+        val sourcePayload =
+            if (sourcePayloadJson.isNullOrBlank()) {
+                JSONObject()
+            } else {
+                try {
+                    JSONObject(sourcePayloadJson)
+                } catch (_: Exception) {
+                    JSONObject()
+                }
+            }
+        val firstRunAfterInactivityMinutes =
+            max(
+                1L,
+                sourcePayload.optLong(
+                    "firstRunAfterInactivityMinutes",
+                    ONE_TO_ONE_PROACTIVE_DEFAULT_FIRST_RUN_AFTER_INACTIVITY_MINUTES,
+                ),
+            )
+        val minDelayMinutes =
+            max(
+                1L,
+                sourcePayload.optLong(
+                    "minDelayMinutes",
+                    ONE_TO_ONE_PROACTIVE_DEFAULT_MIN_DELAY_MINUTES,
+                ),
+            )
+        val maxDelayMinutes =
+            max(
+                minDelayMinutes,
+                sourcePayload.optLong(
+                    "maxDelayMinutes",
+                    ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_DELAY_MINUTES,
+                ),
+            )
+        val maxActionsPerTick =
+            max(
+                1L,
+                sourcePayload.optLong(
+                    "maxActionsPerTick",
+                    ONE_TO_ONE_PROACTIVE_DEFAULT_MAX_ACTIONS_PER_TICK,
+                ),
+            )
+        return JSONObject().apply {
+            put("chatId", chatId)
+            put("firstRunAfterInactivityMinutes", firstRunAfterInactivityMinutes)
+            put("minDelayMinutes", minDelayMinutes)
+            put("maxDelayMinutes", maxDelayMinutes)
+            put("maxActionsPerTick", maxActionsPerTick)
+        }
+    }
+
+    private fun resumeOneToOneProactivityAfterDeltaAck(ackedScopeIds: Set<String>) {
+        if (ackedScopeIds.isEmpty()) return
+        val targetScopeIds =
+            ackedScopeIds
+                .map { scopeId -> scopeId.trim() }
+                .filter { scopeId ->
+                    scopeId.isNotEmpty() &&
+                        scopeId != BackgroundRuntimeRepository.GLOBAL_SCOPE_ID
+                }
+                .toSet()
+        if (targetScopeIds.isEmpty()) return
+
+        val consumedAtMs = System.currentTimeMillis()
+        val resumeRunAtMs = consumedAtMs + ONE_TO_ONE_PROACTIVE_RESUME_AFTER_ENGAGEMENT_MS
+        val chats = readStoreArray("chats")
+        val resumedChatIds = mutableSetOf<String>()
+        var chatsChanged = false
+
+        for (chatIndex in 0 until chats.length()) {
+            val chat = chats.optJSONObject(chatIndex) ?: continue
+            val chatId = chat.optString("id", "").trim()
+            if (!targetScopeIds.contains(chatId)) continue
+            val config = chat.optJSONObject("proactivityConfig") ?: JSONObject()
+            if (!config.optBoolean("enabled", false)) continue
+            val nextConfig = JSONObject(config.toString())
+            nextConfig.put("enabled", true)
+            nextConfig.put("lastDeltaConsumedAtMs", consumedAtMs)
+            nextConfig.put("nextRunAtMs", resumeRunAtMs)
+            nextConfig.put("dailyMessageCount", 0)
+            nextConfig.put("inactivitySessionMessageCount", 0)
+            chat.put("proactivityConfig", nextConfig)
+            chat.put("updatedAt", Instant.now().toString())
+            chats.put(chatIndex, chat)
+            resumedChatIds.add(chatId)
+            chatsChanged = true
+        }
+
+        if (chatsChanged) {
+            repository.writeStoreJson("chats", chats.toString())
+        }
+
+        for (chatId in resumedChatIds) {
+            val desiredState = backgroundRuntime.getDesiredState(TASK_ONE_TO_ONE_PROACTIVE, chatId)
+            if (desiredState?.enabled == false) continue
+            val payload =
+                buildOneToOneProactivePayload(
+                    chatId = chatId,
+                    sourcePayloadJson = desiredState?.payloadJson,
+                )
+            backgroundJobs.ensureRecurringJob(
+                id = "$TASK_ONE_TO_ONE_PROACTIVE:$chatId",
+                type = TASK_ONE_TO_ONE_PROACTIVE,
+                payloadJson = payload.toString(),
+                runAtMs = resumeRunAtMs,
+                maxAttempts = 0,
+            )
+            backgroundRuntime.appendEvent(
+                taskType = TASK_ONE_TO_ONE_PROACTIVE,
+                scopeId = chatId,
+                jobId = null,
+                stage = "proactive_resumed_after_delta_ack",
+                level = "info",
+                message = "Resumed proactive scheduling after delta consumption",
+                detailsJson =
+                    JSONObject().apply {
+                        put("resumeRunAtMs", resumeRunAtMs)
+                        put("consumedAtMs", consumedAtMs)
+                    }.toString(),
+            )
+        }
+
+        if (resumedChatIds.isNotEmpty()) {
+            ForegroundSyncService.triggerNow(context, "delta_ack_resume")
+        }
     }
 
     private fun parseRequestedStoreNames(query: String?): Set<String>? {
@@ -1541,7 +1680,19 @@ class LocalApiBridgePlugin : Plugin() {
             }
             val ackedUpToId = body.optLong("ackedUpToId", 0L)
             val taskType = body.optString("taskType", "").trim().ifEmpty { null }
+            val ackedScopes =
+                backgroundRuntime
+                    .listDeltaScopesUpTo(ackedUpToId = ackedUpToId, taskType = taskType)
+                    .filter { row ->
+                        row.scopeId.trim().isNotEmpty() &&
+                            (row.taskType == TASK_ONE_TO_ONE_CHAT || row.taskType == TASK_ONE_TO_ONE_PROACTIVE)
+                    }
+                    .map { row -> row.scopeId.trim() }
+                    .toSet()
             val deletedCount = backgroundRuntime.ackDeltaUpTo(ackedUpToId, taskType)
+            if (ackedScopes.isNotEmpty()) {
+                resumeOneToOneProactivityAfterDeltaAck(ackedScopes)
+            }
             respond(
                 call,
                 200,
@@ -1550,6 +1701,7 @@ class LocalApiBridgePlugin : Plugin() {
                     put("ackedUpToId", maxOf(0L, ackedUpToId))
                     put("taskType", taskType)
                     put("deletedCount", deletedCount)
+                    put("resumedScopeCount", ackedScopes.size)
                 },
             )
             return

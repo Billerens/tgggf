@@ -589,6 +589,14 @@ object NativeLlmClient {
         diaryEntries: JSONArray,
         pendingProactiveDiaryEntries: Int = 0,
         pendingProactiveDiarySoftLimit: Int = 0,
+        proactiveSessionMessageCount: Int = 0,
+        proactiveSessionMessageSoftLimit: Int = 0,
+        proactiveDailyMessageCount: Int = 0,
+        proactiveDailyMessageSoftLimit: Int = 0,
+        proactiveDailyReflectionCount: Int = 0,
+        proactiveDailyReflectionHardLimit: Int = 0,
+        proactiveDailyDiaryEntriesCount: Int = 0,
+        proactiveDailyDiaryEntriesHardLimit: Int = 0,
         userLocalTimeContext: String,
         evolutionHistoryApplied: List<JSONObject> = emptyList(),
     ): NativeOneToOneProactivePlan? {
@@ -625,8 +633,17 @@ object NativeLlmClient {
                 "Если нет сильного повода для проактивности, это нормально: status=skip.",
                 "Reflection/diary — редкий инструмент, не default-поведение.",
                 "Если pendingProactiveDiaryEntries >= pendingProactiveDiarySoftLimit, избегай reflection: выбирай message или skip.",
+                "Учитывай hard-ограничения в счётчиках: не планируй reflection, если достигнут proactiveDailyReflectionHardLimit.",
+                "Учитывай hard-ограничения в счётчиках: не планируй новые diary entries через reflection, если достигнут proactiveDailyDiaryEntriesHardLimit.",
+                "Антифлуд: в рамках одной сессии неактивности обычно не более 2-3 proactive-сообщений; после этого предпочитай status=skip.",
+                "Антифлуд: в пределах текущих суток обычно не более 3 proactive-сообщений; если лимит исчерпан, по умолчанию выбирай skip.",
+                "Исключение из антифлуда допускается только при действительно важной причине (критичное уточнение, риск потери контекста, важное событие).",
+                "Даже при исключении сообщение должно быть коротким, конкретным и единичным.",
+                "Ночью персона вероятнее всего спит: по умолчанию предпочитай status=skip.",
+                "Ночное правило не жесткое: при действительно важном форс-мажоре допустим один аккуратный proactive action.",
+                "Если всё же нужен proactive ночью, предпочитай более редкий ритм: nextDelayMinutes обычно 60-120.",
                 "Если проактивность сейчас неуместна — status=skip и задай nextDelayMinutes.",
-                "nextDelayMinutes держи в диапазоне 15-45.",
+                "nextDelayMinutes: обычно 30-90 днём и 60-120 ночью.",
                 "Возвращай только валидный JSON без markdown и пояснений.",
             ).joinToString("\n")
 
@@ -659,6 +676,16 @@ object NativeLlmClient {
                 appendLine("Proactive diary backlog safety:")
                 appendLine("pendingProactiveDiaryEntries=$pendingProactiveDiaryEntries")
                 appendLine("pendingProactiveDiarySoftLimit=$pendingProactiveDiarySoftLimit")
+                appendLine()
+                appendLine("Proactive anti-flood counters:")
+                appendLine("proactiveSessionMessageCount=$proactiveSessionMessageCount")
+                appendLine("proactiveSessionMessageSoftLimit=$proactiveSessionMessageSoftLimit")
+                appendLine("proactiveDailyMessageCount=$proactiveDailyMessageCount")
+                appendLine("proactiveDailyMessageSoftLimit=$proactiveDailyMessageSoftLimit")
+                appendLine("proactiveDailyReflectionCount=$proactiveDailyReflectionCount")
+                appendLine("proactiveDailyReflectionHardLimit=$proactiveDailyReflectionHardLimit")
+                appendLine("proactiveDailyDiaryEntriesCount=$proactiveDailyDiaryEntriesCount")
+                appendLine("proactiveDailyDiaryEntriesHardLimit=$proactiveDailyDiaryEntriesHardLimit")
                 appendLine()
                 appendLine("Applied persona evolution history (last 10):")
                 appendLine(evolutionHistoryContext)

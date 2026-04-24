@@ -13,12 +13,15 @@ const BASE_CHAT: ChatSession = {
 
 describe("db proactivity normalization", () => {
   it("normalizes empty proactivity config to disabled defaults", () => {
-    expect(__dbTestUtils.normalizeChatProactivityConfig(undefined)).toEqual({
-      enabled: false,
-      lastActivityAtMs: undefined,
-      nextRunAtMs: undefined,
-      lastProactiveAtMs: undefined,
-    });
+    expect(__dbTestUtils.normalizeChatProactivityConfig(undefined)).toEqual(
+      expect.objectContaining({
+        enabled: false,
+        lastActivityAtMs: undefined,
+        nextRunAtMs: undefined,
+        lastProactiveAtMs: undefined,
+        lastDeltaConsumedAtMs: undefined,
+      }),
+    );
   });
 
   it("keeps boolean enabled and sanitizes runtime meta timestamps", () => {
@@ -29,12 +32,15 @@ describe("db proactivity normalization", () => {
         nextRunAtMs: -90,
         lastProactiveAtMs: Number.NaN,
       }),
-    ).toEqual({
-      enabled: true,
-      lastActivityAtMs: 1234,
-      nextRunAtMs: 0,
-      lastProactiveAtMs: undefined,
-    });
+    ).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        lastActivityAtMs: 1234,
+        nextRunAtMs: 0,
+        lastProactiveAtMs: undefined,
+        lastDeltaConsumedAtMs: undefined,
+      }),
+    );
   });
 
   it("normalizes proactivityConfig in chat session shape", () => {
@@ -47,11 +53,14 @@ describe("db proactivity normalization", () => {
       },
     });
 
-    expect(chat.proactivityConfig).toEqual({
-      enabled: true,
-      lastActivityAtMs: 15_001,
-      nextRunAtMs: 16_444,
-      lastProactiveAtMs: undefined,
-    });
+    expect(chat.proactivityConfig).toEqual(
+      expect.objectContaining({
+        enabled: true,
+        lastActivityAtMs: 15_001,
+        nextRunAtMs: 16_444,
+        lastProactiveAtMs: undefined,
+        lastDeltaConsumedAtMs: undefined,
+      }),
+    );
   });
 });

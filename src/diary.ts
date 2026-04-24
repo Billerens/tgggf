@@ -3,8 +3,8 @@ import type { DiaryEntry, DiaryTag, DiaryTagPrefix } from "./types";
 export const DIARY_IDLE_MS = 10 * 60 * 1000;
 export const DIARY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 export const DIARY_RECENT_MESSAGE_LIMIT = 30;
-export const DIARY_MIN_MESSAGE_COUNT = 4;
-export const DIARY_MIN_CHAR_COUNT = 240;
+export const DIARY_MIN_MESSAGE_COUNT = 12;
+export const DIARY_MIN_CHAR_COUNT = 8000;
 export const DIARY_GENERATION_MAX_ENTRIES = 64;
 export const DIARY_EXISTING_TAGS_LIMIT = 200;
 export const DIARY_GENERATED_ENTRY_MIN_NON_DATE_TAGS = 1;
@@ -66,7 +66,7 @@ export function evaluateDiaryGenerationGate(
     return { eligible: false, reason: "no_new_source" };
   }
   if (
-    input.newMessageCount < DIARY_MIN_MESSAGE_COUNT &&
+    input.newMessageCount < DIARY_MIN_MESSAGE_COUNT ||
     input.newCharCount < DIARY_MIN_CHAR_COUNT
   ) {
     return { eligible: false, reason: "insufficient_content" };

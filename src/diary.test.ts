@@ -29,10 +29,25 @@ describe("diary gate", () => {
       lastCheckedAtMs: nowMs - 16 * 60 * 1000,
       lastGeneratedAtMs: nowMs - 16 * 60 * 1000,
       hasNewSource: true,
-      newMessageCount: 5,
-      newCharCount: 300,
+      newMessageCount: 12,
+      newCharCount: 8000,
     });
     expect(result).toEqual({ eligible: true, reason: "ok" });
+  });
+
+  it("requires both message and char thresholds (AND gate)", () => {
+    const nowMs = 1_100_000;
+    const result = evaluateDiaryGenerationGate({
+      enabled: true,
+      nowMs,
+      lastActivityAtMs: nowMs - 11 * 60 * 1000,
+      lastCheckedAtMs: nowMs - 16 * 60 * 1000,
+      lastGeneratedAtMs: nowMs - 16 * 60 * 1000,
+      hasNewSource: true,
+      newMessageCount: 12,
+      newCharCount: 100,
+    });
+    expect(result).toEqual({ eligible: false, reason: "insufficient_content" });
   });
 
   it("blocks when interval has not elapsed", () => {

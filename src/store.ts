@@ -239,8 +239,9 @@ const DIARY_WEB_MIN_CHECK_MESSAGES = 1;
 const SUMMARY_DEFAULT_TOKEN_BUDGET = 16000;
 const SUMMARY_MIN_TOKEN_BUDGET = 600;
 const SUMMARY_MAX_TOKEN_BUDGET = 16000;
-const SUMMARY_MIN_NEW_MESSAGES = 4;
-const SUMMARY_MIN_NEW_CHARS = 1200;
+const SUMMARY_MIN_NEW_MESSAGES = 16;
+const SUMMARY_MIN_NEW_CHARS = 8000;
+const SUMMARY_REFRESH_COOLDOWN_MS = 20 * 60 * 1000;
 const SUMMARY_FACTS_MAX_ITEMS = 24;
 const SUMMARY_FACTS_MAX_LEN = 320;
 const SUMMARY_GOALS_MAX_ITEMS = 18;
@@ -716,6 +717,15 @@ async function maybeRefreshConversationSummary(params: {
   settings: AppSettings;
   messages: ChatMessage[];
 }) {
+  const nowMs = Date.now();
+  const lastSummaryUpdatedAtMs = Date.parse(params.chat.summaryUpdatedAt ?? "");
+  if (
+    Number.isFinite(lastSummaryUpdatedAtMs) &&
+    nowMs - lastSummaryUpdatedAtMs < SUMMARY_REFRESH_COOLDOWN_MS
+  ) {
+    return null;
+  }
+
   const timeline = buildDialogTimeline(params.messages);
   if (timeline.length <= RECENT_CONTEXT_MESSAGE_LIMIT) return null;
   const boundaryIndexExclusive = timeline.length - RECENT_CONTEXT_MESSAGE_LIMIT;
@@ -734,7 +744,7 @@ async function maybeRefreshConversationSummary(params: {
     0,
   );
   if (
-    pending.length < SUMMARY_MIN_NEW_MESSAGES &&
+    pending.length < SUMMARY_MIN_NEW_MESSAGES ||
     pendingChars < SUMMARY_MIN_NEW_CHARS
   ) {
     return null;
@@ -2068,7 +2078,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         0,
       );
       if (
-        sourceMessages.length < DIARY_MIN_MESSAGE_COUNT &&
+        sourceMessages.length < DIARY_MIN_MESSAGE_COUNT ||
         newCharCount < DIARY_MIN_CHAR_COUNT
       ) {
         return [];
