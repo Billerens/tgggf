@@ -1686,6 +1686,9 @@ button.danger:hover:not(:disabled) {
   border-radius: var(--radius-md);
   background: rgba(255, 255, 255, 0.02);
   padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .status-card h4 {
   margin: 0 0 10px;
