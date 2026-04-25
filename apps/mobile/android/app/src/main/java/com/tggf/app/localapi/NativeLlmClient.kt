@@ -502,7 +502,7 @@ object NativeLlmClient {
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
                 temperature = clampTemperature(settings.optDouble("temperature", 0.72), minValue = 0.2, maxValue = 0.95),
-                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 620), minValue = 180, maxValue = 1200),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 620), minValue = 180, maxValue = 16000),
                 systemPrompt =
                     buildOneToOneSystemPrompt(
                         settings = settings,
@@ -789,7 +789,7 @@ object NativeLlmClient {
                 model = model,
                 auth = resolveProviderAuth(settings, provider),
                 temperature = clampTemperature(settings.optDouble("temperature", 0.7), minValue = 0.25, maxValue = 0.95),
-                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 620), minValue = 180, maxValue = 1200),
+                maxTokens = clampMaxTokens(settings.optInt("maxTokens", 620), minValue = 180, maxValue = 16000),
                 systemPrompt = systemPrompt,
                 userPrompt = userPrompt,
                 forceJsonObject = true,
